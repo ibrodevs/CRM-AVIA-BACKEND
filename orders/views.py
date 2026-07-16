@@ -1,0 +1,419 @@
+"""Order API (ТЗ §7.3)."""
+from django.db import transaction
+from django.db.models import Q
+from django.utils import timezone
+from rest_framework import status as http
+from rest_framework.generics import GenericAPIView
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from accounts.permissions import has_permission, require
+from common.audit import audit
+from common.errors import ApiError
+from common.idempotency import idempotent_command
+from common.jobs import enqueue
+from common.locking import check_version
+from common.outbox import emit_event
+from common.pagination import DefaultPagination
+from crm.models import Person
+from orders import services as order_service
+from orders.models import Order, OrderParticipant, OrderStatusHistory, OrderTask
+from orders.serializers import (
+    OrderCreateSerializer, OrderDetailSerializer, OrderListSerializer, OrderTaskSerializer,
+    ParticipantSerializer, RoutePointSerializer, RouteSerializer, order_finance_summary,
+)
+
+
+def orders_visible_to(user):
+    """Object-level scope: оператор видит назначенные ему заказы (ТЗ §5.3)."""
+    qs = Order.objects.filter(tenant_id=user.tenant_id)
+    roles = {ur.role.code for ur in user.user_roles.select_related("role")}
+    if roles & {"admin", "accountant", "manager"} or user.is_superuser:
+        return qs
+    return qs.filter(Q(operator=user) | Q(created_by=user))
+
+
+def get_order_or_404(user, order_id) -> Order:
+    order = orders_visible_to(user).filter(pk=order_id).first()
+    if order is None:
+        raise ApiError(code="NOT_FOUND", message="Заказ не найден", status_code=404)
+    return order
+
+
+class OrderListCreateView(GenericAPIView):
+    permission_classes = [require("orders.view")]
+    pagination_class = DefaultPagination
+    serializer_class = OrderListSerializer
+
+    def get(self, request):
+        qs = (
+            orders_visible_to(request.user)
+            .select_related("client_person", "client_company", "operator")
+            .order_by("-created_at")
+        )
+        params = request.query_params
+        if q := params.get("q", "").strip():
+            qs = qs.filter(
+                Q(number__icontains=q) | Q(purpose__icontains=q)
+                | Q(client_person__surname__icontains=q)
+                | Q(client_company__legal_name__icontains=q)
+            )
+        if number := params.get("number"):
+            qs = qs.filter(number=number)
+        if statuses := params.getlist("status"):
+            qs = qs.filter(status__in=statuses)
+        if types := params.getlist("request_type"):
+            qs = qs.filter(request_type__in=types)
+        if kinds := params.getlist("service_kind"):
+            qs = qs.filter(services__kind__in=kinds).distinct()
+        if operator := params.get("operator"):
+            qs = qs.filter(operator_id=operator)
+        if client := params.get("client"):
+            qs = qs.filter(Q(client_person_id=client) | Q(client_company_id=client))
+        if created_from := params.get("created_from"):
+            qs = qs.filter(created_at__date__gte=created_from)
+        if created_to := params.get("created_to"):
+            qs = qs.filter(created_at__date__lte=created_to)
+        if planned_from := params.get("planned_from"):
+            qs = qs.filter(planned_start__gte=planned_from)
+        if planned_to := params.get("planned_to"):
+            qs = qs.filter(planned_start__lte=planned_to)
+        if params.get("is_group") in ("true", "1"):
+            qs = qs.filter(is_group=True)
+        if priority := params.get("priority"):
+            qs = qs.filter(priority=priority)
+        if ordering := params.get("ordering"):
+            allowed = {"created_at", "-created_at", "number", "-number",
+                       "planned_start", "-planned_start", "priority", "-priority"}
+            fields = [f for f in ordering.split(",") if f in allowed]
+            if fields:
+                qs = qs.order_by(*fields)
+        page = self.paginate_queryset(qs)
+        return self.get_paginated_response(OrderListSerializer(page, many=True).data)
+
+    def post(self, request):
+        if not has_permission(request.user, "orders.create"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.create",
+                           status_code=403)
+        serializer = OrderCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        # резолвим участников
+        participants = []
+        for item in data.pop("participants", []):
+            person = None
+            if person_id := item.get("person"):
+                person = Person.objects.filter(pk=person_id,
+                                               tenant_id=request.user.tenant_id).first()
+                if person is None:
+                    raise ApiError(code="VALIDATION_ERROR",
+                                   message=f"Лицо {person_id} не найдено", status_code=400)
+            participants.append({
+                "person": person,
+                "guest_snapshot": item.get("guest_snapshot"),
+                "role": item.get("role", "passenger"),
+                "is_contact": item.get("is_contact", False),
+            })
+        data["participants"] = participants
+        order = order_service.create_order(
+            tenant_id=request.user.tenant_id, user=request.user, data=data, request=request
+        )
+        return Response(OrderDetailSerializer(order).data, status=http.HTTP_201_CREATED)
+
+
+class OrderDetailView(APIView):
+    permission_classes = [require("orders.view")]
+
+    def get(self, request, order_id):
+        order = get_order_or_404(request.user, order_id)
+        return Response(OrderDetailSerializer(order).data)
+
+    def patch(self, request, order_id):
+        if not has_permission(request.user, "orders.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change",
+                           status_code=403)
+        with transaction.atomic():
+            order = Order.objects.select_for_update().filter(
+                pk=get_order_or_404(request.user, order_id).pk
+            ).get()
+            check_version(order, request.data.get("version"))
+            allowed = {"priority", "preferred_channel", "purpose", "comment",
+                       "planned_start", "planned_end", "contact_person", "source"}
+            forbidden = set(request.data) & {"status", "stage", "number", "operator"}
+            if forbidden:
+                raise ApiError(
+                    code="FIELD_NOT_PATCHABLE",
+                    message="Статус/этап/номер/оператор меняются командами, не PATCH",
+                    fields={f: ["Используйте командный endpoint"] for f in forbidden},
+                    status_code=400,
+                )
+            data = {k: v for k, v in request.data.items() if k in allowed}
+            serializer = OrderDetailSerializer(order, data=data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            order.version += 1
+            order.updated_by = request.user
+            serializer.save(version=order.version, updated_by=request.user)
+            emit_event("order.updated", order, payload={"action": "patched"})
+            audit("order.updated", actor=request.user, resource=order, request=request,
+                  after={k: str(v) for k, v in data.items()})
+        return Response(OrderDetailSerializer(order).data)
+
+
+class OrderTransitionView(APIView):
+    permission_classes = [require("orders.change_status")]
+
+    @idempotent_command("orders.transition", required=False)
+    def post(self, request, order_id):
+        get_order_or_404(request.user, order_id)
+        order = order_service.transition_order(
+            order_id=order_id, user=request.user,
+            target_status=str(request.data.get("target_status", "")),
+            reason=str(request.data.get("reason", "")),
+            expected_version=request.data.get("version"),
+            request=request,
+        )
+        data = OrderDetailSerializer(order).data
+        data["audit_event_id"] = getattr(order, "_audit_event_id", None)
+        return Response(data)
+
+
+class OrderCancelView(APIView):
+    permission_classes = [require("orders.change_status")]
+
+    @idempotent_command("orders.cancel")
+    def post(self, request, order_id):
+        order = get_order_or_404(request.user, order_id)
+        # precheck активных броней (ТЗ §7.3)
+        active = order.services.filter(status__in=["booked", "confirmed", "issued"])
+        if active.exists() and not request.data.get("confirm_cancellation"):
+            raise ApiError(
+                code="ORDER_HAS_ACTIVE_BOOKINGS",
+                message="У заказа есть активные брони/выписки; подтвердите аннуляцию",
+                details={"services": [str(s.id) for s in active[:20]],
+                         "hint": "Передайте confirm_cancellation=true"},
+                status_code=409,
+            )
+        job = enqueue("orders.cancel", {
+            "order_id": str(order.id),
+            "reason": str(request.data.get("reason", "")),
+            "expected_version": request.data.get("version"),
+            "user_id": str(request.user.id),
+        }, request=request)
+        return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
+
+
+class OrderReassignView(APIView):
+    permission_classes = [require("orders.reassign")]
+
+    def post(self, request, order_id):
+        from accounts.models import User
+
+        get_order_or_404(request.user, order_id)
+        new_operator = User.objects.filter(pk=request.data.get("operator"),
+                                           tenant_id=request.user.tenant_id,
+                                           status=User.Status.ACTIVE).first()
+        if new_operator is None:
+            raise ApiError(code="VALIDATION_ERROR", message="Оператор не найден",
+                           fields={"operator": ["Активный пользователь обязателен"]},
+                           status_code=400)
+        order = order_service.reassign_order(
+            order_id=order_id, user=request.user, new_operator=new_operator,
+            reason=str(request.data.get("reason", "")),
+            expected_version=request.data.get("version"), request=request,
+        )
+        return Response(OrderDetailSerializer(order).data)
+
+
+class OrderParticipantsView(APIView):
+    permission_classes = [require("orders.view")]
+
+    def get(self, request, order_id):
+        order = get_order_or_404(request.user, order_id)
+        participants = order.participants.filter(status="active").select_related("person")
+        return Response(ParticipantSerializer(participants, many=True).data)
+
+    def post(self, request, order_id):
+        if not has_permission(request.user, "orders.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change",
+                           status_code=403)
+        order = get_order_or_404(request.user, order_id)
+        serializer = ParticipantSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        participant = serializer.save(tenant_id=order.tenant_id, order=order,
+                                      created_by=request.user)
+        emit_event("order.updated", order, payload={"action": "participant_added"})
+        audit("order.participant_added", actor=request.user, resource=order, request=request)
+        return Response(ParticipantSerializer(participant).data, status=http.HTTP_201_CREATED)
+
+
+class OrderParticipantDetailView(APIView):
+    permission_classes = [require("orders.change")]
+
+    def delete(self, request, order_id, participant_id):
+        order = get_order_or_404(request.user, order_id)
+        participant = order.participants.filter(pk=participant_id, status="active").first()
+        if participant is None:
+            raise ApiError(code="NOT_FOUND", message="Участник не найден", status_code=404)
+        if participant.service_passengers.exclude(status__in=["cancelled", "replaced"]).exists():
+            raise ApiError(code="PARTICIPANT_HAS_SERVICES",
+                           message="Участник привязан к услугам; сначала cancel/replace",
+                           status_code=409)
+        participant.status = "removed"
+        participant.save(update_fields=["status"])
+        audit("order.participant_removed", actor=request.user, resource=order, request=request)
+        return Response(status=http.HTTP_204_NO_CONTENT)
+
+
+class OrderRouteView(APIView):
+    permission_classes = [require("orders.view")]
+
+    def get(self, request, order_id):
+        order = get_order_or_404(request.user, order_id)
+        route = getattr(order, "route", None)
+        if route is None:
+            raise ApiError(code="NOT_FOUND", message="Маршрут не задан", status_code=404)
+        return Response(RouteSerializer(route).data)
+
+    def patch(self, request, order_id):
+        from orders.models import Route, RoutePoint
+
+        if not has_permission(request.user, "orders.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change",
+                           status_code=403)
+        order = get_order_or_404(request.user, order_id)
+        with transaction.atomic():
+            route = Route.objects.select_for_update().filter(order=order).first()
+            if route is None:
+                route = Route.objects.create(tenant_id=order.tenant_id, order=order,
+                                             created_by=request.user)
+            else:
+                check_version(route, request.data.get("version"))
+            if kind := request.data.get("kind"):
+                route.kind = kind
+            points = request.data.get("points")
+            if points is not None:
+                if len(points) < 2:
+                    raise ApiError(code="VALIDATION_ERROR",
+                                   message="Маршрут содержит минимум 2 точки",
+                                   fields={"points": ["Минимум 2 точки"]}, status_code=400)
+                route.points.all().delete()
+                for index, point in enumerate(points, start=1):
+                    point_serializer = RoutePointSerializer(data=point)
+                    point_serializer.is_valid(raise_exception=True)
+                    RoutePoint.objects.create(
+                        tenant_id=order.tenant_id, route=route, sequence=index,
+                        created_by=request.user, **point_serializer.validated_data,
+                    )
+            route.version += 1
+            route.updated_by = request.user
+            route.save()
+            emit_event("order.updated", order, payload={"action": "route_changed"})
+            audit("order.route_changed", actor=request.user, resource=order, request=request)
+        return Response(RouteSerializer(route).data)
+
+
+class OrderOverviewView(APIView):
+    """Оптимизированный агрегат карточки (ТЗ §7.3, §25.2)."""
+
+    permission_classes = [require("orders.view")]
+
+    def get(self, request, order_id):
+        order = (
+            orders_visible_to(request.user)
+            .select_related("client_person", "client_company", "operator", "contact_person")
+            .prefetch_related("participants__person", "route__points", "services")
+            .filter(pk=order_id).first()
+        )
+        if order is None:
+            raise ApiError(code="NOT_FOUND", message="Заказ не найден", status_code=404)
+        services_summary = [
+            {"id": str(s.id), "kind": s.kind, "status": s.status, "title": s.title,
+             "starts_at": s.starts_at, "client_total": str(s.client_total) if s.client_total else None,
+             "currency": s.currency, "ticketing_deadline": s.ticketing_deadline}
+            for s in order.services.all()
+        ]
+        deadlines = [
+            {"service_id": s["id"], "kind": "ticketing", "at": s["ticketing_deadline"]}
+            for s in services_summary if s["ticketing_deadline"]
+        ]
+        warnings = []
+        now = timezone.now()
+        for deadline in deadlines:
+            if deadline["at"] and deadline["at"] < now:
+                warnings.append({"code": "DEADLINE_OVERDUE", "service_id": deadline["service_id"]})
+        return Response({
+            "order": OrderDetailSerializer(order).data,
+            "allowed_actions": order_service.allowed_actions(order, request.user),
+            "services": services_summary,
+            "finance_summary": order_finance_summary(order),
+            "deadlines": deadlines,
+            "warnings": warnings,
+        })
+
+
+class OrderHistoryView(GenericAPIView):
+    permission_classes = [require("orders.view")]
+    pagination_class = DefaultPagination
+
+    def get(self, request, order_id):
+        order = get_order_or_404(request.user, order_id)
+        qs = OrderStatusHistory.objects.filter(order=order).select_related("changed_by")
+        if to_status := request.query_params.get("to_status"):
+            qs = qs.filter(to_status=to_status)
+        page = self.paginate_queryset(qs)
+        return self.get_paginated_response([
+            {"id": h.id, "from_status": h.from_status, "to_status": h.to_status,
+             "from_stage": h.from_stage, "to_stage": h.to_stage, "reason": h.reason,
+             "changed_by": str(h.changed_by_id) if h.changed_by_id else None,
+             "changed_at": h.changed_at}
+            for h in page
+        ])
+
+
+class OrderTasksView(GenericAPIView):
+    permission_classes = [require("orders.view")]
+    pagination_class = DefaultPagination
+
+    def get(self, request, order_id):
+        order = get_order_or_404(request.user, order_id)
+        qs = order.tasks.order_by("due_at")
+        if task_status := request.query_params.get("status"):
+            qs = qs.filter(status=task_status)
+        page = self.paginate_queryset(qs)
+        return self.get_paginated_response(OrderTaskSerializer(page, many=True).data)
+
+    def post(self, request, order_id):
+        order = get_order_or_404(request.user, order_id)
+        serializer = OrderTaskSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        task = serializer.save(tenant_id=order.tenant_id, order=order, created_by=request.user)
+        emit_event("order.updated", order, payload={"action": "task_created"},
+                   audience_user=task.assignee)
+        return Response(OrderTaskSerializer(task).data, status=http.HTTP_201_CREATED)
+
+
+class OrderAllowedActionsView(APIView):
+    permission_classes = [require("orders.view")]
+
+    def get(self, request, order_id):
+        order = get_order_or_404(request.user, order_id)
+        return Response(order_service.allowed_actions(order, request.user))
+
+
+class OrderDuplicateView(APIView):
+    permission_classes = [require("orders.create")]
+
+    @idempotent_command("orders.duplicate", required=False)
+    def post(self, request, order_id):
+        get_order_or_404(request.user, order_id)
+        order = order_service.duplicate_order(order_id=order_id, user=request.user,
+                                              request=request)
+        return Response(OrderDetailSerializer(order).data, status=http.HTTP_201_CREATED)
+
+
+class OrderFinanceSummaryView(APIView):
+    permission_classes = [require("orders.view")]
+
+    def get(self, request, order_id):
+        order = get_order_or_404(request.user, order_id)
+        return Response(order_finance_summary(order))

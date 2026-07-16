@@ -1,0 +1,62 @@
+# Dev/prod-подобная конфигурация без Redis и Celery (ТЗ §3.2):
+# web + отдельный сервис job runner + PostgreSQL + cron-сервис.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: travelhub
+      POSTGRES_USER: travelhub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-travelhub}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U travelhub"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    environment: &app_env
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-config.settings.prod}
+      DATABASE_URL: postgres://travelhub:${POSTGRES_PASSWORD:-travelhub}@db:5432/travelhub
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set in .env}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost}
+      FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY:?set in .env}
+      SECURE_SSL_REDIRECT: ${SECURE_SSL_REDIRECT:-False}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 60"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/live/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  jobs:
+    build: .
+    environment: *app_env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python manage.py run_jobs
+    restart: unless-stopped
+
+  cron:
+    build: .
+    environment: *app_env
+    depends_on:
+      db:
+        condition: service_healthy
+    # каждую минуту; advisory lock защищает от параллельного запуска
+    command: >
+      sh -c "while true; do python manage.py run_scheduled_jobs; sleep 60; done"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
