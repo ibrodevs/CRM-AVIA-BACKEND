@@ -1,12 +1,5 @@
 # Travel Hub CRM — Backend
 
-Django 5 + DRF + PostgreSQL 16 backend по ТЗ `../BACKEND-TZ-DJANGO-REST.md`.
-Без Redis и Celery: фоновые задания и outbox — в PostgreSQL (`run_jobs`),
-периодика — `run_scheduled_jobs` под advisory lock.
-
-**Статус: все 6 этапов ТЗ реализованы** — 239 API-операций, 128 автотестов.
-Подробный отчёт, ограничения и mock-адаптеры: [IMPLEMENTATION.md](IMPLEMENTATION.md).
-
 ```bash
 # демо-данные (после migrate): 4 пользователя ролей, клиенты, поставщики, заказы
 uv run python manage.py seed_demo_data
@@ -64,13 +57,13 @@ docker compose up --build # web + jobs + cron + PostgreSQL
 
 ## Архитектура
 
-| Приложение | Ответственность |
-|---|---|
-| `config` | settings (base/dev/prod/test), urls, ASGI/WSGI |
-| `common` | базовые модели, деньги (Decimal, ROUND_HALF_UP), контракт ошибок, request id, идемпотентность, audit (append-only), outbox, BackgroundJob + runner, health |
-| `tenancy` | Organization, tenant-контекст, изоляция queryset-ов |
-| `accounts` | пользователи, роли/permissions (RBAC в БД), JWT+сессии, 2FA (TOTP), preferences |
-| `crm`, `travel_policy`, `orders`, `services`, `avia`, `rail`, `hotels`, `groups_app`, `offers`, `suppliers`, `booking`, `finance`, `documents`, `aftersales`, `communications`, `notifications`, `calendar_app`, `workforce`, `integrations`, `reports`, `search` | этапы 2–6 ТЗ |
+| Приложение                                                                                                                                                                                                                                                                                        | Ответственность                                                                                                                                                                             |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`                                                                                                                                                                                                                                                                                                  | settings (base/dev/prod/test), urls, ASGI/WSGI                                                                                                                                                             |
+| `common`                                                                                                                                                                                                                                                                                                  | базовые модели, деньги (Decimal, ROUND_HALF_UP), контракт ошибок, request id, идемпотентность, audit (append-only), outbox, BackgroundJob + runner, health |
+| `tenancy`                                                                                                                                                                                                                                                                                                 | Organization, tenant-контекст, изоляция queryset-ов                                                                                                                                      |
+| `accounts`                                                                                                                                                                                                                                                                                                | пользователи, роли/permissions (RBAC в БД), JWT+сессии, 2FA (TOTP), preferences                                                                                                   |
+| `crm`, `travel_policy`, `orders`, `services`, `avia`, `rail`, `hotels`, `groups_app`, `offers`, `suppliers`, `booking`, `finance`, `documents`, `aftersales`, `communications`, `notifications`, `calendar_app`, `workforce`, `integrations`, `reports`, `search` | этапы 2–6 ТЗ                                                                                                                                                                                       |
 
 ### Ключевые инварианты
 
