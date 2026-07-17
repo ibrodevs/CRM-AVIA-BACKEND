@@ -1,4 +1,3 @@
-"""Фоновые задания заказов."""
 from django.db import transaction
 
 from common.jobs import job_handler
@@ -22,7 +21,6 @@ def cancel_order_job(job: BackgroundJob) -> dict:
         order = Order.objects.select_for_update().get(pk=payload["order_id"])
         active = order.services.filter(status__in=["booked", "confirmed", "issued"])
         for service in active:
-            # Этап 4: здесь вызывается provider adapter аннуляции.
             service.status = OrderService.Status.CANCELLED
             service.updated_by = user
             service.version += 1
@@ -30,7 +28,9 @@ def cancel_order_job(job: BackgroundJob) -> dict:
             cancelled_services.append(str(service.id))
 
     transition_order(
-        order_id=payload["order_id"], user=user, target_status=Order.Status.CANCELLED,
+        order_id=payload["order_id"],
+        user=user,
+        target_status=Order.Status.CANCELLED,
         reason=payload.get("reason", ""),
         expected_version=payload.get("expected_version"),
     )

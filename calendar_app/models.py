@@ -1,4 +1,3 @@
-"""Поездки, конфликты и календарь (ТЗ §7.4)."""
 from django.db import models
 
 from common.models import TenantModel
@@ -19,7 +18,7 @@ class Trip(TenantModel):
     starts_at = models.DateTimeField(null=True, blank=True)
     ends_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PLANNED)
-    criticality = models.CharField(max_length=8, default="normal")  # normal/attention/critical
+    criticality = models.CharField(max_length=8, default="normal")
     computed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -32,8 +31,8 @@ class TripConflict(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name="conflicts")
-    kind = models.CharField(max_length=32)  # overlap/connection/payment_overdue/missing_document/schedule_change
-    severity = models.CharField(max_length=8, default="warning")  # info/warning/critical
+    kind = models.CharField(max_length=32)
+    severity = models.CharField(max_length=8, default="warning")
     details = models.JSONField(default=dict, blank=True)
     detected_at = models.DateTimeField(auto_now_add=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
@@ -61,26 +60,36 @@ class CalendarEvent(TenantModel):
     starts_at = models.DateTimeField()
     ends_at = models.DateTimeField(null=True, blank=True)
     timezone = models.CharField(max_length=63, blank=True)
-    order = models.ForeignKey("orders.Order", null=True, blank=True,
-                              on_delete=models.CASCADE, related_name="calendar_events")
-    service = models.ForeignKey("services.OrderService", null=True, blank=True,
-                                on_delete=models.CASCADE, related_name="calendar_events")
-    person = models.ForeignKey("crm.Person", null=True, blank=True,
-                               on_delete=models.SET_NULL, related_name="+")
-    supplier = models.ForeignKey("suppliers.Supplier", null=True, blank=True,
-                                 on_delete=models.SET_NULL, related_name="+")
-    assignee = models.ForeignKey("accounts.User", null=True, blank=True,
-                                 on_delete=models.SET_NULL, related_name="calendar_events")
-    scope = models.CharField(max_length=16, default="personal")  # personal/team/tenant
+    order = models.ForeignKey(
+        "orders.Order", null=True, blank=True, on_delete=models.CASCADE, related_name="calendar_events"
+    )
+    service = models.ForeignKey(
+        "services.OrderService",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="calendar_events",
+    )
+    person = models.ForeignKey(
+        "crm.Person", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    supplier = models.ForeignKey(
+        "suppliers.Supplier", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    assignee = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="calendar_events"
+    )
+    scope = models.CharField(max_length=16, default="personal")
     priority = models.CharField(max_length=8, default="normal")
     notification_method = models.CharField(max_length=32, blank=True)
-    recurrence_rule = models.CharField(max_length=255, blank=True)  # RFC 5545 RRULE
-    criterion = models.CharField(max_length=255, blank=True)        # для control-событий
+    recurrence_rule = models.CharField(max_length=255, blank=True)
+    criterion = models.CharField(max_length=255, blank=True)
     action_on_problem = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.SCHEDULED)
     completed_at = models.DateTimeField(null=True, blank=True)
-    completed_by = models.ForeignKey("accounts.User", null=True, blank=True,
-                                     on_delete=models.SET_NULL, related_name="+")
+    completed_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         db_table = "calendar_event"
@@ -99,8 +108,9 @@ class CalendarEventOccurrence(models.Model):
     occurs_at = models.DateTimeField()
     status = models.CharField(max_length=10, default="scheduled")
     completed_at = models.DateTimeField(null=True, blank=True)
-    completed_by = models.ForeignKey("accounts.User", null=True, blank=True,
-                                     on_delete=models.SET_NULL, related_name="+")
+    completed_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         db_table = "calendar_event_occurrence"

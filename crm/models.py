@@ -1,4 +1,3 @@
-"""CRM: лица, клиенты, компании, договоры, сборы (ТЗ §6)."""
 from django.db import models
 
 from common.fields import EncryptedTextField
@@ -20,12 +19,12 @@ class Person(TenantModel):
     latin_given_name = models.CharField(max_length=100, blank=True)
     birth_date = models.DateField(null=True, blank=True)
     gender = models.CharField(max_length=6, choices=Gender.choices, blank=True)
-    citizenship = models.CharField(max_length=2, blank=True)  # ISO 3166-1 alpha-2
+    citizenship = models.CharField(max_length=2, blank=True)
     phone = models.CharField(max_length=32, blank=True)
     email = models.EmailField(blank=True)
     city = models.CharField(max_length=100, blank=True)
     preferred_language = models.CharField(max_length=8, blank=True)
-    preferred_channel = models.CharField(max_length=32, blank=True)  # phone/telegram/whatsapp/email
+    preferred_channel = models.CharField(max_length=32, blank=True)
     status = models.CharField(max_length=16, default="active")
     notes = models.TextField(blank=True)
 
@@ -72,12 +71,14 @@ class PersonDocument(TenantModel):
     issuing_country = models.CharField(max_length=2, blank=True)
     issuing_authority = models.CharField(max_length=255, blank=True)
     nationality = models.CharField(max_length=2, blank=True)
-    file = models.ForeignKey("documents.Document", null=True, blank=True,
-                             on_delete=models.PROTECT, related_name="+")
+    file = models.ForeignKey(
+        "documents.Document", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
     verified_at = models.DateTimeField(null=True, blank=True)
-    verified_by = models.ForeignKey("accounts.User", null=True, blank=True,
-                                    on_delete=models.SET_NULL, related_name="+")
-    status = models.CharField(max_length=16, default="active")  # active/expired/replaced
+    verified_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    status = models.CharField(max_length=16, default="active")
 
     class Meta:
         db_table = "crm_person_document"
@@ -100,7 +101,7 @@ class PersonDocument(TenantModel):
 
 class LoyaltyCard(TenantModel):
     person = models.ForeignKey(Person, on_delete=models.CASCADE, related_name="loyalty_cards")
-    program_type = models.CharField(max_length=32)  # airline/hotel/rail/other
+    program_type = models.CharField(max_length=32)
     provider = models.CharField(max_length=100)
     number = models.CharField(max_length=64)
     status = models.CharField(max_length=16, default="active")
@@ -111,8 +112,7 @@ class LoyaltyCard(TenantModel):
     class Meta:
         db_table = "crm_loyalty_card"
         constraints = [
-            models.UniqueConstraint(fields=["tenant", "provider", "number"],
-                                    name="uniq_loyalty_card"),
+            models.UniqueConstraint(fields=["tenant", "provider", "number"], name="uniq_loyalty_card"),
         ]
 
 
@@ -130,8 +130,9 @@ class ClientProfile(TenantModel):
     client_type = models.CharField(max_length=16, default="individual")
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.NEW)
     source = models.CharField(max_length=64, blank=True)
-    assigned_manager = models.ForeignKey("accounts.User", null=True, blank=True,
-                                         on_delete=models.SET_NULL, related_name="+")
+    assigned_manager = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         db_table = "crm_client_profile"
@@ -146,25 +147,25 @@ class Company(TenantModel):
 
     legal_name = models.CharField(max_length=255)
     short_name = models.CharField(max_length=150, blank=True)
-    type = models.CharField(max_length=32, blank=True)  # llc/jsc/ie/...
+    type = models.CharField(max_length=32, blank=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
-    tax_id = models.CharField(max_length=32, blank=True)  # ИНН
+    tax_id = models.CharField(max_length=32, blank=True)
     okpo = models.CharField(max_length=32, blank=True)
     vat_mode = models.CharField(max_length=32, blank=True)
     legal_address = models.TextField(blank=True)
     bank_name = models.CharField(max_length=255, blank=True)
-    bank_account = EncryptedTextField(blank=True)  # счёт/IBAN — шифруется
+    bank_account = EncryptedTextField(blank=True)
     director = models.CharField(max_length=255, blank=True)
     phone = models.CharField(max_length=32, blank=True)
     email = models.EmailField(blank=True)
     requires_e_sign = models.BooleanField(default=False)
-    assigned_manager = models.ForeignKey("accounts.User", null=True, blank=True,
-                                         on_delete=models.SET_NULL, related_name="+")
+    assigned_manager = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         db_table = "crm_company"
         constraints = [
-            # partial unique для неархивных компаний (ТЗ §30)
             models.UniqueConstraint(
                 fields=["tenant", "tax_id"],
                 condition=models.Q(archived_at__isnull=True) & ~models.Q(tax_id=""),
@@ -180,7 +181,7 @@ class Company(TenantModel):
 class CompanyContact(TenantModel):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="contacts")
     person = models.ForeignKey(Person, on_delete=models.PROTECT, related_name="company_contacts")
-    role = models.CharField(max_length=100, blank=True)  # директор, координатор, ...
+    role = models.CharField(max_length=100, blank=True)
     is_primary = models.BooleanField(default=False)
 
     class Meta:
@@ -193,10 +194,12 @@ class CompanyContact(TenantModel):
 class Department(TenantModel):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="departments")
     name = models.CharField(max_length=150)
-    parent = models.ForeignKey("self", null=True, blank=True, on_delete=models.CASCADE,
-                               related_name="children")
-    travel_policy = models.ForeignKey("travel_policy.TravelPolicy", null=True, blank=True,
-                                      on_delete=models.SET_NULL, related_name="+")
+    parent = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.CASCADE, related_name="children"
+    )
+    travel_policy = models.ForeignKey(
+        "travel_policy.TravelPolicy", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         db_table = "crm_department"
@@ -206,8 +209,9 @@ class Employee(TenantModel):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="employees")
     person = models.ForeignKey(Person, on_delete=models.PROTECT, related_name="employments")
     personnel_number = models.CharField(max_length=32, blank=True)
-    department = models.ForeignKey(Department, null=True, blank=True, on_delete=models.SET_NULL,
-                                   related_name="employees")
+    department = models.ForeignKey(
+        Department, null=True, blank=True, on_delete=models.SET_NULL, related_name="employees"
+    )
     position = models.CharField(max_length=150, blank=True)
     status = models.CharField(max_length=16, default="active")
 
@@ -228,15 +232,15 @@ class Contract(TenantModel):
     signed_at = models.DateField(null=True, blank=True)
     starts_at = models.DateField(null=True, blank=True)
     ends_at = models.DateField(null=True, blank=True)
-    status = models.CharField(max_length=16, default="draft")  # draft/active/expired/terminated
-    file = models.ForeignKey("documents.Document", null=True, blank=True,
-                             on_delete=models.PROTECT, related_name="+")
+    status = models.CharField(max_length=16, default="draft")
+    file = models.ForeignKey(
+        "documents.Document", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
 
     class Meta:
         db_table = "crm_contract"
         constraints = [
-            models.UniqueConstraint(fields=["tenant", "company", "number"],
-                                    name="uniq_contract_number"),
+            models.UniqueConstraint(fields=["tenant", "company", "number"], name="uniq_contract_number"),
         ]
 
 
@@ -247,19 +251,19 @@ class Agreement(TenantModel):
     contract = models.ForeignKey(Contract, on_delete=models.PROTECT, related_name="agreements")
     number = models.CharField(max_length=64)
     agreement_version = models.PositiveIntegerField(default=1)
-    status = models.CharField(max_length=16, default="draft")  # draft/active/superseded/expired
+    status = models.CharField(max_length=16, default="draft")
     effective_from = models.DateField(null=True, blank=True)
     effective_to = models.DateField(null=True, blank=True)
-    fee_template = models.ForeignKey("crm.FeeTemplate", null=True, blank=True,
-                                     on_delete=models.PROTECT, related_name="+")
+    fee_template = models.ForeignKey(
+        "crm.FeeTemplate", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
     service_descriptions = models.JSONField(default=list, blank=True)
     fee_descriptions = models.JSONField(default=list, blank=True)
 
     class Meta:
         db_table = "crm_agreement"
         constraints = [
-            models.UniqueConstraint(fields=["contract", "agreement_version"],
-                                    name="uniq_agreement_version"),
+            models.UniqueConstraint(fields=["contract", "agreement_version"], name="uniq_agreement_version"),
         ]
 
 
@@ -282,7 +286,6 @@ class SettlementProfile(TenantModel):
     class Meta:
         db_table = "crm_settlement_profile"
         constraints = [
-            # депозитный резерв не превышает баланс, кроме audited override (ТЗ §30)
             models.CheckConstraint(
                 condition=models.Q(deposit_reserved__lte=models.F("deposit_balance"))
                 | models.Q(mode__in=["prepayment", "credit"]),
@@ -316,15 +319,17 @@ class FeeRule(TenantModel):
         FIXED = "fixed"
         PERCENT = "percent"
 
-    template = models.ForeignKey(FeeTemplate, null=True, blank=True, on_delete=models.CASCADE,
-                                 related_name="rules")
-    agreement = models.ForeignKey(Agreement, null=True, blank=True, on_delete=models.CASCADE,
-                                  related_name="fee_rules")
-    service_kind = models.CharField(max_length=32)  # avia/rail/hotel/... или "*"
+    template = models.ForeignKey(
+        FeeTemplate, null=True, blank=True, on_delete=models.CASCADE, related_name="rules"
+    )
+    agreement = models.ForeignKey(
+        Agreement, null=True, blank=True, on_delete=models.CASCADE, related_name="fee_rules"
+    )
+    service_kind = models.CharField(max_length=32)
     fee_kind = models.CharField(max_length=10, choices=FeeKind.choices)
     calculation = models.CharField(max_length=8, choices=Calculation.choices)
     value = models.DecimalField(max_digits=12, decimal_places=4)
-    currency = models.CharField(max_length=3, blank=True)  # обязательна для fixed
+    currency = models.CharField(max_length=3, blank=True)
     description = models.CharField(max_length=255, blank=True)
 
     class Meta:

@@ -1,6 +1,3 @@
-"""Организация-владелец CRM. Архитектура tenant-ready: все бизнес-модели
-ссылаются на Organization, queryset-ы фильтруются по текущему tenant.
-"""
 import uuid
 
 from django.db import models

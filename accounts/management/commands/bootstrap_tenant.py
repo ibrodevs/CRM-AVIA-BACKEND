@@ -1,11 +1,3 @@
-"""Создаёт организацию, системные роли и администратора.
-
-    python manage.py bootstrap_tenant --org "Travel Hub" --slug travelhub \
-        --admin-email admin@example.com --admin-password '...'
-
-Команда идемпотентна: повторный запуск обновляет наполнение системных ролей
-из каталога, не трогая пользовательские роли.
-"""
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
@@ -17,7 +9,8 @@ from tenancy.models import Organization
 def sync_system_roles(tenant: Organization) -> None:
     for code, spec in SYSTEM_ROLES.items():
         role, _ = Role.objects.get_or_create(
-            tenant=tenant, code=code,
+            tenant=tenant,
+            code=code,
             defaults={"name": spec["name"], "is_system": True},
         )
         existing = set(role.permissions.values_list("permission_code", flat=True))
@@ -55,8 +48,11 @@ class Command(BaseCommand):
                 if not password:
                     raise CommandError("--admin-password обязателен при создании администратора")
                 user = User.objects.create_user(
-                    email=email, password=password, tenant=tenant,
-                    status=User.Status.ACTIVE, is_staff=True,
+                    email=email,
+                    password=password,
+                    tenant=tenant,
+                    status=User.Status.ACTIVE,
+                    is_staff=True,
                     first_name="Администратор",
                 )
                 self.stdout.write(f"Администратор создан: {email}")

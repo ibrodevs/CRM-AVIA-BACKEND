@@ -1,9 +1,3 @@
-"""Устанавливает tenant-контекст из аутентифицированного пользователя.
-
-DRF аутентифицирует пользователя позже middleware, поэтому для API-запросов
-tenant дополнительно проставляется в accounts.authentication после проверки
-JWT. Здесь покрывается session-auth (Django admin) и сброс контекста.
-"""
 from .context import set_current_tenant_id
 
 

@@ -16,9 +16,7 @@ class TestLogin:
         assert UserSession.objects.filter(user=admin_user, revoked_at__isnull=True).count() == 1
 
     def test_login_wrong_password(self, admin_user):
-        response = APIClient().post(
-            "/api/v1/auth/login/", {"login": admin_user.email, "password": "wrong"}
-        )
+        response = APIClient().post("/api/v1/auth/login/", {"login": admin_user.email, "password": "wrong"})
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "INVALID_CREDENTIALS"
 
@@ -41,9 +39,7 @@ class TestLogin:
         assert response.json()["error"]["code"] == "TOO_MANY_LOGIN_ATTEMPTS"
 
     def test_error_contract_shape(self, admin_user):
-        response = APIClient().post(
-            "/api/v1/auth/login/", {"login": admin_user.email, "password": "wrong"}
-        )
+        response = APIClient().post("/api/v1/auth/login/", {"login": admin_user.email, "password": "wrong"})
         body = response.json()["error"]
         assert set(body) == {"code", "message", "fields", "details", "request_id"}
 
@@ -51,8 +47,7 @@ class TestLogin:
 class TestTwoFactor:
     def test_2fa_flow(self, admin_user):
         secret = pyotp.random_base32()
-        TwoFactorConfig.objects.create(user=admin_user, totp_secret=secret,
-                                       confirmed_at=timezone.now())
+        TwoFactorConfig.objects.create(user=admin_user, totp_secret=secret, confirmed_at=timezone.now())
         client = APIClient()
         response = client.post(
             "/api/v1/auth/login/", {"login": admin_user.email, "password": "Str0ng-Pass-123!"}
@@ -61,20 +56,15 @@ class TestTwoFactor:
         assert body["two_factor_required"] is True
         challenge = body["challenge_token"]
 
-        # challenge token не даёт доступ к API
         client.credentials(HTTP_AUTHORIZATION=f"Bearer {challenge}")
         assert client.get("/api/v1/me/").status_code == 401
         client.credentials()
 
-        # неверный код
-        response = client.post("/api/v1/auth/2fa/verify/",
-                               {"challenge_token": challenge, "code": "000000"})
+        response = client.post("/api/v1/auth/2fa/verify/", {"challenge_token": challenge, "code": "000000"})
         assert response.status_code == 401
 
-        # верный код
         code = pyotp.TOTP(secret).now()
-        response = client.post("/api/v1/auth/2fa/verify/",
-                               {"challenge_token": challenge, "code": code})
+        response = client.post("/api/v1/auth/2fa/verify/", {"challenge_token": challenge, "code": code})
         assert response.status_code == 200
         assert "access" in response.json()
 
@@ -86,10 +76,10 @@ class TestSessions:
         response = client.post("/api/v1/auth/token/refresh/", {"refresh": tokens["refresh"]})
         assert response.status_code == 200
         new_tokens = response.json()
-        # старый refresh отозван
+
         response = client.post("/api/v1/auth/token/refresh/", {"refresh": tokens["refresh"]})
         assert response.status_code == 401
-        # новый работает
+
         response = client.post("/api/v1/auth/token/refresh/", {"refresh": new_tokens["refresh"]})
         assert response.status_code == 200
 
@@ -110,7 +100,7 @@ class TestSessions:
 
     def test_sessions_list_and_delete(self, admin_user):
         client = auth_client(admin_user)
-        auth_client(admin_user)  # вторая сессия
+        auth_client(admin_user)
         response = client.get("/api/v1/auth/sessions/")
         assert response.status_code == 200
         results = response.json()["results"]
@@ -124,25 +114,30 @@ class TestPassword:
     def test_change_password_revokes_other_sessions(self, admin_user):
         other = auth_client(admin_user)
         client = auth_client(admin_user)
-        response = client.post("/api/v1/auth/password/change/", {
-            "current_password": "Str0ng-Pass-123!",
-            "new_password": "N3w-Strong-Pass-456!",
-        })
+        response = client.post(
+            "/api/v1/auth/password/change/",
+            {
+                "current_password": "Str0ng-Pass-123!",
+                "new_password": "N3w-Strong-Pass-456!",
+            },
+        )
         assert response.status_code == 204
         assert other.get("/api/v1/me/").status_code == 401
         assert client.get("/api/v1/me/").status_code == 200
         login(APIClient(), admin_user.email, "N3w-Strong-Pass-456!")
 
     def test_reset_request_does_not_reveal_account(self, db):
-        response = APIClient().post("/api/v1/auth/password/reset/request/",
-                                    {"email": "nobody@nowhere.test"})
+        response = APIClient().post("/api/v1/auth/password/reset/request/", {"email": "nobody@nowhere.test"})
         assert response.status_code == 200
 
     def test_weak_password_rejected(self, admin_user):
         client = auth_client(admin_user)
-        response = client.post("/api/v1/auth/password/change/", {
-            "current_password": "Str0ng-Pass-123!",
-            "new_password": "123",
-        })
+        response = client.post(
+            "/api/v1/auth/password/change/",
+            {
+                "current_password": "Str0ng-Pass-123!",
+                "new_password": "123",
+            },
+        )
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "WEAK_PASSWORD"

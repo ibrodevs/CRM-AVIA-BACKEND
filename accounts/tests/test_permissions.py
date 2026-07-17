@@ -21,7 +21,7 @@ class TestRBAC:
         codes = user_permission_codes(accountant_user)
         assert "finance.approve_payment" in codes
         assert "services.book" not in codes
-        # бухгалтер не видит полные паспортные данные без отдельного права
+
         assert "crm.view_person_documents" not in codes
 
     def test_manager_cannot_pay_or_refund(self, manager_user):

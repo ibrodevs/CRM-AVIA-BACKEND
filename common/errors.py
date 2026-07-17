@@ -1,15 +1,3 @@
-"""Единый контракт ошибок API (ТЗ §4.2).
-
-{
-  "error": {
-    "code": "ORDER_STATUS_TRANSITION_FORBIDDEN",
-    "message": "...",
-    "fields": {...},
-    "details": {...},
-    "request_id": "..."
-  }
-}
-"""
 import logging
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
@@ -27,9 +15,14 @@ class ApiError(exceptions.APIException):
     status_code = status.HTTP_400_BAD_REQUEST
     default_code = "BAD_REQUEST"
 
-    def __init__(self, code: str | None = None, message: str | None = None,
-                 fields: dict | None = None, details: dict | None = None,
-                 status_code: int | None = None):
+    def __init__(
+        self,
+        code: str | None = None,
+        message: str | None = None,
+        fields: dict | None = None,
+        details: dict | None = None,
+        status_code: int | None = None,
+    ):
         self.code = code or self.default_code
         self.message = message or self.default_detail if hasattr(self, "default_detail") else (message or "")
         self.fields = fields or {}
@@ -151,7 +144,6 @@ def api_exception_handler(exc, context):
         message = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
         return Response(_error_body(code, message, None, None, request), status=exc.status_code)
 
-    # Неожиданная ошибка: логируем с request_id, наружу — без деталей.
     logger.exception("unhandled exception", extra={"request_id": getattr(request, "request_id", None)})
     set_rollback()
     return Response(

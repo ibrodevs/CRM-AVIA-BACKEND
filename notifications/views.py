@@ -1,6 +1,6 @@
-"""Notifications API (ТЗ §18)."""
 from django.utils import timezone
-from rest_framework import serializers, status as http
+from rest_framework import serializers
+from rest_framework import status as http
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,9 +14,21 @@ from notifications.models import Notification, NotificationRule
 class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
-        fields = ["id", "priority", "source", "event_type", "title", "body",
-                  "resource_type", "resource_id", "deep_link", "read_at", "pinned_at",
-                  "dismissed_at", "created_at"]
+        fields = [
+            "id",
+            "priority",
+            "source",
+            "event_type",
+            "title",
+            "body",
+            "resource_type",
+            "resource_id",
+            "deep_link",
+            "read_at",
+            "pinned_at",
+            "dismissed_at",
+            "created_at",
+        ]
 
 
 def _my_notifications(request):
@@ -37,10 +49,10 @@ class NotificationListView(GenericAPIView):
             qs = qs.filter(source=source)
         qs = qs.order_by("-pinned_at", "-created_at")
         page = self.paginate_queryset(qs)
-        response = self.get_paginated_response(
-            NotificationSerializer(page, many=True).data)
-        response.data["unread_count"] = _my_notifications(request).filter(
-            read_at__isnull=True, dismissed_at__isnull=True).count()
+        response = self.get_paginated_response(NotificationSerializer(page, many=True).data)
+        response.data["unread_count"] = (
+            _my_notifications(request).filter(read_at__isnull=True, dismissed_at__isnull=True).count()
+        )
         return response
 
 
@@ -78,16 +90,17 @@ class NotificationDismissView(APIView):
 
 class NotificationReadAllView(APIView):
     def post(self, request):
-        count = _my_notifications(request).filter(read_at__isnull=True).update(
-            read_at=timezone.now())
+        count = _my_notifications(request).filter(read_at__isnull=True).update(read_at=timezone.now())
         return Response({"read": count})
 
 
 class NotificationDismissReadView(APIView):
     def post(self, request):
-        count = _my_notifications(request).filter(
-            read_at__isnull=False, dismissed_at__isnull=True
-        ).update(dismissed_at=timezone.now())
+        count = (
+            _my_notifications(request)
+            .filter(read_at__isnull=False, dismissed_at__isnull=True)
+            .update(dismissed_at=timezone.now())
+        )
         return Response({"dismissed": count})
 
 
@@ -95,14 +108,21 @@ class NotificationRulesView(APIView):
     permission_classes = [require("settings.manage")]
 
     def get(self, request):
-        rules = NotificationRule.objects.filter(tenant_id=request.user.tenant_id,
-                                                archived_at__isnull=True)
-        return Response([
-            {"id": str(r.id), "event_type": r.event_type, "name": r.name,
-             "priority": r.priority, "recipients": r.recipients,
-             "channels": r.channels, "is_active": r.is_active}
-            for r in rules
-        ])
+        rules = NotificationRule.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
+        return Response(
+            [
+                {
+                    "id": str(r.id),
+                    "event_type": r.event_type,
+                    "name": r.name,
+                    "priority": r.priority,
+                    "recipients": r.recipients,
+                    "channels": r.channels,
+                    "is_active": r.is_active,
+                }
+                for r in rules
+            ]
+        )
 
     def post(self, request):
         rule = NotificationRule.objects.create(

@@ -1,11 +1,3 @@
-"""Реестр provider adapters (ТЗ §1.1, §13).
-
-Каждый внешний поставщик закрывается адаптером с единым интерфейсом.
-Пока реальный провайдер не выбран, используется MockAdapter с тем же
-интерфейсом, идемпотентностью, логами запросов и моделированием ошибок.
-Provider-specific JSON не попадает в основные бизнес-модели — только в
-provider_snapshot/raw_snapshot.
-"""
 import hashlib
 import json
 import time
@@ -20,11 +12,18 @@ from integrations.models import IntegrationLog
 class AdapterError(Exception):
     """Нормализованная ошибка адаптера (категории — ТЗ §13)."""
 
-    def __init__(self, code: str, message: str = "", *, category: str = "internal",
-                 retry_safe: bool = False, raw: str = ""):
+    def __init__(
+        self,
+        code: str,
+        message: str = "",
+        *,
+        category: str = "internal",
+        retry_safe: bool = False,
+        raw: str = "",
+    ):
         super().__init__(message or code)
         self.code = code
-        self.category = category  # auth/timeout/availability/passenger/issue_unknown/payment/sync/internal
+        self.category = category
         self.retry_safe = retry_safe
         self.raw = raw
 
@@ -73,11 +72,18 @@ class ProviderAdapter:
     def refund_quote(self, ctx: AdapterContext, request: dict) -> dict:
         raise NotImplementedError
 
-    # --- журналирование ---------------------------------------------------
-
-    def _log(self, ctx: AdapterContext, operation: str, request: dict, response: dict | None,
-             *, result: str, error_code: str = "", duration_ms: int = 0,
-             http_status: int | None = 200) -> IntegrationLog:
+    def _log(
+        self,
+        ctx: AdapterContext,
+        operation: str,
+        request: dict,
+        response: dict | None,
+        *,
+        result: str,
+        error_code: str = "",
+        duration_ms: int = 0,
+        http_status: int | None = 200,
+    ) -> IntegrationLog:
         return IntegrationLog.objects.create(
             tenant_id=ctx.tenant_id,
             correlation_id=ctx.correlation_id,
@@ -107,10 +113,21 @@ class MockAdapter(ProviderAdapter):
     """
 
     key = "mock"
-    supported_kinds = ["avia", "rail", "hotel", "transfer", "bus", "tour",
-                       "aeroexpress", "lounge", "insurance", "visa", "other"]
+    supported_kinds = [
+        "avia",
+        "rail",
+        "hotel",
+        "transfer",
+        "bus",
+        "tour",
+        "aeroexpress",
+        "lounge",
+        "insurance",
+        "visa",
+        "other",
+    ]
 
-    _bookings: dict[str, dict] = {}  # in-memory состояние sandbox
+    _bookings: dict[str, dict] = {}
 
     def search(self, ctx: AdapterContext, kind: str, criteria: dict) -> list[dict]:
         started = time.monotonic()
@@ -118,25 +135,38 @@ class MockAdapter(ProviderAdapter):
         if mock.get("delay_ms"):
             time.sleep(mock["delay_ms"] / 1000)
         if fail := mock.get("fail"):
-            self._log(ctx, "search", criteria, None, result="error", error_code=fail.upper(),
-                      http_status=None)
-            raise AdapterError(fail.upper(), f"Mock failure: {fail}",
-                               category=fail, retry_safe=fail == "timeout")
+            self._log(
+                ctx, "search", criteria, None, result="error", error_code=fail.upper(), http_status=None
+            )
+            raise AdapterError(
+                fail.upper(), f"Mock failure: {fail}", category=fail, retry_safe=fail == "timeout"
+            )
         count = int(mock.get("offers", 3))
         offers = [self._make_offer(kind, criteria, index) for index in range(count)]
-        self._log(ctx, "search", criteria, {"offers_count": len(offers)},
-                  result="success", duration_ms=int((time.monotonic() - started) * 1000))
+        self._log(
+            ctx,
+            "search",
+            criteria,
+            {"offers_count": len(offers)},
+            result="success",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
         return offers
 
     def _make_offer(self, kind: str, criteria: dict, index: int) -> dict:
         seed = hashlib.sha256(
-            json.dumps({"kind": kind, "criteria": {k: v for k, v in criteria.items()
-                                                   if k != "_mock"}, "i": index},
-                       sort_keys=True, default=str).encode()
+            json.dumps(
+                {"kind": kind, "criteria": {k: v for k, v in criteria.items() if k != "_mock"}, "i": index},
+                sort_keys=True,
+                default=str,
+            ).encode()
         ).hexdigest()
         base_price = Decimal(150 + (int(seed[:6], 16) % 600) + index * 40)
-        departure = datetime.fromisoformat(str(criteria.get("date", "2026-08-01"))) \
-            if criteria.get("date") else datetime(2026, 8, 1)
+        departure = (
+            datetime.fromisoformat(str(criteria.get("date", "2026-08-01")))
+            if criteria.get("date")
+            else datetime(2026, 8, 1)
+        )
         offer = {
             "external_key": f"MOCK-{seed[:12].upper()}",
             "kind": kind,
@@ -146,15 +176,17 @@ class MockAdapter(ProviderAdapter):
         }
         if kind == "avia":
             offer["itinerary"] = {
-                "segments": [{
-                    "origin": criteria.get("origin", "FRU"),
-                    "destination": criteria.get("destination", "IST"),
-                    "departure": (departure + timedelta(hours=8 + index * 3)).isoformat(),
-                    "arrival": (departure + timedelta(hours=13 + index * 3)).isoformat(),
-                    "airline": ["TK", "PC", "J2"][index % 3],
-                    "flight_number": f"{100 + index}",
-                    "cabin": criteria.get("cabin", "economy"),
-                }],
+                "segments": [
+                    {
+                        "origin": criteria.get("origin", "FRU"),
+                        "destination": criteria.get("destination", "IST"),
+                        "departure": (departure + timedelta(hours=8 + index * 3)).isoformat(),
+                        "arrival": (departure + timedelta(hours=13 + index * 3)).isoformat(),
+                        "airline": ["TK", "PC", "J2"][index % 3],
+                        "flight_number": f"{100 + index}",
+                        "cabin": criteria.get("cabin", "economy"),
+                    }
+                ],
             }
             offer["fare"] = {
                 "cabin": criteria.get("cabin", "economy"),
@@ -173,32 +205,40 @@ class MockAdapter(ProviderAdapter):
                 "meal_plan": ["RO", "BB", "HB"][index % 3],
             }
         else:
-            offer["itinerary"] = {"description": f"Mock {kind} option {index + 1}",
-                                  **{k: v for k, v in criteria.items() if k != "_mock"}}
+            offer["itinerary"] = {
+                "description": f"Mock {kind} option {index + 1}",
+                **{k: v for k, v in criteria.items() if k != "_mock"},
+            }
         return offer
 
     def revalidate(self, ctx: AdapterContext, offer_snapshot: dict) -> dict:
-        self._log(ctx, "revalidate", {"external_key": offer_snapshot.get("external_key")},
-                  {"status": "valid"}, result="success")
+        self._log(
+            ctx,
+            "revalidate",
+            {"external_key": offer_snapshot.get("external_key")},
+            {"status": "valid"},
+            result="success",
+        )
         return {"status": "valid", "price": offer_snapshot.get("price")}
 
     def fare_rules(self, ctx: AdapterContext, offer_snapshot: dict) -> dict:
-        rules = {"refund": "Возврат до вылета со штрафом 25%",
-                 "exchange": "Обмен разрешён со сбором 30 USD",
-                 "no_show": "No-show: возврат запрещён"}
-        self._log(ctx, "fare_rules", {"external_key": offer_snapshot.get("external_key")},
-                  rules, result="success")
+        rules = {
+            "refund": "Возврат до вылета со штрафом 25%",
+            "exchange": "Обмен разрешён со сбором 30 USD",
+            "no_show": "No-show: возврат запрещён",
+        }
+        self._log(
+            ctx, "fare_rules", {"external_key": offer_snapshot.get("external_key")}, rules, result="success"
+        )
         return rules
 
     def book(self, ctx: AdapterContext, booking_request: dict) -> dict:
         client_ref = booking_request.get("client_request_id", "")
         if client_ref and client_ref in self._bookings:
-            return self._bookings[client_ref]  # идемпотентность по client request id
+            return self._bookings[client_ref]
         if booking_request.get("_mock", {}).get("fail") == "availability":
-            self._log(ctx, "book", booking_request, None, result="error",
-                      error_code="AVAILABILITY_CONFLICT")
-            raise AdapterError("AVAILABILITY_CONFLICT", "Мест больше нет",
-                               category="availability")
+            self._log(ctx, "book", booking_request, None, result="error", error_code="AVAILABILITY_CONFLICT")
+            raise AdapterError("AVAILABILITY_CONFLICT", "Мест больше нет", category="availability")
         locator = f"MK{uuid.uuid4().hex[:6].upper()}"
         result = {
             "locator": locator,
@@ -214,16 +254,30 @@ class MockAdapter(ProviderAdapter):
     def retrieve_booking(self, ctx: AdapterContext, locator: str) -> dict:
         booking = self._bookings.get(locator)
         if booking is None:
-            self._log(ctx, "retrieve", {"locator": locator}, None, result="error",
-                      error_code="NOT_FOUND", http_status=404)
+            self._log(
+                ctx,
+                "retrieve",
+                {"locator": locator},
+                None,
+                result="error",
+                error_code="NOT_FOUND",
+                http_status=404,
+            )
             raise AdapterError("BOOKING_NOT_FOUND", category="sync")
         self._log(ctx, "retrieve", {"locator": locator}, booking, result="success")
         return booking
 
     def issue(self, ctx: AdapterContext, issue_request: dict) -> dict:
         if issue_request.get("_mock", {}).get("fail") == "timeout":
-            self._log(ctx, "issue", issue_request, None, result="unknown",
-                      error_code="ISSUE_UNKNOWN", http_status=None)
+            self._log(
+                ctx,
+                "issue",
+                issue_request,
+                None,
+                result="unknown",
+                error_code="ISSUE_UNKNOWN",
+                http_status=None,
+            )
             raise AmbiguousResultError()
         locator = issue_request.get("locator", "")
         tickets = [
@@ -246,8 +300,11 @@ class MockAdapter(ProviderAdapter):
     def refund_quote(self, ctx: AdapterContext, request: dict) -> dict:
         paid = Decimal(str(request.get("paid_amount", "0")))
         penalty = (paid * Decimal("0.25")).quantize(Decimal("0.01"))
-        result = {"penalty": str(penalty), "currency": request.get("currency", "USD"),
-                  "refundable": str(paid - penalty)}
+        result = {
+            "penalty": str(penalty),
+            "currency": request.get("currency", "USD"),
+            "refundable": str(paid - penalty),
+        }
         self._log(ctx, "refund_quote", request, result, result="success")
         return result
 

@@ -1,4 +1,3 @@
-"""Заказы: контейнер клиента, участников, маршрута, услуг и финансов (ТЗ §7)."""
 from django.db import models, transaction
 
 from common.models import TenantModel
@@ -7,8 +6,9 @@ from common.models import TenantModel
 class OrderNumberCounter(models.Model):
     """Счётчик номеров заказов под транзакционной блокировкой (ТЗ §2.1: не max+1)."""
 
-    tenant = models.OneToOneField("tenancy.Organization", primary_key=True,
-                                  on_delete=models.CASCADE, related_name="+")
+    tenant = models.OneToOneField(
+        "tenancy.Organization", primary_key=True, on_delete=models.CASCADE, related_name="+"
+    )
     last_value = models.PositiveIntegerField(default=0)
 
     class Meta:
@@ -57,25 +57,31 @@ class Order(TenantModel):
         URGENT = "urgent"
 
     number = models.CharField(max_length=20)
-    request_type = models.CharField(max_length=12, choices=RequestType.choices,
-                                    default=RequestType.INDIVIDUAL)
-    client_person = models.ForeignKey("crm.Person", null=True, blank=True,
-                                      on_delete=models.PROTECT, related_name="orders")
-    client_company = models.ForeignKey("crm.Company", null=True, blank=True,
-                                       on_delete=models.PROTECT, related_name="orders")
-    contact_person = models.ForeignKey("crm.Person", null=True, blank=True,
-                                       on_delete=models.PROTECT, related_name="+")
+    request_type = models.CharField(
+        max_length=12, choices=RequestType.choices, default=RequestType.INDIVIDUAL
+    )
+    client_person = models.ForeignKey(
+        "crm.Person", null=True, blank=True, on_delete=models.PROTECT, related_name="orders"
+    )
+    client_company = models.ForeignKey(
+        "crm.Company", null=True, blank=True, on_delete=models.PROTECT, related_name="orders"
+    )
+    contact_person = models.ForeignKey(
+        "crm.Person", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.NEW)
     stage = models.CharField(max_length=20, choices=Stage.choices, default=Stage.CREATED)
     priority = models.CharField(max_length=8, choices=Priority.choices, default=Priority.NORMAL)
-    operator = models.ForeignKey("accounts.User", null=True, blank=True,
-                                 on_delete=models.PROTECT, related_name="assigned_orders")
-    source = models.CharField(max_length=32, blank=True)  # phone/telegram/walk_in/...
+    operator = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.PROTECT, related_name="assigned_orders"
+    )
+    source = models.CharField(max_length=32, blank=True)
     preferred_channel = models.CharField(max_length=32, blank=True)
     base_currency = models.CharField(max_length=3, default="USD")
-    agreement = models.ForeignKey("crm.Agreement", null=True, blank=True,
-                                  on_delete=models.PROTECT, related_name="orders")
-    agreement_snapshot = models.JSONField(null=True, blank=True)  # условия на момент создания
+    agreement = models.ForeignKey(
+        "crm.Agreement", null=True, blank=True, on_delete=models.PROTECT, related_name="orders"
+    )
+    agreement_snapshot = models.JSONField(null=True, blank=True)
     planned_start = models.DateField(null=True, blank=True)
     planned_end = models.DateField(null=True, blank=True)
     purpose = models.CharField(max_length=255, blank=True)
@@ -88,7 +94,6 @@ class Order(TenantModel):
         db_table = "orders_order"
         constraints = [
             models.UniqueConstraint(fields=["tenant", "number"], name="uniq_order_number"),
-            # клиент: физлицо XOR компания
             models.CheckConstraint(
                 condition=(
                     models.Q(client_person__isnull=False, client_company__isnull=True)
@@ -108,24 +113,38 @@ class Order(TenantModel):
         return self.number
 
 
-# Допустимые переходы статусной машины заказа (ТЗ §7.2).
 ORDER_TRANSITIONS: dict[str, set[str]] = {
-    Order.Status.NEW: {Order.Status.IN_PROGRESS, Order.Status.DATA_MISSING,
-                       Order.Status.CANCELLED, Order.Status.ON_HOLD},
-    Order.Status.IN_PROGRESS: {Order.Status.AWAITING_CONFIRMATION, Order.Status.NEEDS_REVIEW,
-                               Order.Status.DATA_MISSING, Order.Status.ON_HOLD,
-                               Order.Status.CANCELLED},
-    Order.Status.AWAITING_CONFIRMATION: {Order.Status.AWAITING_PAYMENT, Order.Status.IN_PROGRESS,
-                                         Order.Status.NEEDS_REVIEW, Order.Status.ON_HOLD,
-                                         Order.Status.CANCELLED},
-    Order.Status.AWAITING_PAYMENT: {Order.Status.PAID, Order.Status.IN_PROGRESS,
-                                    Order.Status.ON_HOLD, Order.Status.CANCELLED},
+    Order.Status.NEW: {
+        Order.Status.IN_PROGRESS,
+        Order.Status.DATA_MISSING,
+        Order.Status.CANCELLED,
+        Order.Status.ON_HOLD,
+    },
+    Order.Status.IN_PROGRESS: {
+        Order.Status.AWAITING_CONFIRMATION,
+        Order.Status.NEEDS_REVIEW,
+        Order.Status.DATA_MISSING,
+        Order.Status.ON_HOLD,
+        Order.Status.CANCELLED,
+    },
+    Order.Status.AWAITING_CONFIRMATION: {
+        Order.Status.AWAITING_PAYMENT,
+        Order.Status.IN_PROGRESS,
+        Order.Status.NEEDS_REVIEW,
+        Order.Status.ON_HOLD,
+        Order.Status.CANCELLED,
+    },
+    Order.Status.AWAITING_PAYMENT: {
+        Order.Status.PAID,
+        Order.Status.IN_PROGRESS,
+        Order.Status.ON_HOLD,
+        Order.Status.CANCELLED,
+    },
     Order.Status.PAID: {Order.Status.COMPLETED, Order.Status.NEEDS_REVIEW},
-    Order.Status.COMPLETED: set(),   # откат — только админом с причиной
-    Order.Status.NEEDS_REVIEW: {Order.Status.IN_PROGRESS, Order.Status.ON_HOLD,
-                                Order.Status.CANCELLED},
+    Order.Status.COMPLETED: set(),
+    Order.Status.NEEDS_REVIEW: {Order.Status.IN_PROGRESS, Order.Status.ON_HOLD, Order.Status.CANCELLED},
     Order.Status.ON_HOLD: {Order.Status.IN_PROGRESS, Order.Status.CANCELLED},
-    Order.Status.CANCELLED: set(),   # откат — только админом с причиной
+    Order.Status.CANCELLED: set(),
     Order.Status.DATA_MISSING: {Order.Status.IN_PROGRESS, Order.Status.CANCELLED},
 }
 
@@ -142,22 +161,23 @@ class OrderParticipant(TenantModel):
         OTHER = "other"
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="participants")
-    person = models.ForeignKey("crm.Person", null=True, blank=True,
-                               on_delete=models.PROTECT, related_name="participations")
-    guest_snapshot = models.JSONField(null=True, blank=True)  # если person отсутствует
+    person = models.ForeignKey(
+        "crm.Person", null=True, blank=True, on_delete=models.PROTECT, related_name="participations"
+    )
+    guest_snapshot = models.JSONField(null=True, blank=True)
     role = models.CharField(max_length=10, choices=Role.choices, default=Role.PASSENGER)
     group_name = models.CharField(max_length=100, blank=True)
     subgroup_name = models.CharField(max_length=100, blank=True)
     is_contact = models.BooleanField(default=False)
-    booking_document = models.ForeignKey("crm.PersonDocument", null=True, blank=True,
-                                         on_delete=models.PROTECT, related_name="+")
-    status = models.CharField(max_length=16, default="active")  # active/removed
+    booking_document = models.ForeignKey(
+        "crm.PersonDocument", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    status = models.CharField(max_length=16, default="active")
     notes = models.TextField(blank=True)
 
     class Meta:
         db_table = "orders_participant"
         constraints = [
-            # один active participant на order+person (ТЗ §30)
             models.UniqueConstraint(
                 fields=["order", "person"],
                 condition=models.Q(status="active") & models.Q(person__isnull=False),
@@ -186,8 +206,8 @@ class Route(TenantModel):
 class RoutePoint(TenantModel):
     route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name="points")
     sequence = models.PositiveSmallIntegerField()
-    location_code = models.CharField(max_length=8)   # IATA/станция/город
-    location_type = models.CharField(max_length=16, default="city")  # airport/city/station/hotel
+    location_code = models.CharField(max_length=8)
+    location_type = models.CharField(max_length=16, default="city")
     location_name = models.CharField(max_length=150, blank=True)
     local_datetime = models.DateTimeField(null=True, blank=True)
     timezone = models.CharField(max_length=63, blank=True)
@@ -210,8 +230,9 @@ class OrderStatusHistory(models.Model):
     from_stage = models.CharField(max_length=20, blank=True)
     to_stage = models.CharField(max_length=20, blank=True)
     reason = models.TextField(blank=True)
-    changed_by = models.ForeignKey("accounts.User", null=True, blank=True,
-                                   on_delete=models.SET_NULL, related_name="+")
+    changed_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     changed_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -224,12 +245,14 @@ class OrderReassignment(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="reassignments")
-    previous_operator = models.ForeignKey("accounts.User", null=True, blank=True,
-                                          on_delete=models.SET_NULL, related_name="+")
+    previous_operator = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     new_operator = models.ForeignKey("accounts.User", on_delete=models.PROTECT, related_name="+")
     reason = models.TextField(blank=True)
-    reassigned_by = models.ForeignKey("accounts.User", null=True, blank=True,
-                                      on_delete=models.SET_NULL, related_name="+")
+    reassigned_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     reassigned_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -240,11 +263,12 @@ class OrderTask(TenantModel):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="tasks")
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    assignee = models.ForeignKey("accounts.User", null=True, blank=True,
-                                 on_delete=models.SET_NULL, related_name="order_tasks")
+    assignee = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="order_tasks"
+    )
     due_at = models.DateTimeField(null=True, blank=True)
     priority = models.CharField(max_length=8, default="normal")
-    status = models.CharField(max_length=16, default="open")  # open/in_progress/done/cancelled
+    status = models.CharField(max_length=16, default="open")
     completed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:

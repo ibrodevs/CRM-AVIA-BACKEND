@@ -1,4 +1,3 @@
-"""Optimistic locking и блокировки строк (ТЗ §3.4)."""
 from django.db import models
 
 from common.errors import VersionConflictError

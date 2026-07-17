@@ -1,5 +1,5 @@
-"""Travel policy API (ТЗ §6.3, §6.4)."""
-from rest_framework import serializers, status as http
+from rest_framework import serializers
+from rest_framework import status as http
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -13,11 +13,27 @@ from travel_policy.models import TravelPolicy, check_offer_compliance
 class TravelPolicySerializer(serializers.ModelSerializer):
     class Meta:
         model = TravelPolicy
-        fields = ["id", "company", "name", "effective_from", "effective_to", "is_active",
-                  "policy_version", "scopes", "allowed_avia_cabins", "allowed_airlines",
-                  "allowed_rail_classes", "allowed_train_types", "allowed_hotel_categories",
-                  "allowed_hotel_chains", "allowed_meal_plans", "allowed_car_classes",
-                  "price_limits", "min_advance_booking_days", "approver_chain"]
+        fields = [
+            "id",
+            "company",
+            "name",
+            "effective_from",
+            "effective_to",
+            "is_active",
+            "policy_version",
+            "scopes",
+            "allowed_avia_cabins",
+            "allowed_airlines",
+            "allowed_rail_classes",
+            "allowed_train_types",
+            "allowed_hotel_categories",
+            "allowed_hotel_chains",
+            "allowed_meal_plans",
+            "allowed_car_classes",
+            "price_limits",
+            "min_advance_booking_days",
+            "approver_chain",
+        ]
         read_only_fields = ["id", "policy_version", "company"]
 
 
@@ -32,16 +48,13 @@ class CompanyTravelPoliciesView(APIView):
 
     def post(self, request, company_id):
         if not has_permission(request.user, "crm.change"):
-            raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change",
-                           status_code=403)
-        company = Company.objects.filter(pk=company_id,
-                                         tenant_id=request.user.tenant_id).first()
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
+        company = Company.objects.filter(pk=company_id, tenant_id=request.user.tenant_id).first()
         if company is None:
             raise ApiError(code="NOT_FOUND", message="Компания не найдена", status_code=404)
         serializer = TravelPolicySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        policy = serializer.save(tenant_id=request.user.tenant_id, company=company,
-                                 created_by=request.user)
+        policy = serializer.save(tenant_id=request.user.tenant_id, company=company, created_by=request.user)
         audit("travel_policy.created", actor=request.user, resource=policy, request=request)
         return Response(TravelPolicySerializer(policy).data, status=http.HTTP_201_CREATED)
 
@@ -50,8 +63,7 @@ class TravelPolicyDetailView(APIView):
     permission_classes = [require("crm.view")]
 
     def _get(self, request, policy_id) -> TravelPolicy:
-        policy = TravelPolicy.objects.filter(pk=policy_id,
-                                             tenant_id=request.user.tenant_id).first()
+        policy = TravelPolicy.objects.filter(pk=policy_id, tenant_id=request.user.tenant_id).first()
         if policy is None:
             raise ApiError(code="NOT_FOUND", message="Политика не найдена", status_code=404)
         return policy
@@ -61,8 +73,7 @@ class TravelPolicyDetailView(APIView):
 
     def patch(self, request, policy_id):
         if not has_permission(request.user, "crm.change"):
-            raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change",
-                           status_code=403)
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
         policy = self._get(request, policy_id)
         serializer = TravelPolicySerializer(policy, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -77,13 +88,16 @@ class TravelPolicyCheckView(APIView):
     permission_classes = [require("crm.view")]
 
     def post(self, request, policy_id):
-        policy = TravelPolicy.objects.filter(pk=policy_id,
-                                             tenant_id=request.user.tenant_id).first()
+        policy = TravelPolicy.objects.filter(pk=policy_id, tenant_id=request.user.tenant_id).first()
         if policy is None:
             raise ApiError(code="NOT_FOUND", message="Политика не найдена", status_code=404)
         offer = request.data.get("offer")
         if not isinstance(offer, dict):
-            raise ApiError(code="VALIDATION_ERROR", message="Ожидается объект offer",
-                           fields={"offer": ["Обязательное поле-объект"]}, status_code=400)
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Ожидается объект offer",
+                fields={"offer": ["Обязательное поле-объект"]},
+                status_code=400,
+            )
         result = check_offer_compliance(policy, offer)
         return Response(result.as_dict(policy))

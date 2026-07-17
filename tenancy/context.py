@@ -1,9 +1,3 @@
-"""Tenant-контекст запроса/фонового задания.
-
-Используется TenantManager-ом для автоматической фильтрации queryset-ов и
-сервисами для проставления tenant_id при создании записей. В фоновом job
-runner контекст устанавливается явно из job.tenant_id.
-"""
 import contextvars
 import uuid
 from contextlib import contextmanager

@@ -1,8 +1,3 @@
-"""JWT-аутентификация с проверкой сессии и установкой tenant-контекста.
-
-Access token несёт sid (id UserSession) и tenant_id. Отозванная сессия
-делает access token недействительным немедленно (logout-all, suspend).
-"""
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import AuthenticationFailed
 

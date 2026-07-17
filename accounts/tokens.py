@@ -1,4 +1,3 @@
-"""Выпуск и ротация JWT с привязкой к UserSession."""
 from datetime import timedelta
 
 from django.utils import timezone

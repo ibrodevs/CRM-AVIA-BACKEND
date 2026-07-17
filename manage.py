@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Django management entrypoint."""
+
 import os
 import sys
 
@@ -9,9 +9,7 @@ def main() -> None:
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:
-        raise ImportError(
-            "Couldn't import Django. Did you activate the virtualenv (uv sync)?"
-        ) from exc
+        raise ImportError("Couldn't import Django. Did you activate the virtualenv (uv sync)?") from exc
     execute_from_command_line(sys.argv)
 
 

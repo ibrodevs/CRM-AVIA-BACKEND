@@ -1,4 +1,3 @@
-"""Health checks, событийный feed (/events/) и статус фоновых заданий (/jobs/)."""
 from datetime import timedelta
 
 from django.conf import settings
@@ -15,8 +14,6 @@ from common.errors import ApiError, EventCursorExpiredError
 from common.jobs import get_handler
 from common.models import BackgroundJob, OutboxEvent
 
-
-# --- Health -------------------------------------------------------------
 
 @require_GET
 def health_live(request):  # noqa: ARG001
@@ -35,7 +32,6 @@ def health_ready(request):  # noqa: ARG001
         checks["database"] = "fail"
         ok = False
 
-    # Свежесть heartbeat job runner-а (без раскрытия деталей).
     stale_after = settings.JOB_RUNNER["STALE_AFTER_SECONDS"]
     if checks["database"] == "ok":
         running = BackgroundJob.objects.filter(status=BackgroundJob.Status.RUNNING)
@@ -44,8 +40,6 @@ def health_ready(request):  # noqa: ARG001
 
     return JsonResponse({"status": "ok" if ok else "fail", "checks": checks}, status=200 if ok else 503)
 
-
-# --- Events feed (ТЗ §4.4) ------------------------------------------------
 
 class EventSerializer(serializers.ModelSerializer):
     event_id = serializers.IntegerField(source="id")
@@ -69,20 +63,19 @@ class EventFeedView(APIView):
             cursor = int(request.query_params.get("cursor", 0))
             limit = min(int(request.query_params.get("limit", 100)), 500)
         except ValueError:
-            raise ApiError(code="INVALID_CURSOR", message="cursor и limit должны быть числами",
-                           status_code=400) from None
+            raise ApiError(
+                code="INVALID_CURSOR", message="cursor и limit должны быть числами", status_code=400
+            ) from None
 
         feed = OutboxEvent.objects.filter(tenant_id=request.user.tenant_id).filter(
             Q(audience_user__isnull=True) | Q(audience_user=request.user)
         )
 
-        # Устаревший cursor: событий с id <= cursor уже нет из-за retention.
         if cursor:
             oldest = feed.order_by("id").values_list("id", flat=True).first()
             if oldest is not None and cursor < oldest - 1:
                 raise EventCursorExpiredError()
 
-        # Дешёвый пустой polling: ETag по последнему id feed-а.
         latest_id = feed.order_by("-id").values_list("id", flat=True).first() or 0
         etag = f'W/"events-{latest_id}"'
         if request.headers.get("If-None-Match") == etag and latest_id <= cursor:
@@ -96,15 +89,24 @@ class EventFeedView(APIView):
         )
 
 
-# --- Jobs (ТЗ §22) --------------------------------------------------------
-
 class JobSerializer(serializers.ModelSerializer):
     class Meta:
         model = BackgroundJob
         fields = [
-            "id", "kind", "status", "priority", "progress", "attempts", "max_attempts",
-            "run_after", "started_at", "completed_at", "error_code", "error_message",
-            "result", "created_at",
+            "id",
+            "kind",
+            "status",
+            "priority",
+            "progress",
+            "attempts",
+            "max_attempts",
+            "run_after",
+            "started_at",
+            "completed_at",
+            "error_code",
+            "error_message",
+            "result",
+            "created_at",
         ]
 
 
@@ -124,9 +126,7 @@ class JobCancelView(JobDetailView):
         from django.db import transaction
 
         with transaction.atomic():
-            job = BackgroundJob.objects.select_for_update().get(
-                pk=self.get_object(request, job_id).pk
-            )
+            job = BackgroundJob.objects.select_for_update().get(pk=self.get_object(request, job_id).pk)
             handler = get_handler(job.kind)
             if handler is not None and not handler.user_cancellable:
                 raise ApiError(
@@ -135,8 +135,7 @@ class JobCancelView(JobDetailView):
                     status_code=409,
                 )
             if job.status not in (BackgroundJob.Status.QUEUED, BackgroundJob.Status.RUNNING):
-                raise ApiError(code="JOB_ALREADY_FINISHED", message="Задание уже завершено",
-                               status_code=409)
+                raise ApiError(code="JOB_ALREADY_FINISHED", message="Задание уже завершено", status_code=409)
             job.status = BackgroundJob.Status.CANCELLED
             job.completed_at = timezone.now()
             job.save(update_fields=["status", "completed_at"])

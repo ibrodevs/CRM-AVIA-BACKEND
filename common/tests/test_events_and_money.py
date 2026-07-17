@@ -23,16 +23,21 @@ class TestEventFeed:
         assert body2["events"][0]["event_id"] > cursor
 
     def test_event_shape(self, admin_user, tenant):
-        emit_event("chat.message.created", "Message", payload={"thread_id": "t1"},
-                   tenant_id=tenant.id)
+        emit_event("chat.message.created", "Message", payload={"thread_id": "t1"}, tenant_id=tenant.id)
         client = auth_client(admin_user)
         event = client.get("/api/v1/events/?cursor=0").json()["events"][0]
-        assert set(event) == {"event_id", "type", "occurred_at", "resource_type",
-                              "resource_id", "version", "payload"}
+        assert set(event) == {
+            "event_id",
+            "type",
+            "occurred_at",
+            "resource_type",
+            "resource_id",
+            "version",
+            "payload",
+        }
 
     def test_audience_user_filter(self, admin_user, operator_user, tenant):
-        emit_event("notification.created", "Notification",
-                   audience_user=operator_user, tenant_id=tenant.id)
+        emit_event("notification.created", "Notification", audience_user=operator_user, tenant_id=tenant.id)
         admin_events = auth_client(admin_user).get("/api/v1/events/?cursor=0").json()["events"]
         operator_events = auth_client(operator_user).get("/api/v1/events/?cursor=0").json()["events"]
         assert admin_events == []

@@ -1,4 +1,3 @@
-"""Базовые модели и инфраструктурные таблицы (ТЗ §3.3, §3.4, §21.4, §22)."""
 import uuid
 
 from django.conf import settings
@@ -39,12 +38,20 @@ class TenantModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
-        related_name="+", editable=False,
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        editable=False,
     )
     updated_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
-        related_name="+", editable=False,
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        editable=False,
     )
     version = models.PositiveIntegerField(default=1)
     archived_at = models.DateTimeField(null=True, blank=True)
@@ -109,7 +116,7 @@ class AuditEvent(models.Model):
     impersonator = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
-    action = models.CharField(max_length=100)  # напр. "order.status_changed", "auth.login_failed"
+    action = models.CharField(max_length=100)
     resource_type = models.CharField(max_length=100, blank=True)
     resource_id = models.CharField(max_length=64, blank=True)
     occurred_at = models.DateTimeField(auto_now_add=True)
@@ -117,8 +124,8 @@ class AuditEvent(models.Model):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.CharField(max_length=512, blank=True)
     reason = models.TextField(blank=True)
-    before = models.JSONField(null=True, blank=True)  # redacted diff
-    after = models.JSONField(null=True, blank=True)   # redacted diff
+    before = models.JSONField(null=True, blank=True)
+    after = models.JSONField(null=True, blank=True)
 
     class Meta:
         db_table = "common_audit_event"
@@ -140,17 +147,21 @@ class OutboxEvent(models.Model):
     tenant = models.ForeignKey(
         "tenancy.Organization", null=True, blank=True, on_delete=models.CASCADE, related_name="+"
     )
-    event_type = models.CharField(max_length=100)  # напр. "order.updated"
+    event_type = models.CharField(max_length=100)
     resource_type = models.CharField(max_length=100)
     resource_id = models.CharField(max_length=64)
     resource_version = models.PositiveIntegerField(null=True, blank=True)
-    payload = models.JSONField(default=dict, blank=True)  # минимальный payload, не источник истины
+    payload = models.JSONField(default=dict, blank=True)
     audience_user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE, related_name="+",
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="+",
         help_text="Если задан — событие видно только этому пользователю",
     )
     occurred_at = models.DateTimeField(auto_now_add=True)
-    processed_at = models.DateTimeField(null=True, blank=True)  # обработка side effects
+    processed_at = models.DateTimeField(null=True, blank=True)
     process_attempts = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
@@ -182,11 +193,11 @@ class BackgroundJob(models.Model):
     tenant = models.ForeignKey(
         "tenancy.Organization", null=True, blank=True, on_delete=models.CASCADE, related_name="+"
     )
-    kind = models.CharField(max_length=100)  # ключ в реестре обработчиков
-    payload = models.JSONField(default=dict, blank=True)  # с redaction, без секретов
+    kind = models.CharField(max_length=100)
+    payload = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.QUEUED)
-    priority = models.SmallIntegerField(default=100)  # меньше = раньше
-    progress = models.PositiveSmallIntegerField(default=0)  # 0..100
+    priority = models.SmallIntegerField(default=100)
+    progress = models.PositiveSmallIntegerField(default=0)
     attempts = models.PositiveSmallIntegerField(default=0)
     max_attempts = models.PositiveSmallIntegerField(default=5)
     run_after = models.DateTimeField(null=True, blank=True)

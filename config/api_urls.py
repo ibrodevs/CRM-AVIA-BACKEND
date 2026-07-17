@@ -1,10 +1,9 @@
-"""Маршруты /api/v1/. Каждое приложение подключает свои urls по мере реализации."""
 from django.urls import include, path
 
 urlpatterns = [
     path("auth/", include("accounts.auth_urls")),
     path("", include("accounts.urls")),
-    path("", include("common.urls")),  # /events/, /jobs/
+    path("", include("common.urls")),
     path("", include("crm.urls")),
     path("", include("travel_policy.urls")),
     path("", include("suppliers.urls")),

@@ -1,16 +1,17 @@
-"""Деньги: только Decimal, ISO 4217, документированное округление.
-
-Округление всех денежных расчётов — ROUND_HALF_UP до minor units валюты
-(ТЗ §6.3). float в денежных путях запрещён.
-"""
 from decimal import ROUND_HALF_UP, Decimal
 
 from rest_framework import serializers
 
-# Валюты с нестандартным числом знаков после запятой (по умолчанию 2).
 _MINOR_UNITS: dict[str, int] = {
-    "JPY": 0, "KRW": 0, "VND": 0, "ISK": 0,
-    "BHD": 3, "KWD": 3, "OMR": 3, "JOD": 3, "TND": 3,
+    "JPY": 0,
+    "KRW": 0,
+    "VND": 0,
+    "ISK": 0,
+    "BHD": 3,
+    "KWD": 3,
+    "OMR": 3,
+    "JOD": 3,
+    "TND": 3,
 }
 
 

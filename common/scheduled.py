@@ -1,10 +1,3 @@
-"""Реестр периодических задач для run_scheduled_jobs (cron).
-
-    @scheduled_task("notifications.check_deadlines")
-    def check_deadlines() -> str | None: ...
-
-Задачи обязаны быть идемпотентными: команда может вызываться каждую минуту.
-"""
 from typing import Callable
 
 _SCHEDULED: dict[str, Callable[[], str | None]] = {}

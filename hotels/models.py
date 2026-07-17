@@ -1,12 +1,12 @@
-"""Гостиницы: размещение, rooming matrix, ограничения (ТЗ §9.3, §30)."""
 from django.db import models
 
 from common.models import TenantModel
 
 
 class HotelStay(TenantModel):
-    service = models.OneToOneField("services.OrderService", on_delete=models.CASCADE,
-                                   related_name="hotel_stay")
+    service = models.OneToOneField(
+        "services.OrderService", on_delete=models.CASCADE, related_name="hotel_stay"
+    )
     property_name = models.CharField(max_length=255)
     property_code = models.CharField(max_length=64, blank=True)
     city = models.CharField(max_length=100, blank=True)
@@ -15,21 +15,22 @@ class HotelStay(TenantModel):
     check_in = models.DateField()
     check_out = models.DateField()
     free_cancellation_until = models.DateTimeField(null=True, blank=True)
-    payment_model = models.CharField(max_length=16, default="prepay")  # prepay/pay_at_property
+    payment_model = models.CharField(max_length=16, default="prepay")
     supplier_confirmation = models.CharField(max_length=64, blank=True)
-    nightly_breakdown = models.JSONField(null=True, blank=True)  # [{date, amount, taxes}]
+    nightly_breakdown = models.JSONField(null=True, blank=True)
 
     class Meta:
         db_table = "hotels_stay"
         constraints = [
-            models.CheckConstraint(condition=models.Q(check_out__gt=models.F("check_in")),
-                                   name="check_hotel_dates"),
+            models.CheckConstraint(
+                condition=models.Q(check_out__gt=models.F("check_in")), name="check_hotel_dates"
+            ),
         ]
 
 
 class HotelRoom(TenantModel):
     stay = models.ForeignKey(HotelStay, on_delete=models.CASCADE, related_name="rooms")
-    room_ref = models.CharField(max_length=32)  # идентификатор комнаты в rooming matrix
+    room_ref = models.CharField(max_length=32)
     room_type = models.CharField(max_length=100)
     meal_plan = models.CharField(max_length=16, blank=True)
     capacity_adults = models.PositiveSmallIntegerField(default=2)
@@ -49,16 +50,18 @@ class HotelPlacement(TenantModel):
     пересекающиеся даты (ТЗ §30 — контроль в save + exclusion-инвариант)."""
 
     room = models.ForeignKey(HotelRoom, on_delete=models.CASCADE, related_name="placements")
-    participant = models.ForeignKey("orders.OrderParticipant", on_delete=models.PROTECT,
-                                    related_name="hotel_placements")
+    participant = models.ForeignKey(
+        "orders.OrderParticipant", on_delete=models.PROTECT, related_name="hotel_placements"
+    )
     is_child = models.BooleanField(default=False)
-    status = models.CharField(max_length=10, default="active")  # active/cancelled
+    status = models.CharField(max_length=10, default="active")
 
     class Meta:
         db_table = "hotels_placement"
         constraints = [
             models.UniqueConstraint(
-                fields=["room", "participant"], condition=models.Q(status="active"),
+                fields=["room", "participant"],
+                condition=models.Q(status="active"),
                 name="uniq_room_participant",
             ),
         ]
@@ -68,7 +71,8 @@ class HotelPlacement(TenantModel):
 
         stay = self.room.stay
         overlapping = HotelPlacement.objects.filter(
-            participant=self.participant, status="active",
+            participant=self.participant,
+            status="active",
             room__stay__check_in__lt=stay.check_out,
             room__stay__check_out__gt=stay.check_in,
         ).exclude(pk=self.pk)
@@ -77,7 +81,7 @@ class HotelPlacement(TenantModel):
 
     def save(self, *args, **kwargs):
         self.clean()
-        # проверка вместимости комнаты
+
         active = self.room.placements.filter(status="active").exclude(pk=self.pk)
         adults = sum(1 for p in active if not p.is_child) + (0 if self.is_child else 1)
         children = sum(1 for p in active if p.is_child) + (1 if self.is_child else 0)

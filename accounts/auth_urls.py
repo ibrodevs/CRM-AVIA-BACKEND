@@ -10,8 +10,7 @@ urlpatterns = [
     path("logout-all/", v.LogoutAllView.as_view(), name="auth-logout-all"),
     path("password/change/", v.PasswordChangeView.as_view(), name="auth-password-change"),
     path("password/reset/request/", v.PasswordResetRequestView.as_view(), name="auth-password-reset"),
-    path("password/reset/confirm/", v.PasswordResetConfirmView.as_view(),
-         name="auth-password-reset-confirm"),
+    path("password/reset/confirm/", v.PasswordResetConfirmView.as_view(), name="auth-password-reset-confirm"),
     path("sessions/", v.SessionListView.as_view(), name="auth-sessions"),
     path("sessions/<uuid:session_id>/", v.SessionDeleteView.as_view(), name="auth-session-delete"),
 ]

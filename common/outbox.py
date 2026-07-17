@@ -1,7 +1,3 @@
-"""Transactional outbox: emit_event() вызывается внутри той же транзакции,
-что и изменение данных. run_jobs обрабатывает необработанные события
-(доставка уведомлений и др.); /events/ отдаёт их frontend-у по cursor.
-"""
 from common.models import OutboxEvent
 from tenancy.context import get_current_tenant_id
 

@@ -1,4 +1,3 @@
-"""Поставщики: реквизиты, credentials, наценки, приоритеты (ТЗ §13)."""
 from django.db import models
 
 from common.fields import EncryptedTextField
@@ -14,20 +13,20 @@ class Supplier(TenantModel):
     name = models.CharField(max_length=255)
     legal_name = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
-    organization_type = models.CharField(max_length=32, blank=True)  # gds/airline/agency/hotel/...
+    organization_type = models.CharField(max_length=32, blank=True)
     is_global = models.BooleanField(default=False)
-    service_kinds = models.JSONField(default=list, blank=True)  # ["avia","hotel",...]
+    service_kinds = models.JSONField(default=list, blank=True)
     countries = models.JSONField(default=list, blank=True)
     cities = models.JSONField(default=list, blank=True)
     currencies = models.JSONField(default=list, blank=True)
-    communication_methods = models.JSONField(default=list, blank=True)  # api/email/phone/portal
+    communication_methods = models.JSONField(default=list, blank=True)
     work_hours = models.CharField(max_length=100, blank=True)
-    settlement_type = models.CharField(max_length=32, blank=True)  # deposit/credit/prepayment
+    settlement_type = models.CharField(max_length=32, blank=True)
     contract_number = models.CharField(max_length=64, blank=True)
     contact_person = models.CharField(max_length=255, blank=True)
     phone = models.CharField(max_length=32, blank=True)
     email = models.EmailField(blank=True)
-    automation_capabilities = models.JSONField(default=dict, blank=True)  # {"search":true,...}
+    automation_capabilities = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = "suppliers_supplier"
@@ -41,14 +40,15 @@ class SupplierCredential(TenantModel):
     """API-доступ поставщика. Секрет шифруется, наружу не возвращается (ТЗ §5.3, §13)."""
 
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name="credentials")
-    provider_adapter = models.CharField(max_length=100)  # ключ адаптера в реестре integrations
-    environment = models.CharField(max_length=16, default="sandbox")  # sandbox/production
-    encrypted_secrets = EncryptedTextField(blank=True)  # JSON строкой, зашифрован целиком
-    status = models.CharField(max_length=16, default="inactive")  # inactive/active/failed
+    provider_adapter = models.CharField(max_length=100)
+    environment = models.CharField(max_length=16, default="sandbox")
+    encrypted_secrets = EncryptedTextField(blank=True)
+    status = models.CharField(max_length=16, default="inactive")
     last_verified_at = models.DateTimeField(null=True, blank=True)
     rotated_at = models.DateTimeField(null=True, blank=True)
-    rotated_by = models.ForeignKey("accounts.User", null=True, blank=True,
-                                   on_delete=models.SET_NULL, related_name="+")
+    rotated_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         db_table = "suppliers_credential"
@@ -71,15 +71,15 @@ class SupplierMarkupRule(TenantModel):
 
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name="markup_rules")
     service_kind = models.CharField(max_length=32, default="*")
-    route = models.CharField(max_length=100, blank=True)     # напр. "FRU-IST" или "FRU-*"
-    geography = models.CharField(max_length=100, blank=True)  # страна/регион
+    route = models.CharField(max_length=100, blank=True)
+    geography = models.CharField(max_length=100, blank=True)
     airline = models.CharField(max_length=8, blank=True)
     cabin = models.CharField(max_length=32, blank=True)
-    passenger_category = models.CharField(max_length=32, blank=True)  # adult/child/infant
+    passenger_category = models.CharField(max_length=32, blank=True)
     amount_type = models.CharField(max_length=8, choices=AmountType.choices)
     amount_value = models.DecimalField(max_digits=12, decimal_places=4)
-    currency = models.CharField(max_length=3, blank=True)  # для fixed
-    priority = models.IntegerField(default=100)  # меньше = раньше
+    currency = models.CharField(max_length=3, blank=True)
+    priority = models.IntegerField(default=100)
     effective_from = models.DateField(null=True, blank=True)
     effective_to = models.DateField(null=True, blank=True)
 
@@ -92,10 +92,11 @@ class SupplierSearchPriority(TenantModel):
     """Порядок опроса поставщиков по типу услуги с fallback (ТЗ §13)."""
 
     service_kind = models.CharField(max_length=32)
-    ordered_suppliers = models.JSONField(default=list)  # [supplier_id, ...]
-    conditions = models.JSONField(default=dict, blank=True)  # route/geo условия
-    fallback_supplier = models.ForeignKey(Supplier, null=True, blank=True,
-                                          on_delete=models.SET_NULL, related_name="+")
+    ordered_suppliers = models.JSONField(default=list)
+    conditions = models.JSONField(default=dict, blank=True)
+    fallback_supplier = models.ForeignKey(
+        Supplier, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:

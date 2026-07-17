@@ -1,16 +1,3 @@
-"""Идемпотентность команд (ТЗ §3.4).
-
-Использование в командном endpoint-е:
-
-    @idempotent_command("orders.transition")
-    def post(self, request, ...): ...
-
-Правила:
-- заголовок Idempotency-Key обязателен для операций, где required=True;
-- один ключ (tenant + user + endpoint) возвращает первоначальный ответ;
-- повтор с другим телом — 409 IDEMPOTENCY_CONFLICT;
-- параллельный повтор during in-progress — 409 с Retry-After.
-"""
 import functools
 import hashlib
 import json
@@ -42,8 +29,9 @@ def idempotent_command(endpoint_name: str, *, required: bool = True):
                     )
                 return view_method(self, request, *args, **kwargs)
             if len(key) > 255:
-                raise ApiError(code="IDEMPOTENCY_KEY_INVALID", message="Слишком длинный Idempotency-Key",
-                               status_code=400)
+                raise ApiError(
+                    code="IDEMPOTENCY_KEY_INVALID", message="Слишком длинный Idempotency-Key", status_code=400
+                )
 
             req_hash = _request_hash(request)
             try:
@@ -66,9 +54,15 @@ def idempotent_command(endpoint_name: str, *, required: bool = True):
                     raise IdempotencyConflictError() from None
                 if existing.status == "in_progress":
                     response = Response(
-                        {"error": {"code": "IDEMPOTENT_REQUEST_IN_PROGRESS",
-                                   "message": "Операция ещё выполняется", "fields": {}, "details": {},
-                                   "request_id": getattr(request, "request_id", None)}},
+                        {
+                            "error": {
+                                "code": "IDEMPOTENT_REQUEST_IN_PROGRESS",
+                                "message": "Операция ещё выполняется",
+                                "fields": {},
+                                "details": {},
+                                "request_id": getattr(request, "request_id", None),
+                            }
+                        },
                         status=409,
                     )
                     response["Retry-After"] = "2"
@@ -78,7 +72,6 @@ def idempotent_command(endpoint_name: str, *, required: bool = True):
             try:
                 response = view_method(self, request, *args, **kwargs)
             except Exception:
-                # Ошибка не резервирует ключ: клиент может повторить с тем же ключом.
                 IdempotencyRecord.objects.filter(pk=record.pk).delete()
                 raise
 

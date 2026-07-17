@@ -1,9 +1,3 @@
-"""
-Базовые настройки Travel Hub CRM backend.
-
-Все секреты и окружение — только через переменные окружения / .env
-(см. .env.example). Никаких секретов в git.
-"""
 from datetime import timedelta
 from pathlib import Path
 
@@ -12,14 +6,13 @@ import environ
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 env = environ.Env()
-# .env читается, если существует (dev). В production переменные приходят из окружения.
+
 environ.Env.read_env(BASE_DIR / ".env")
 
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="insecure-dev-only-key-change-me-0123456789abcdef")
 DEBUG = False
 ALLOWED_HOSTS: list[str] = env.list("DJANGO_ALLOWED_HOSTS", default=[])
 
-# --- Applications -------------------------------------------------------
 
 DJANGO_APPS = [
     "django.contrib.admin",
@@ -99,18 +92,16 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# --- Database -----------------------------------------------------------
 
 DATABASES = {
     "default": {
         **env.db_url("DATABASE_URL", default="postgres:///travelhub"),
-        "ATOMIC_REQUESTS": False,  # транзакции управляются явно в командах
+        "ATOMIC_REQUESTS": False,
         "CONN_MAX_AGE": env.int("DB_CONN_MAX_AGE", default=60),
     }
 }
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# --- Auth ---------------------------------------------------------------
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -126,7 +117,6 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# --- I18N / TZ ----------------------------------------------------------
 
 LANGUAGE_CODE = "ru"
 TIME_ZONE = env("BUSINESS_TIMEZONE", default="Asia/Bishkek")
@@ -135,9 +125,8 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-MEDIA_ROOT = BASE_DIR / "media"  # только dev; в prod — S3-compatible storage
+MEDIA_ROOT = BASE_DIR / "media"
 
-# --- DRF ----------------------------------------------------------------
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -163,7 +152,7 @@ REST_FRAMEWORK = {
         "export": "10/min",
     },
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
-    "URL_FORMAT_OVERRIDE": None,  # ?format= используется бизнес-endpoint-ами (export)
+    "URL_FORMAT_OVERRIDE": None,
 }
 
 SIMPLE_JWT = {
@@ -188,7 +177,6 @@ SPECTACULAR_SETTINGS = {
     "COMPONENT_SPLIT_REQUEST": True,
 }
 
-# --- Business defaults --------------------------------------------------
 
 BUSINESS_TIMEZONE = TIME_ZONE
 BASE_CURRENCY = env("BASE_CURRENCY", default="USD")
@@ -196,11 +184,9 @@ EVENT_RETENTION_DAYS = env.int("EVENT_RETENTION_DAYS", default=7)
 IDEMPOTENCY_RETENTION_DAYS = env.int("IDEMPOTENCY_RETENTION_DAYS", default=30)
 MULTI_CITY_MAX_SEGMENTS = env.int("MULTI_CITY_MAX_SEGMENTS", default=6)
 
-# Ключ шифрования полей (паспорта, банковские реквизиты, provider secrets).
-# 32 url-safe base64 байта; генерация: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
 FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default="")
 
-# --- Job runner ---------------------------------------------------------
 
 JOB_RUNNER = {
     "BATCH_SIZE": env.int("JOB_BATCH_SIZE", default=10),
@@ -210,7 +196,6 @@ JOB_RUNNER = {
     "POLL_INTERVAL_SECONDS": env.float("JOB_POLL_INTERVAL_SECONDS", default=1.0),
 }
 
-# --- Logging ------------------------------------------------------------
 
 LOGGING = {
     "version": 1,

@@ -1,11 +1,19 @@
-"""Унифицированная модель услуг, поиск и ценообразование (ТЗ §8)."""
 from django.db import models
 
 from common.models import TenantModel
 
 SERVICE_KINDS = [
-    "avia", "rail", "hotel", "transfer", "bus", "tour",
-    "aeroexpress", "lounge", "insurance", "visa", "other",
+    "avia",
+    "rail",
+    "hotel",
+    "transfer",
+    "bus",
+    "tour",
+    "aeroexpress",
+    "lounge",
+    "insurance",
+    "visa",
+    "other",
 ]
 SERVICE_KIND_CHOICES = [(k, k) for k in SERVICE_KINDS]
 
@@ -34,9 +42,10 @@ class OrderService(TenantModel):
     kind = models.CharField(max_length=16, choices=SERVICE_KIND_CHOICES)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PROPOSED)
     title = models.CharField(max_length=255)
-    supplier = models.ForeignKey("suppliers.Supplier", null=True, blank=True,
-                                 on_delete=models.PROTECT, related_name="services")
-    external_id = models.CharField(max_length=128, blank=True)  # PNR/locator/booking ref
+    supplier = models.ForeignKey(
+        "suppliers.Supplier", null=True, blank=True, on_delete=models.PROTECT, related_name="services"
+    )
+    external_id = models.CharField(max_length=128, blank=True)
     source = models.CharField(max_length=8, choices=Source.choices, default=Source.API)
     starts_at = models.DateTimeField(null=True, blank=True)
     ends_at = models.DateTimeField(null=True, blank=True)
@@ -52,10 +61,11 @@ class OrderService(TenantModel):
 
     payment_deadline = models.DateTimeField(null=True, blank=True)
     ticketing_deadline = models.DateTimeField(null=True, blank=True)
-    responsible = models.ForeignKey("accounts.User", null=True, blank=True,
-                                    on_delete=models.SET_NULL, related_name="responsible_services")
-    provider_snapshot = models.JSONField(null=True, blank=True)  # raw provider payload
-    policy_compliance = models.JSONField(null=True, blank=True)  # результат travel policy
+    responsible = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="responsible_services"
+    )
+    provider_snapshot = models.JSONField(null=True, blank=True)
+    policy_compliance = models.JSONField(null=True, blank=True)
     cancellation_rules = models.JSONField(null=True, blank=True)
 
     class Meta:
@@ -71,22 +81,36 @@ class OrderService(TenantModel):
         return f"{self.kind}: {self.title}"
 
 
-# Переходы статусов услуги (уточняются по kind на уровне сервиса).
 SERVICE_TRANSITIONS: dict[str, set[str]] = {
-    OrderService.Status.SEARCHING: {OrderService.Status.PROPOSED, OrderService.Status.FAILED,
-                                    OrderService.Status.CANCELLED},
-    OrderService.Status.PROPOSED: {OrderService.Status.APPROVAL, OrderService.Status.BOOKED,
-                                   OrderService.Status.CANCELLED, OrderService.Status.FAILED},
-    OrderService.Status.APPROVAL: {OrderService.Status.PROPOSED, OrderService.Status.BOOKED,
-                                   OrderService.Status.CANCELLED},
-    OrderService.Status.BOOKED: {OrderService.Status.CONFIRMED, OrderService.Status.ISSUED,
-                                 OrderService.Status.CANCELLED, OrderService.Status.FAILED},
-    OrderService.Status.CONFIRMED: {OrderService.Status.ISSUED, OrderService.Status.CANCELLED,
-                                    OrderService.Status.FAILED},
-    OrderService.Status.ISSUED: {OrderService.Status.REFUND_IN_PROGRESS,
-                                 OrderService.Status.CANCELLED},
-    OrderService.Status.REFUND_IN_PROGRESS: {OrderService.Status.REFUNDED,
-                                             OrderService.Status.ISSUED},
+    OrderService.Status.SEARCHING: {
+        OrderService.Status.PROPOSED,
+        OrderService.Status.FAILED,
+        OrderService.Status.CANCELLED,
+    },
+    OrderService.Status.PROPOSED: {
+        OrderService.Status.APPROVAL,
+        OrderService.Status.BOOKED,
+        OrderService.Status.CANCELLED,
+        OrderService.Status.FAILED,
+    },
+    OrderService.Status.APPROVAL: {
+        OrderService.Status.PROPOSED,
+        OrderService.Status.BOOKED,
+        OrderService.Status.CANCELLED,
+    },
+    OrderService.Status.BOOKED: {
+        OrderService.Status.CONFIRMED,
+        OrderService.Status.ISSUED,
+        OrderService.Status.CANCELLED,
+        OrderService.Status.FAILED,
+    },
+    OrderService.Status.CONFIRMED: {
+        OrderService.Status.ISSUED,
+        OrderService.Status.CANCELLED,
+        OrderService.Status.FAILED,
+    },
+    OrderService.Status.ISSUED: {OrderService.Status.REFUND_IN_PROGRESS, OrderService.Status.CANCELLED},
+    OrderService.Status.REFUND_IN_PROGRESS: {OrderService.Status.REFUNDED, OrderService.Status.ISSUED},
     OrderService.Status.REFUNDED: set(),
     OrderService.Status.CANCELLED: set(),
     OrderService.Status.FAILED: {OrderService.Status.SEARCHING, OrderService.Status.PROPOSED},
@@ -97,23 +121,23 @@ class ServicePassenger(TenantModel):
     """Связь услуга-участник: индивидуальный тариф/место/статус (ТЗ §8.1)."""
 
     service = models.ForeignKey(OrderService, on_delete=models.CASCADE, related_name="passengers")
-    participant = models.ForeignKey("orders.OrderParticipant", on_delete=models.PROTECT,
-                                    related_name="service_passengers")
+    participant = models.ForeignKey(
+        "orders.OrderParticipant", on_delete=models.PROTECT, related_name="service_passengers"
+    )
     fare_code = models.CharField(max_length=64, blank=True)
     room_ref = models.CharField(max_length=64, blank=True)
     seat_ref = models.CharField(max_length=16, blank=True)
-    document = models.ForeignKey("crm.PersonDocument", null=True, blank=True,
-                                 on_delete=models.PROTECT, related_name="+")
+    document = models.ForeignKey(
+        "crm.PersonDocument", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
     currency = models.CharField(max_length=3, blank=True)
     price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
-    status = models.CharField(max_length=20, default="active")  # active/issued/refunded/cancelled/replaced
+    status = models.CharField(max_length=20, default="active")
 
     class Meta:
         db_table = "services_service_passenger"
         constraints = [
-            # unique service+participant; удаление после брони запрещено — только cancel/replace
-            models.UniqueConstraint(fields=["service", "participant"],
-                                    name="uniq_service_passenger"),
+            models.UniqueConstraint(fields=["service", "participant"], name="uniq_service_passenger"),
         ]
 
 
@@ -149,45 +173,46 @@ class ServiceExtra(TenantModel):
         UNAVAILABLE = "unavailable"
 
     service = models.ForeignKey(OrderService, on_delete=models.CASCADE, related_name="extras")
-    catalog_item = models.ForeignKey(ServiceExtraCatalogItem, null=True, blank=True,
-                                     on_delete=models.PROTECT, related_name="+")
+    catalog_item = models.ForeignKey(
+        ServiceExtraCatalogItem, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
     name = models.CharField(max_length=150)
     stage = models.CharField(max_length=16, choices=Stage.choices)
-    availability = models.CharField(max_length=12, choices=Availability.choices,
-                                    default=Availability.MANUAL)
-    passenger = models.ForeignKey(ServicePassenger, null=True, blank=True,
-                                  on_delete=models.CASCADE, related_name="extras")
+    availability = models.CharField(max_length=12, choices=Availability.choices, default=Availability.MANUAL)
+    passenger = models.ForeignKey(
+        ServicePassenger, null=True, blank=True, on_delete=models.CASCADE, related_name="extras"
+    )
     quantity = models.PositiveSmallIntegerField(default=1)
     price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     currency = models.CharField(max_length=3, blank=True)
     fee = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    status = models.CharField(max_length=16, default="proposed")  # proposed/confirmed/issued/cancelled
+    status = models.CharField(max_length=16, default="proposed")
     emd_reference = models.CharField(max_length=64, blank=True)
 
     class Meta:
         db_table = "services_service_extra"
 
 
-# --- Поиск (ТЗ §8.2) --------------------------------------------------------
-
 class SearchSession(TenantModel):
     class Status(models.TextChoices):
         PENDING = "pending"
         RUNNING = "running"
         COMPLETED = "completed"
-        PARTIAL = "partial"      # часть поставщиков упала
+        PARTIAL = "partial"
         FAILED = "failed"
         CANCELLED = "cancelled"
         EXPIRED = "expired"
 
     user = models.ForeignKey("accounts.User", on_delete=models.PROTECT, related_name="searches")
-    order = models.ForeignKey("orders.Order", null=True, blank=True,
-                              on_delete=models.SET_NULL, related_name="searches")
+    order = models.ForeignKey(
+        "orders.Order", null=True, blank=True, on_delete=models.SET_NULL, related_name="searches"
+    )
     kind = models.CharField(max_length=16, choices=SERVICE_KIND_CHOICES)
-    criteria = models.JSONField()  # нормализованные критерии
+    criteria = models.JSONField()
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
-    job = models.ForeignKey("common.BackgroundJob", null=True, blank=True,
-                            on_delete=models.SET_NULL, related_name="+")
+    job = models.ForeignKey(
+        "common.BackgroundJob", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     expires_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -205,14 +230,16 @@ class SearchProviderRun(TenantModel):
         SKIPPED = "skipped"
 
     session = models.ForeignKey(SearchSession, on_delete=models.CASCADE, related_name="provider_runs")
-    supplier = models.ForeignKey("suppliers.Supplier", null=True, blank=True,
-                                 on_delete=models.SET_NULL, related_name="+")
+    supplier = models.ForeignKey(
+        "suppliers.Supplier", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     provider_adapter = models.CharField(max_length=100)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
-    log = models.ForeignKey("integrations.IntegrationLog", null=True, blank=True,
-                            on_delete=models.SET_NULL, related_name="+")
+    log = models.ForeignKey(
+        "integrations.IntegrationLog", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     error_code = models.CharField(max_length=100, blank=True)
     offers_count = models.PositiveIntegerField(default=0)
 
@@ -223,25 +250,27 @@ class SearchProviderRun(TenantModel):
 class ServiceOffer(TenantModel):
     """Нормализованный вариант из поиска или введённый вручную (ТЗ §1.2, §8.2)."""
 
-    session = models.ForeignKey(SearchSession, null=True, blank=True,
-                                on_delete=models.CASCADE, related_name="offers")
+    session = models.ForeignKey(
+        SearchSession, null=True, blank=True, on_delete=models.CASCADE, related_name="offers"
+    )
     kind = models.CharField(max_length=16, choices=SERVICE_KIND_CHOICES)
-    supplier = models.ForeignKey("suppliers.Supplier", null=True, blank=True,
-                                 on_delete=models.PROTECT, related_name="offers")
+    supplier = models.ForeignKey(
+        "suppliers.Supplier", null=True, blank=True, on_delete=models.PROTECT, related_name="offers"
+    )
     provider_adapter = models.CharField(max_length=100, blank=True)
     external_key = models.CharField(max_length=255, blank=True)
     is_manual = models.BooleanField(default=False)
-    itinerary = models.JSONField()      # нормализованный маршрут/продукт
+    itinerary = models.JSONField()
     fare = models.JSONField(null=True, blank=True)
     price_amount = models.DecimalField(max_digits=14, decimal_places=2)
     price_currency = models.CharField(max_length=3)
     availability = models.CharField(max_length=32, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
     raw_snapshot = models.JSONField(null=True, blank=True)
-    dedup_hash = models.CharField(max_length=64, blank=True)  # для дедупликации эквивалентов
+    dedup_hash = models.CharField(max_length=64, blank=True)
     exchange_rate_snapshot = models.JSONField(null=True, blank=True)
     applied_markup_rules = models.JSONField(null=True, blank=True)
-    compliance = models.JSONField(null=True, blank=True)  # travel policy результат
+    compliance = models.JSONField(null=True, blank=True)
 
     class Meta:
         db_table = "services_service_offer"
@@ -256,12 +285,14 @@ class PriceSnapshot(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     tenant = models.ForeignKey("tenancy.Organization", on_delete=models.CASCADE, related_name="+")
-    service = models.ForeignKey(OrderService, null=True, blank=True,
-                                on_delete=models.CASCADE, related_name="price_snapshots")
-    offer = models.ForeignKey(ServiceOffer, null=True, blank=True,
-                              on_delete=models.SET_NULL, related_name="price_snapshots")
-    step = models.CharField(max_length=32)  # search/attach/booking/issue/refund
-    components = models.JSONField()  # {base, taxes, fees:[...], markup, discount, total}
+    service = models.ForeignKey(
+        OrderService, null=True, blank=True, on_delete=models.CASCADE, related_name="price_snapshots"
+    )
+    offer = models.ForeignKey(
+        ServiceOffer, null=True, blank=True, on_delete=models.SET_NULL, related_name="price_snapshots"
+    )
+    step = models.CharField(max_length=32)
+    components = models.JSONField()
     formula = models.TextField(blank=True)
     rate_source = models.CharField(max_length=64, blank=True)
     rate_timestamp = models.DateTimeField(null=True, blank=True)
@@ -269,8 +300,9 @@ class PriceSnapshot(models.Model):
     currency = models.CharField(max_length=3)
     total = models.DecimalField(max_digits=14, decimal_places=2)
     created_at = models.DateTimeField(auto_now_add=True)
-    created_by = models.ForeignKey("accounts.User", null=True, blank=True,
-                                   on_delete=models.SET_NULL, related_name="+")
+    created_by = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
 
     class Meta:
         db_table = "services_price_snapshot"

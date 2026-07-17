@@ -55,7 +55,7 @@ class TestJobRunner:
         job.refresh_from_db()
         assert job.status == BackgroundJob.Status.QUEUED
         assert job.run_after > timezone.now()
-        # вторая попытка (обходим run_after)
+
         job.run_after = timezone.now()
         job.save(update_fields=["run_after"])
         run_once()
@@ -66,7 +66,7 @@ class TestJobRunner:
         job = enqueue("test.boom", tenant_id=tenant.id)
         run_once()
         job.refresh_from_db()
-        assert job.status == BackgroundJob.Status.DEAD  # max_attempts=1
+        assert job.status == BackgroundJob.Status.DEAD
         assert job.error_code == "RUNTIMEERROR"
 
     def test_unknown_kind(self, tenant):
@@ -95,7 +95,7 @@ class TestJobRunner:
         )
         run_once()
         job.refresh_from_db()
-        assert job.status == BackgroundJob.Status.SUCCEEDED  # возвращён и выполнен
+        assert job.status == BackgroundJob.Status.SUCCEEDED
 
     def test_outbox_processing(self, tenant):
         emit_event("test.created", "Thing", tenant_id=tenant.id)

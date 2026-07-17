@@ -1,8 +1,3 @@
-"""Application service заказов: создание, статусы, переназначение (ТЗ §7).
-
-Создание заказа из реестра, календаря и подбора использует один и тот же
-create_order() — отдельной упрощённой логики нумерации нет (ТЗ §7.4).
-"""
 from django.db import transaction
 from django.utils import timezone
 
@@ -11,17 +6,29 @@ from common.audit import audit
 from common.errors import ApiError, BusinessRejectionError, TransitionForbiddenError
 from common.locking import check_version
 from common.outbox import emit_event
-from crm.models import Agreement
+from crm.models import Agreement, Person
 from orders.models import (
-    ORDER_TRANSITIONS, TERMINAL_ORDER_STATUSES, Order, OrderParticipant,
-    OrderReassignment, OrderStatusHistory, Route, RoutePoint, allocate_order_number,
+    ORDER_TRANSITIONS,
+    TERMINAL_ORDER_STATUSES,
+    Order,
+    OrderParticipant,
+    OrderReassignment,
+    OrderStatusHistory,
+    Route,
+    RoutePoint,
+    allocate_order_number,
 )
 
 
 def _record_status(order: Order, from_status: str, from_stage: str, *, reason: str, user) -> None:
     OrderStatusHistory.objects.create(
-        order=order, from_status=from_status, to_status=order.status,
-        from_stage=from_stage, to_stage=order.stage, reason=reason, changed_by=user,
+        order=order,
+        from_status=from_status,
+        to_status=order.status,
+        from_stage=from_stage,
+        to_stage=order.stage,
+        reason=reason,
+        changed_by=user,
     )
 
 
@@ -36,13 +43,45 @@ def _active_agreement_snapshot(agreement: Agreement | None) -> dict | None:
         "effective_to": str(agreement.effective_to) if agreement.effective_to else None,
         "fee_rules": [
             {
-                "service_kind": r.service_kind, "fee_kind": r.fee_kind,
-                "calculation": r.calculation, "value": str(r.value), "currency": r.currency,
+                "service_kind": r.service_kind,
+                "fee_kind": r.fee_kind,
+                "calculation": r.calculation,
+                "value": str(r.value),
+                "currency": r.currency,
             }
             for r in agreement.fee_rules.all()
         ],
         "snapshotted_at": timezone.now().isoformat(),
     }
+
+
+def _resolve_participants(tenant_id, participants: list[dict]) -> list[dict]:
+    resolved = []
+    for participant in participants:
+        person = participant.get("person")
+        if person and not isinstance(person, Person):
+            person = Person.objects.filter(pk=person, tenant_id=tenant_id).first()
+            if person is None:
+                raise ApiError(
+                    code="VALIDATION_ERROR",
+                    message=f"Лицо {participant.get('person')} не найдено",
+                    status_code=400,
+                )
+        elif person and person.tenant_id != tenant_id:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message=f"Лицо {person.pk} не найдено",
+                status_code=400,
+            )
+        resolved.append(
+            {
+                "person": person,
+                "guest_snapshot": participant.get("guest_snapshot"),
+                "role": participant.get("role", OrderParticipant.Role.PASSENGER),
+                "is_contact": participant.get("is_contact", False),
+            }
+        )
+    return resolved
 
 
 @transaction.atomic
@@ -75,12 +114,14 @@ def create_order(*, tenant_id, user, data: dict, request=None) -> Order:
 
     route_data = data.get("route")
     if route_data:
-        route = Route.objects.create(tenant_id=tenant_id, order=order,
-                                     kind=route_data.get("kind", Route.Kind.ONE_WAY),
-                                     created_by=user)
+        route = Route.objects.create(
+            tenant_id=tenant_id, order=order, kind=route_data.get("kind", Route.Kind.ONE_WAY), created_by=user
+        )
         for index, point in enumerate(route_data.get("points", []), start=1):
             RoutePoint.objects.create(
-                tenant_id=tenant_id, route=route, sequence=index,
+                tenant_id=tenant_id,
+                route=route,
+                sequence=index,
                 location_code=point["location_code"],
                 location_type=point.get("location_type", "city"),
                 location_name=point.get("location_name", ""),
@@ -89,9 +130,10 @@ def create_order(*, tenant_id, user, data: dict, request=None) -> Order:
                 created_by=user,
             )
 
-    for participant in data.get("participants", []):
+    for participant in _resolve_participants(tenant_id, data.get("participants", [])):
         OrderParticipant.objects.create(
-            tenant_id=tenant_id, order=order,
+            tenant_id=tenant_id,
+            order=order,
             person=participant.get("person"),
             guest_snapshot=participant.get("guest_snapshot"),
             role=participant.get("role", OrderParticipant.Role.PASSENGER),
@@ -101,26 +143,30 @@ def create_order(*, tenant_id, user, data: dict, request=None) -> Order:
 
     _record_status(order, "", "", reason="Заказ создан", user=user)
     emit_event("order.updated", order, payload={"action": "created", "number": order.number})
-    audit("order.created", actor=user, resource=order, request=request,
-          after={"number": order.number, "request_type": order.request_type})
+    audit(
+        "order.created",
+        actor=user,
+        resource=order,
+        request=request,
+        after={"number": order.number, "request_type": order.request_type},
+    )
     return order
 
 
 @transaction.atomic
-def transition_order(*, order_id, user, target_status: str, reason: str = "",
-                     expected_version=None, request=None) -> Order:
+def transition_order(
+    *, order_id, user, target_status: str, reason: str = "", expected_version=None, request=None
+) -> Order:
     """Смена статуса заказа с блокировкой строки и проверкой машины состояний."""
     order = Order.objects.select_for_update().get(pk=order_id)
     check_version(order, expected_version)
 
     if target_status not in Order.Status.values:
-        raise ApiError(code="UNKNOWN_STATUS", message=f"Неизвестный статус: {target_status}",
-                       status_code=400)
+        raise ApiError(code="UNKNOWN_STATUS", message=f"Неизвестный статус: {target_status}", status_code=400)
 
     current = order.status
     allowed = ORDER_TRANSITIONS.get(current, set())
 
-    # Откат терминального статуса — только администратор с причиной (ТЗ §7.2).
     if current in TERMINAL_ORDER_STATUSES:
         if not has_permission(user, "settings.manage"):
             raise TransitionForbiddenError(
@@ -129,8 +175,9 @@ def transition_order(*, order_id, user, target_status: str, reason: str = "",
                 details={"current_status": current, "allowed": sorted(allowed)},
             )
         if not reason:
-            raise ApiError(code="REASON_REQUIRED",
-                           message="Откат терминального статуса требует причины", status_code=400)
+            raise ApiError(
+                code="REASON_REQUIRED", message="Откат терминального статуса требует причины", status_code=400
+            )
     elif target_status not in allowed:
         raise TransitionForbiddenError(
             code="ORDER_STATUS_TRANSITION_FORBIDDEN",
@@ -138,12 +185,11 @@ def transition_order(*, order_id, user, target_status: str, reason: str = "",
             details={"current_status": current, "allowed": sorted(allowed)},
         )
 
-    # paid рассчитывается из финансов; ручной перевод требует права (ТЗ §7.2).
     if target_status == Order.Status.PAID and not has_permission(user, "finance.approve_payment"):
         raise BusinessRejectionError(
             code="MANUAL_PAID_FORBIDDEN",
             message="Статус «оплачен» выставляется по финансовым данным; ручное "
-                    "подтверждение требует права finance.approve_payment",
+            "подтверждение требует права finance.approve_payment",
         )
 
     if target_status == Order.Status.COMPLETED:
@@ -161,10 +207,18 @@ def transition_order(*, order_id, user, target_status: str, reason: str = "",
     order.save()
 
     _record_status(order, from_status, from_stage, reason=reason, user=user)
-    emit_event("order.updated", order,
-               payload={"action": "status_changed", "from": from_status, "to": target_status})
-    event = audit("order.status_changed", actor=user, resource=order, request=request,
-                  reason=reason, before={"status": from_status}, after={"status": target_status})
+    emit_event(
+        "order.updated", order, payload={"action": "status_changed", "from": from_status, "to": target_status}
+    )
+    event = audit(
+        "order.status_changed",
+        actor=user,
+        resource=order,
+        request=request,
+        reason=reason,
+        before={"status": from_status},
+        after={"status": target_status},
+    )
     order._audit_event_id = str(event.id)
     return order
 
@@ -174,8 +228,12 @@ def _check_completion_allowed(order: Order) -> None:
     from services.models import OrderService
 
     non_terminal = order.services.exclude(
-        status__in=[OrderService.Status.ISSUED, OrderService.Status.REFUNDED,
-                    OrderService.Status.CANCELLED, OrderService.Status.CONFIRMED]
+        status__in=[
+            OrderService.Status.ISSUED,
+            OrderService.Status.REFUNDED,
+            OrderService.Status.CANCELLED,
+            OrderService.Status.CONFIRMED,
+        ]
     ).exclude(archived_at__isnull=False)
     if non_terminal.exists():
         raise BusinessRejectionError(
@@ -183,12 +241,13 @@ def _check_completion_allowed(order: Order) -> None:
             message="Заказ нельзя завершить: есть незавершённые услуги",
             details={"services": [str(s.id) for s in non_terminal[:20]]},
         )
-    # Проверка долга — по ledger (Этап 5); при отсутствии обязательств долг 0.
+
     try:
         from finance.models import FinancialObligation
 
         outstanding = FinancialObligation.objects.filter(
-            order=order, status__in=["open", "partial"],
+            order=order,
+            status__in=["open", "partial"],
             direction="client_receivable",
         ).exists()
         if outstanding:
@@ -201,8 +260,9 @@ def _check_completion_allowed(order: Order) -> None:
 
 
 @transaction.atomic
-def reassign_order(*, order_id, user, new_operator, reason: str = "",
-                   expected_version=None, request=None) -> Order:
+def reassign_order(
+    *, order_id, user, new_operator, reason: str = "", expected_version=None, request=None
+) -> Order:
     order = Order.objects.select_for_update().get(pk=order_id)
     check_version(order, expected_version)
     previous = order.operator
@@ -211,13 +271,22 @@ def reassign_order(*, order_id, user, new_operator, reason: str = "",
     order.updated_by = user
     order.save(update_fields=["operator", "version", "updated_by", "updated_at"])
     OrderReassignment.objects.create(
-        order=order, previous_operator=previous, new_operator=new_operator,
-        reason=reason, reassigned_by=user,
+        order=order,
+        previous_operator=previous,
+        new_operator=new_operator,
+        reason=reason,
+        reassigned_by=user,
     )
     emit_event("order.updated", order, payload={"action": "reassigned"})
-    audit("order.reassigned", actor=user, resource=order, request=request, reason=reason,
-          before={"operator": str(previous.pk) if previous else None},
-          after={"operator": str(new_operator.pk)})
+    audit(
+        "order.reassigned",
+        actor=user,
+        resource=order,
+        request=request,
+        reason=reason,
+        before={"operator": str(previous.pk) if previous else None},
+        after={"operator": str(new_operator.pk)},
+    )
     return order
 
 
@@ -226,7 +295,9 @@ def duplicate_order(*, order_id, user, request=None) -> Order:
     """Новый заказ без provider identifiers и платежей (ТЗ §7.3)."""
     source = Order.objects.select_related("client_person", "client_company").get(pk=order_id)
     new_order = create_order(
-        tenant_id=source.tenant_id, user=user, request=request,
+        tenant_id=source.tenant_id,
+        user=user,
+        request=request,
         data={
             "request_type": source.request_type,
             "client_person": source.client_person,
@@ -242,8 +313,12 @@ def duplicate_order(*, order_id, user, request=None) -> Order:
             "purpose": source.purpose,
             "comment": f"Дубликат заказа {source.number}",
             "participants": [
-                {"person": p.person, "guest_snapshot": p.guest_snapshot, "role": p.role,
-                 "is_contact": p.is_contact}
+                {
+                    "person": p.person,
+                    "guest_snapshot": p.guest_snapshot,
+                    "role": p.role,
+                    "is_contact": p.is_contact,
+                }
                 for p in source.participants.filter(status="active")
             ],
             "route": _route_as_dict(source),
@@ -259,9 +334,13 @@ def _route_as_dict(order: Order) -> dict | None:
     return {
         "kind": route.kind,
         "points": [
-            {"location_code": p.location_code, "location_type": p.location_type,
-             "location_name": p.location_name, "local_datetime": p.local_datetime,
-             "timezone": p.timezone}
+            {
+                "location_code": p.location_code,
+                "location_type": p.location_type,
+                "location_name": p.location_name,
+                "local_datetime": p.local_datetime,
+                "timezone": p.timezone,
+            }
             for p in route.points.all()
         ],
     }
@@ -273,8 +352,7 @@ def allowed_actions(order: Order, user) -> dict:
     can_change_status = has_permission(user, "orders.change_status")
     return {
         "transitions": transitions if can_change_status else [],
-        "can_edit": has_permission(user, "orders.change")
-        and order.status not in TERMINAL_ORDER_STATUSES,
+        "can_edit": has_permission(user, "orders.change") and order.status not in TERMINAL_ORDER_STATUSES,
         "can_reassign": has_permission(user, "orders.reassign"),
         "can_cancel": can_change_status
         and Order.Status.CANCELLED in ORDER_TRANSITIONS.get(order.status, set()),

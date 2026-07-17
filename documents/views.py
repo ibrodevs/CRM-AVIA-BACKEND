@@ -1,10 +1,7 @@
-"""Documents API (ТЗ §15)."""
-import hashlib
-
 from django.db import transaction
 from django.http import FileResponse
 from django.utils import timezone
-from rest_framework import serializers, status as http
+from rest_framework import status as http
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -15,94 +12,14 @@ from common.errors import ApiError
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
 from documents.models import (
-    Document, DocumentTemplate, DocumentVersion, ReceiptDraft, ReceiptImportJob,
+    Document,
+    DocumentTemplate,
+    ReceiptDraft,
+    ReceiptImportJob,
 )
-
-# allowlist MIME + magic bytes (ТЗ §15.2); HTML/SVG запрещены (исполняемый контент)
-ALLOWED_TYPES: dict[str, list[bytes]] = {
-    "application/pdf": [b"%PDF"],
-    "image/jpeg": [b"\xff\xd8\xff"],
-    "image/png": [b"\x89PNG"],
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [b"PK\x03\x04"],
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [b"PK\x03\x04"],
-    "text/csv": [],
-    "text/plain": [],
-}
-MAX_FILE_SIZE = 25 * 1024 * 1024
-
-
-def _validate_file(file) -> None:
-    if file.size > MAX_FILE_SIZE:
-        raise ApiError(code="FILE_TOO_LARGE", message="Максимальный размер 25 МБ",
-                       status_code=400)
-    if file.content_type not in ALLOWED_TYPES:
-        raise ApiError(code="UNSUPPORTED_FILE_TYPE",
-                       message=f"Тип {file.content_type} запрещён", status_code=400)
-    magics = ALLOWED_TYPES[file.content_type]
-    if magics:
-        head = file.read(8)
-        file.seek(0)
-        if not any(head.startswith(m) for m in magics):
-            raise ApiError(code="FILE_SIGNATURE_MISMATCH",
-                           message="Содержимое не соответствует заявленному типу",
-                           status_code=400)
-
-
-class DocumentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Document
-        fields = ["id", "order", "service", "person", "company", "kind", "status",
-                  "title", "source", "current_version", "document_date",
-                  "document_number", "amount", "currency", "requires_signing",
-                  "is_confidential", "metadata", "created_at", "version"]
-        read_only_fields = ["id", "status", "current_version", "created_at", "version"]
-
-
-class DocumentVersionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = DocumentVersion
-        fields = ["id", "version", "checksum_sha256", "mime_type", "size_bytes",
-                  "original_name", "origin", "scan_status", "correction_reason",
-                  "created_at"]
-
-
-def _documents_qs(request):
-    qs = Document.objects.filter(tenant_id=request.user.tenant_id,
-                                 archived_at__isnull=True)
-    # паспорта/банковские — отдельное право (ТЗ §15.2)
-    if not has_permission(request.user, "documents.view_sensitive"):
-        qs = qs.filter(is_confidential=False)
-    return qs
-
-
-def _get_document(request, document_id) -> Document:
-    document = _documents_qs(request).filter(pk=document_id).first()
-    if document is None:
-        raise ApiError(code="NOT_FOUND", message="Документ не найден", status_code=404)
-    return document
-
-
-def _add_version(document: Document, *, content: bytes, mime: str, name: str,
-                 user, origin: str = "uploaded", template_version: str = "",
-                 correction_reason: str = "", correction_diff=None) -> DocumentVersion:
-    from django.core.files.base import ContentFile
-
-    checksum = hashlib.sha256(content).hexdigest()
-    version = DocumentVersion(
-        document=document, version=document.current_version + 1,
-        checksum_sha256=checksum, mime_type=mime, size_bytes=len(content),
-        original_name=name, origin=origin, template_version=template_version,
-        scan_status="clean",  # antivirus adapter: в первом этапе файлы помечаются clean
-        correction_reason=correction_reason, correction_diff=correction_diff,
-        created_by=user,
-    )
-    version.file.save(name or f"v{version.version}", ContentFile(content), save=False)
-    version.save()
-    document.current_version = version.version
-    if document.status == Document.Status.DRAFT and origin == "generated":
-        document.status = Document.Status.GENERATED
-    document.save(update_fields=["current_version", "status"])
-    return version
+from documents.selectors import documents_visible_to, get_document_or_404
+from documents.serializers import DocumentSerializer, DocumentVersionSerializer
+from documents.services import add_document_version, validate_upload
 
 
 class DocumentListCreateView(GenericAPIView):
@@ -111,7 +28,7 @@ class DocumentListCreateView(GenericAPIView):
     serializer_class = DocumentSerializer
 
     def get(self, request):
-        qs = _documents_qs(request).order_by("-created_at")
+        qs = documents_visible_to(request.user).order_by("-created_at")
         params = request.query_params
         if order_id := params.get("order"):
             qs = qs.filter(order_id=order_id)
@@ -133,17 +50,18 @@ class DocumentListCreateView(GenericAPIView):
             try:
                 meta = json.loads(meta)
             except ValueError:
-                raise ApiError(code="VALIDATION_ERROR", message="document: некорректный JSON",
-                               status_code=400) from None
+                raise ApiError(
+                    code="VALIDATION_ERROR", message="document: некорректный JSON", status_code=400
+                ) from None
         serializer = DocumentSerializer(data=meta or request.data)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
-            document = serializer.save(tenant_id=request.user.tenant_id,
-                                       created_by=request.user)
+            document = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
             if file is not None:
-                _validate_file(file)
-                _add_version(document, content=file.read(), mime=file.content_type,
-                             name=file.name, user=request.user)
+                validate_upload(file)
+                add_document_version(
+                    document, content=file.read(), mime=file.content_type, name=file.name, user=request.user
+                )
         audit("documents.uploaded", actor=request.user, resource=document, request=request)
         return Response(DocumentSerializer(document).data, status=http.HTTP_201_CREATED)
 
@@ -152,31 +70,34 @@ class DocumentVersionsView(APIView):
     permission_classes = [require("documents.view")]
 
     def get(self, request, document_id):
-        document = _get_document(request, document_id)
-        return Response(DocumentVersionSerializer(
-            document.versions.order_by("-version"), many=True).data)
+        document = get_document_or_404(request.user, document_id)
+        return Response(DocumentVersionSerializer(document.versions.order_by("-version"), many=True).data)
 
     def post(self, request, document_id):
         """Новая версия (исправление представления): diff, причина, автор (ТЗ §15.3)."""
-        if not has_permission(request.user, "documents.upload") \
-                and not has_permission(request.user, "services.correct_document"):
-            raise ApiError(code="PERMISSION_DENIED", message="Нет права на исправление",
-                           status_code=403)
-        document = _get_document(request, document_id)
+        if not has_permission(request.user, "documents.upload") and not has_permission(
+            request.user, "services.correct_document"
+        ):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права на исправление", status_code=403)
+        document = get_document_or_404(request.user, document_id)
         file = request.FILES.get("file")
         reason = str(request.data.get("reason", ""))
         if file is None or not reason:
-            raise ApiError(code="VALIDATION_ERROR", message="Нужны file и reason",
-                           status_code=400)
-        _validate_file(file)
-        version = _add_version(document, content=file.read(), mime=file.content_type,
-                               name=file.name, user=request.user,
-                               correction_reason=reason,
-                               correction_diff=request.data.get("diff"))
-        audit("documents.version_added", actor=request.user, resource=document,
-              request=request, reason=reason)
-        return Response(DocumentVersionSerializer(version).data,
-                        status=http.HTTP_201_CREATED)
+            raise ApiError(code="VALIDATION_ERROR", message="Нужны file и reason", status_code=400)
+        validate_upload(file)
+        version = add_document_version(
+            document,
+            content=file.read(),
+            mime=file.content_type,
+            name=file.name,
+            user=request.user,
+            correction_reason=reason,
+            correction_diff=request.data.get("diff"),
+        )
+        audit(
+            "documents.version_added", actor=request.user, resource=document, request=request, reason=reason
+        )
+        return Response(DocumentVersionSerializer(version).data, status=http.HTTP_201_CREATED)
 
 
 class DocumentGenerateView(APIView):
@@ -185,24 +106,35 @@ class DocumentGenerateView(APIView):
     permission_classes = [require("documents.generate")]
 
     def post(self, request, document_id):
-        document = _get_document(request, document_id)
-        template = DocumentTemplate.objects.filter(
-            tenant_id=request.user.tenant_id, code=request.data.get("template"),
-            status="published",
-        ).order_by("-template_version").first()
+        document = get_document_or_404(request.user, document_id)
+        template = (
+            DocumentTemplate.objects.filter(
+                tenant_id=request.user.tenant_id,
+                code=request.data.get("template"),
+                status="published",
+            )
+            .order_by("-template_version")
+            .first()
+        )
         context = request.data.get("context", {})
         body = template.body if template else "{title}\n{context}"
         rendered = body.format(title=document.title, context=context)
-        version = _add_version(
-            document, content=rendered.encode(), mime="text/plain",
-            name=f"{document.title}.txt", user=request.user, origin="generated",
+        version = add_document_version(
+            document,
+            content=rendered.encode(),
+            mime="text/plain",
+            name=f"{document.title}.txt",
+            user=request.user,
+            origin="generated",
             template_version=f"{template.code}:{template.template_version}" if template else "",
         )
-        emit_event("order.updated", document.order or document,
-                   payload={"action": "document_generated", "document": str(document.id)})
+        emit_event(
+            "order.updated",
+            document.order or document,
+            payload={"action": "document_generated", "document": str(document.id)},
+        )
         audit("documents.generated", actor=request.user, resource=document, request=request)
-        return Response(DocumentVersionSerializer(version).data,
-                        status=http.HTTP_201_CREATED)
+        return Response(DocumentVersionSerializer(version).data, status=http.HTTP_201_CREATED)
 
 
 class DocumentSignView(APIView):
@@ -211,18 +143,18 @@ class DocumentSignView(APIView):
     permission_classes = [require("documents.sign")]
 
     def post(self, request, document_id):
-        document = _get_document(request, document_id)
+        document = get_document_or_404(request.user, document_id)
         if document.current_version == 0:
-            raise ApiError(code="NO_VERSION", message="Нет версии для подписания",
-                           status_code=409)
+            raise ApiError(code="NO_VERSION", message="Нет версии для подписания", status_code=409)
         if document.status == Document.Status.VOID:
-            raise ApiError(code="DOCUMENT_VOID", message="Документ аннулирован",
-                           status_code=409)
+            raise ApiError(code="DOCUMENT_VOID", message="Документ аннулирован", status_code=409)
         document.status = Document.Status.SIGNED
-        document.metadata = {**document.metadata,
-                             "signature_reference": str(request.data.get("reference", "")),
-                             "signed_at": timezone.now().isoformat(),
-                             "signed_by": str(request.user.id)}
+        document.metadata = {
+            **document.metadata,
+            "signature_reference": str(request.data.get("reference", "")),
+            "signed_at": timezone.now().isoformat(),
+            "signed_by": str(request.user.id),
+        }
         document.save(update_fields=["status", "metadata"])
         audit("documents.signed", actor=request.user, resource=document, request=request)
         return Response(DocumentSerializer(document).data)
@@ -232,16 +164,14 @@ class DocumentVoidView(APIView):
     permission_classes = [require("documents.void")]
 
     def post(self, request, document_id):
-        document = _get_document(request, document_id)
+        document = get_document_or_404(request.user, document_id)
         reason = str(request.data.get("reason", ""))
         if not reason:
-            raise ApiError(code="REASON_REQUIRED", message="Аннулирование требует причины",
-                           status_code=400)
+            raise ApiError(code="REASON_REQUIRED", message="Аннулирование требует причины", status_code=400)
         document.status = Document.Status.VOID
         document.metadata = {**document.metadata, "void_reason": reason}
         document.save(update_fields=["status", "metadata"])
-        audit("documents.voided", actor=request.user, resource=document, request=request,
-              reason=reason)
+        audit("documents.voided", actor=request.user, resource=document, request=request, reason=reason)
         return Response(DocumentSerializer(document).data)
 
 
@@ -249,16 +179,22 @@ class DocumentSendView(APIView):
     permission_classes = [require("documents.send")]
 
     def post(self, request, document_id):
-        document = _get_document(request, document_id)
+        document = get_document_or_404(request.user, document_id)
         if document.current_version == 0:
-            raise ApiError(code="NO_VERSION", message="Нет файла для отправки",
-                           status_code=409)
+            raise ApiError(code="NO_VERSION", message="Нет файла для отправки", status_code=409)
         channel = str(request.data.get("channel", "email"))
-        emit_event("order.updated", document.order or document,
-                   payload={"action": "document_sent", "document": str(document.id),
-                            "channel": channel})
-        audit("documents.sent", actor=request.user, resource=document, request=request,
-              after={"channel": channel})
+        emit_event(
+            "order.updated",
+            document.order or document,
+            payload={"action": "document_sent", "document": str(document.id), "channel": channel},
+        )
+        audit(
+            "documents.sent",
+            actor=request.user,
+            resource=document,
+            request=request,
+            after={"channel": channel},
+        )
         return Response({"status": "queued", "channel": channel})
 
 
@@ -266,25 +202,22 @@ class DocumentDownloadView(APIView):
     permission_classes = [require("documents.view")]
 
     def get(self, request, document_id):
-        document = _get_document(request, document_id)
+        document = get_document_or_404(request.user, document_id)
         version_number = request.query_params.get("file_version")
-        version = (document.versions.filter(version=version_number).first()
-                   if version_number
-                   else document.versions.order_by("-version").first())
+        version = (
+            document.versions.filter(version=version_number).first()
+            if version_number
+            else document.versions.order_by("-version").first()
+        )
         if version is None:
             raise ApiError(code="NO_VERSION", message="Нет файла", status_code=404)
         if version.scan_status != "clean":
-            raise ApiError(code="FILE_QUARANTINED",
-                           message="Файл не прошёл проверку", status_code=423)
-        # audit скачивания sensitive-документов (ТЗ §15.2)
+            raise ApiError(code="FILE_QUARANTINED", message="Файл не прошёл проверку", status_code=423)
+
         if document.is_confidential:
-            audit("documents.sensitive_downloaded", actor=request.user,
-                  resource=document, request=request)
-        response = FileResponse(version.file.open("rb"),
-                                content_type=version.mime_type)
-        response["Content-Disposition"] = (
-            f'attachment; filename="{version.original_name or document.title}"'
-        )
+            audit("documents.sensitive_downloaded", actor=request.user, resource=document, request=request)
+        response = FileResponse(version.file.open("rb"), content_type=version.mime_type)
+        response["Content-Disposition"] = f'attachment; filename="{version.original_name or document.title}"'
         response["X-Content-Type-Options"] = "nosniff"
         return response
 
@@ -293,26 +226,37 @@ class DocumentTemplatesView(APIView):
     permission_classes = [require("documents.view")]
 
     def get(self, request):
-        templates = DocumentTemplate.objects.filter(tenant_id=request.user.tenant_id,
-                                                    archived_at__isnull=True)
-        return Response([
-            {"id": str(t.id), "code": t.code, "name": t.name, "kind": t.kind,
-             "template_version": t.template_version, "status": t.status}
-            for t in templates
-        ])
+        templates = DocumentTemplate.objects.filter(
+            tenant_id=request.user.tenant_id, archived_at__isnull=True
+        )
+        return Response(
+            [
+                {
+                    "id": str(t.id),
+                    "code": t.code,
+                    "name": t.name,
+                    "kind": t.kind,
+                    "template_version": t.template_version,
+                    "status": t.status,
+                }
+                for t in templates
+            ]
+        )
 
     def post(self, request):
         self.permission_classes = [require("settings.manage")]
         self.check_permissions(request)
         code = str(request.data.get("code", "")).strip()
         if not code:
-            raise ApiError(code="VALIDATION_ERROR", message="code обязателен",
-                           status_code=400)
-        last = DocumentTemplate.objects.filter(
-            tenant_id=request.user.tenant_id, code=code
-        ).order_by("-template_version").first()
+            raise ApiError(code="VALIDATION_ERROR", message="code обязателен", status_code=400)
+        last = (
+            DocumentTemplate.objects.filter(tenant_id=request.user.tenant_id, code=code)
+            .order_by("-template_version")
+            .first()
+        )
         template = DocumentTemplate.objects.create(
-            tenant_id=request.user.tenant_id, code=code,
+            tenant_id=request.user.tenant_id,
+            code=code,
             name=str(request.data.get("name", code)),
             kind=str(request.data.get("kind", "other")),
             body=str(request.data.get("body", "")),
@@ -321,14 +265,12 @@ class DocumentTemplatesView(APIView):
             published_at=timezone.now() if request.data.get("publish") else None,
             created_by=request.user,
         )
-        audit("documents.template_created", actor=request.user, resource=template,
-              request=request)
-        return Response({"id": str(template.id),
-                         "template_version": template.template_version},
-                        status=http.HTTP_201_CREATED)
+        audit("documents.template_created", actor=request.user, resource=template, request=request)
+        return Response(
+            {"id": str(template.id), "template_version": template.template_version},
+            status=http.HTTP_201_CREATED,
+        )
 
-
-# --- Receipt import (ТЗ §15.4) --------------------------------------------------
 
 class ReceiptImportCreateView(APIView):
     permission_classes = [require("documents.upload")]
@@ -336,18 +278,20 @@ class ReceiptImportCreateView(APIView):
     def post(self, request):
         file = request.FILES.get("file")
         if file is None:
-            raise ApiError(code="VALIDATION_ERROR", message="Файл file обязателен",
-                           status_code=400)
-        _validate_file(file)
+            raise ApiError(code="VALIDATION_ERROR", message="Файл file обязателен", status_code=400)
+        validate_upload(file)
         import_job = ReceiptImportJob.objects.create(
-            tenant_id=request.user.tenant_id, created_by=request.user,
-            guessed_type="itinerary_receipt", parser_status="parsed",
+            tenant_id=request.user.tenant_id,
+            created_by=request.user,
+            guessed_type="itinerary_receipt",
+            parser_status="parsed",
             confidence="0.500",
             raw_extraction={"note": "OCR-адаптер не подключён; заполните поля вручную"},
             warnings=["OCR выполняется заглушкой; проверьте все поля"],
         )
         ReceiptDraft.objects.create(
-            tenant_id=request.user.tenant_id, import_job=import_job,
+            tenant_id=request.user.tenant_id,
+            import_job=import_job,
             created_by=request.user,
         )
         return Response({"id": str(import_job.id)}, status=http.HTTP_201_CREATED)
@@ -357,26 +301,32 @@ class ReceiptImportResultView(APIView):
     permission_classes = [require("documents.view")]
 
     def get(self, request, import_id):
-        import_job = ReceiptImportJob.objects.filter(
-            pk=import_id, tenant_id=request.user.tenant_id).first()
+        import_job = ReceiptImportJob.objects.filter(pk=import_id, tenant_id=request.user.tenant_id).first()
         if import_job is None:
             raise ApiError(code="NOT_FOUND", message="Импорт не найден", status_code=404)
         draft = getattr(import_job, "draft", None)
-        return Response({
-            "id": str(import_job.id), "parser_status": import_job.parser_status,
-            "confidence": str(import_job.confidence) if import_job.confidence else None,
-            "warnings": import_job.warnings,
-            "draft": {
-                "issuer": draft.issuer, "entity": draft.entity,
-                "trip_type": draft.trip_type, "segments": draft.segments,
-                "passenger_name": draft.passenger_name,
-                "fare": str(draft.fare) if draft.fare else None,
-                "taxes": str(draft.taxes) if draft.taxes else None,
-                "fees": str(draft.fees) if draft.fees else None,
-                "total": str(draft.total) if draft.total else None,
-                "currency": draft.currency,
-            } if draft else None,
-        })
+        return Response(
+            {
+                "id": str(import_job.id),
+                "parser_status": import_job.parser_status,
+                "confidence": str(import_job.confidence) if import_job.confidence else None,
+                "warnings": import_job.warnings,
+                "draft": {
+                    "issuer": draft.issuer,
+                    "entity": draft.entity,
+                    "trip_type": draft.trip_type,
+                    "segments": draft.segments,
+                    "passenger_name": draft.passenger_name,
+                    "fare": str(draft.fare) if draft.fare else None,
+                    "taxes": str(draft.taxes) if draft.taxes else None,
+                    "fees": str(draft.fees) if draft.fees else None,
+                    "total": str(draft.total) if draft.total else None,
+                    "currency": draft.currency,
+                }
+                if draft
+                else None,
+            }
+        )
 
 
 class ReceiptImportConfirmView(APIView):
@@ -389,20 +339,18 @@ class ReceiptImportConfirmView(APIView):
 
         from common.money import quantize
 
-        import_job = ReceiptImportJob.objects.filter(
-            pk=import_id, tenant_id=request.user.tenant_id).first()
+        import_job = ReceiptImportJob.objects.filter(pk=import_id, tenant_id=request.user.tenant_id).first()
         if import_job is None:
             raise ApiError(code="NOT_FOUND", message="Импорт не найден", status_code=404)
         draft = getattr(import_job, "draft", None)
         if draft is None or draft.confirmed_at is not None:
-            raise ApiError(code="ALREADY_CONFIRMED", message="Черновик уже подтверждён",
-                           status_code=409)
+            raise ApiError(code="ALREADY_CONFIRMED", message="Черновик уже подтверждён", status_code=409)
         data = request.data
         currency = str(data.get("currency", "USD"))
         fare = Decimal(str(data.get("fare", "0")))
         taxes = Decimal(str(data.get("taxes", "0")))
         fees = Decimal(str(data.get("fees", "0")))
-        total = quantize(fare + taxes + fees, currency)  # сервер пересчитывает итог
+        total = quantize(fare + taxes + fees, currency)
         with transaction.atomic():
             draft.issuer = str(data.get("issuer", ""))
             draft.passenger_name = str(data.get("passenger_name", ""))
@@ -412,19 +360,28 @@ class ReceiptImportConfirmView(APIView):
             draft.currency = currency
             draft.confirmed_at = timezone.now()
             document = Document.objects.create(
-                tenant_id=request.user.tenant_id, kind="itinerary_receipt",
+                tenant_id=request.user.tenant_id,
+                kind="itinerary_receipt",
                 title=f"Квитанция {draft.passenger_name or ''}".strip(),
-                source="import", amount=total, currency=currency,
+                source="import",
+                amount=total,
+                currency=currency,
                 created_by=request.user,
             )
             draft.result_document = document
             draft.save()
-            content = (f"RECEIPT\nPassenger: {draft.passenger_name}\n"
-                       f"Fare: {fare} Taxes: {taxes} Fees: {fees}\n"
-                       f"Total: {total} {currency}\n").encode()
-            _add_version(document, content=content, mime="text/plain",
-                         name="receipt.txt", user=request.user, origin="generated")
-        audit("documents.receipt_confirmed", actor=request.user, resource=document,
-              request=request)
-        return Response({"document_id": str(document.id), "total": str(total),
-                         "currency": currency})
+            content = (
+                f"RECEIPT\nPassenger: {draft.passenger_name}\n"
+                f"Fare: {fare} Taxes: {taxes} Fees: {fees}\n"
+                f"Total: {total} {currency}\n"
+            ).encode()
+            add_document_version(
+                document,
+                content=content,
+                mime="text/plain",
+                name="receipt.txt",
+                user=request.user,
+                origin="generated",
+            )
+        audit("documents.receipt_confirmed", actor=request.user, resource=document, request=request)
+        return Response({"document_id": str(document.id), "total": str(total), "currency": currency})

@@ -1,15 +1,3 @@
-"""Реестр обработчиков фоновых заданий и постановка в очередь.
-
-Обработчик регистрируется декоратором:
-
-    @job_handler("orders.cancel", max_attempts=3, retryable=True)
-    def cancel_order(job: BackgroundJob) -> dict | None:
-        ...
-
-Возвращаемое значение сохраняется в job.result. Исключение JobRetry
-переносит выполнение (safe retry с backoff); прочие исключения считаются
-ошибкой попытки.
-"""
 from dataclasses import dataclass
 from typing import Callable
 
@@ -33,15 +21,16 @@ class JobHandler:
     kind: str
     func: Callable[[BackgroundJob], dict | None]
     max_attempts: int
-    retryable: bool  # разрешён ли автоматический retry при неожиданной ошибке
+    retryable: bool
     user_cancellable: bool
 
 
 _REGISTRY: dict[str, JobHandler] = {}
 
 
-def job_handler(kind: str, *, max_attempts: int | None = None, retryable: bool = False,
-                user_cancellable: bool = True):
+def job_handler(
+    kind: str, *, max_attempts: int | None = None, retryable: bool = False, user_cancellable: bool = True
+):
     def decorator(func):
         _REGISTRY[kind] = JobHandler(
             kind=kind,

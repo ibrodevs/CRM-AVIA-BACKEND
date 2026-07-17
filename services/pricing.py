@@ -1,10 +1,3 @@
-"""Серверное ценообразование (ТЗ §8.3).
-
-Финальная цена: supplier base + taxes + supplier fees + договорные FeeRule
-+ supplier markup + agency markup - скидка, с фиксацией immutable
-PriceSnapshot (формула, источник курса, timestamp, rounding).
-Frontend передаёт выбранные rule ids, но не итог.
-"""
 from decimal import Decimal
 
 from django.utils import timezone
@@ -13,8 +6,16 @@ from common.money import quantize
 from services.models import PriceSnapshot
 
 
-def resolve_markup_rules(supplier, *, kind: str, route: str = "", airline: str = "",
-                         cabin: str = "", passenger_category: str = "", on_date=None):
+def resolve_markup_rules(
+    supplier,
+    *,
+    kind: str,
+    route: str = "",
+    airline: str = "",
+    cabin: str = "",
+    passenger_category: str = "",
+    on_date=None,
+):
     """Возвращает применимые правила наценки поставщика по приоритету с объяснением."""
     if supplier is None:
         return []
@@ -37,7 +38,7 @@ def resolve_markup_rules(supplier, *, kind: str, route: str = "", airline: str =
         if rule.route and not _route_matches(rule.route, route):
             continue
         applicable.append(rule)
-    return applicable[:1]  # применяется правило с наивысшим приоритетом
+    return applicable[:1]
 
 
 def _route_matches(pattern: str, route: str) -> bool:
@@ -46,10 +47,21 @@ def _route_matches(pattern: str, route: str) -> bool:
     return fnmatch.fnmatch(route.upper(), pattern.upper())
 
 
-def calculate_price(*, base: Decimal, taxes: Decimal = Decimal(0), currency: str,
-                    fee_rules=None, markup_rules=None, discount: Decimal = Decimal(0),
-                    rate_source: str = "", tenant_id=None, service=None, offer=None,
-                    step: str = "search", user=None) -> dict:
+def calculate_price(
+    *,
+    base: Decimal,
+    taxes: Decimal = Decimal(0),
+    currency: str,
+    fee_rules=None,
+    markup_rules=None,
+    discount: Decimal = Decimal(0),
+    rate_source: str = "",
+    tenant_id=None,
+    service=None,
+    offer=None,
+    step: str = "search",
+    user=None,
+) -> dict:
     """Рассчитывает итог и сохраняет PriceSnapshot. Все Decimal, ROUND_HALF_UP."""
     components: list[dict] = [
         {"name": "base", "amount": str(quantize(base, currency))},
@@ -58,27 +70,39 @@ def calculate_price(*, base: Decimal, taxes: Decimal = Decimal(0), currency: str
     formula_parts = ["base", "taxes"]
     total = base + taxes
 
-    for rule in (fee_rules or []):
+    for rule in fee_rules or []:
         if rule.calculation == "percent":
             amount = quantize(base * rule.value / Decimal(100), currency)
         else:
             amount = quantize(rule.value, currency)
         total += amount
-        components.append({"name": f"fee:{rule.fee_kind}", "amount": str(amount),
-                           "rule_id": str(rule.id), "calculation": rule.calculation,
-                           "value": str(rule.value)})
+        components.append(
+            {
+                "name": f"fee:{rule.fee_kind}",
+                "amount": str(amount),
+                "rule_id": str(rule.id),
+                "calculation": rule.calculation,
+                "value": str(rule.value),
+            }
+        )
         formula_parts.append(f"fee_{rule.fee_kind}({rule.calculation}:{rule.value})")
 
-    for rule in (markup_rules or []):
+    for rule in markup_rules or []:
         if rule.amount_type == "percent":
             amount = quantize(base * rule.amount_value / Decimal(100), currency)
         else:
             amount = quantize(rule.amount_value, currency)
         total += amount
-        components.append({"name": "supplier_markup", "amount": str(amount),
-                           "rule_id": str(rule.id), "priority": rule.priority,
-                           "explanation": f"{rule.amount_type}:{rule.amount_value} "
-                                          f"({rule.service_kind}{'/' + rule.route if rule.route else ''})"})
+        components.append(
+            {
+                "name": "supplier_markup",
+                "amount": str(amount),
+                "rule_id": str(rule.id),
+                "priority": rule.priority,
+                "explanation": f"{rule.amount_type}:{rule.amount_value} "
+                f"({rule.service_kind}{'/' + rule.route if rule.route else ''})",
+            }
+        )
         formula_parts.append(f"markup({rule.amount_type}:{rule.amount_value})")
 
     if discount:
@@ -91,12 +115,16 @@ def calculate_price(*, base: Decimal, taxes: Decimal = Decimal(0), currency: str
     snapshot = None
     if tenant_id is not None:
         snapshot = PriceSnapshot.objects.create(
-            tenant_id=tenant_id, service=service, offer=offer, step=step,
+            tenant_id=tenant_id,
+            service=service,
+            offer=offer,
+            step=step,
             components={"items": components},
             formula=" + ".join(formula_parts),
             rate_source=rate_source,
             rate_timestamp=timezone.now(),
-            currency=currency, total=total,
+            currency=currency,
+            total=total,
             created_by=user,
         )
     return {

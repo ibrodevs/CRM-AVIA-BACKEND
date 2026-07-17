@@ -8,8 +8,15 @@ from orders.models import Order, OrderParticipant, OrderTask, Route, RoutePoint
 class RoutePointSerializer(serializers.ModelSerializer):
     class Meta:
         model = RoutePoint
-        fields = ["id", "sequence", "location_code", "location_type", "location_name",
-                  "local_datetime", "timezone"]
+        fields = [
+            "id",
+            "sequence",
+            "location_code",
+            "location_type",
+            "location_name",
+            "local_datetime",
+            "timezone",
+        ]
         read_only_fields = ["id", "sequence"]
 
 
@@ -26,31 +33,66 @@ class ParticipantSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrderParticipant
-        fields = ["id", "person", "person_name", "guest_snapshot", "role", "group_name",
-                  "subgroup_name", "is_contact", "booking_document", "status", "notes"]
+        fields = [
+            "id",
+            "person",
+            "person_name",
+            "guest_snapshot",
+            "role",
+            "group_name",
+            "subgroup_name",
+            "is_contact",
+            "booking_document",
+            "status",
+            "notes",
+        ]
         read_only_fields = ["id", "status"]
 
 
 class OrderTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrderTask
-        fields = ["id", "title", "description", "assignee", "due_at", "priority",
-                  "status", "completed_at", "created_at"]
+        fields = [
+            "id",
+            "title",
+            "description",
+            "assignee",
+            "due_at",
+            "priority",
+            "status",
+            "completed_at",
+            "created_at",
+        ]
         read_only_fields = ["id", "completed_at", "created_at"]
 
 
 class OrderListSerializer(serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
-    operator_name = serializers.CharField(source="operator.get_full_name", read_only=True,
-                                          default="")
+    operator_name = serializers.CharField(source="operator.get_full_name", read_only=True, default="")
     status_display = serializers.CharField(source="get_status_display", read_only=True)
 
     class Meta:
         model = Order
-        fields = ["id", "number", "request_type", "status", "status_display", "stage",
-                  "priority", "client_person", "client_company", "client_name",
-                  "operator", "operator_name", "planned_start", "planned_end",
-                  "base_currency", "is_group", "created_at", "version"]
+        fields = [
+            "id",
+            "number",
+            "request_type",
+            "status",
+            "status_display",
+            "stage",
+            "priority",
+            "client_person",
+            "client_company",
+            "client_name",
+            "operator",
+            "operator_name",
+            "planned_start",
+            "planned_end",
+            "base_currency",
+            "is_group",
+            "created_at",
+            "version",
+        ]
 
     def get_client_name(self, obj) -> str:
         if obj.client_person_id:
@@ -66,9 +108,18 @@ class OrderDetailSerializer(OrderListSerializer):
 
     class Meta(OrderListSerializer.Meta):
         fields = OrderListSerializer.Meta.fields + [
-            "contact_person", "source", "preferred_channel", "agreement",
-            "agreement_snapshot", "purpose", "comment", "cancelled_at",
-            "cancelled_reason", "route", "participants", "updated_at",
+            "contact_person",
+            "source",
+            "preferred_channel",
+            "agreement",
+            "agreement_snapshot",
+            "purpose",
+            "comment",
+            "cancelled_at",
+            "cancelled_reason",
+            "route",
+            "participants",
+            "updated_at",
         ]
 
     def get_participants(self, obj):
@@ -78,21 +129,25 @@ class OrderDetailSerializer(OrderListSerializer):
 
 
 class OrderCreateSerializer(serializers.Serializer):
-    request_type = serializers.ChoiceField(choices=Order.RequestType.choices,
-                                           default=Order.RequestType.INDIVIDUAL)
-    client_person = serializers.PrimaryKeyRelatedField(queryset=Person.objects.all(),
-                                                       required=False, allow_null=True)
-    client_company = serializers.PrimaryKeyRelatedField(queryset=Company.objects.all(),
-                                                        required=False, allow_null=True)
-    contact_person = serializers.PrimaryKeyRelatedField(queryset=Person.objects.all(),
-                                                        required=False, allow_null=True)
-    priority = serializers.ChoiceField(choices=Order.Priority.choices,
-                                       default=Order.Priority.NORMAL)
+    request_type = serializers.ChoiceField(
+        choices=Order.RequestType.choices, default=Order.RequestType.INDIVIDUAL
+    )
+    client_person = serializers.PrimaryKeyRelatedField(
+        queryset=Person.objects.all(), required=False, allow_null=True
+    )
+    client_company = serializers.PrimaryKeyRelatedField(
+        queryset=Company.objects.all(), required=False, allow_null=True
+    )
+    contact_person = serializers.PrimaryKeyRelatedField(
+        queryset=Person.objects.all(), required=False, allow_null=True
+    )
+    priority = serializers.ChoiceField(choices=Order.Priority.choices, default=Order.Priority.NORMAL)
     source = serializers.CharField(required=False, allow_blank=True, max_length=32)
     preferred_channel = serializers.CharField(required=False, allow_blank=True, max_length=32)
     base_currency = serializers.CharField(default="USD", max_length=3)
-    agreement = serializers.PrimaryKeyRelatedField(queryset=Agreement.objects.all(),
-                                                   required=False, allow_null=True)
+    agreement = serializers.PrimaryKeyRelatedField(
+        queryset=Agreement.objects.all(), required=False, allow_null=True
+    )
     planned_start = serializers.DateField(required=False, allow_null=True)
     planned_end = serializers.DateField(required=False, allow_null=True)
     purpose = serializers.CharField(required=False, allow_blank=True, max_length=255)
@@ -117,7 +172,7 @@ class OrderCreateSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {"route": [f"Максимум {settings.MULTI_CITY_MAX_SEGMENTS} сегментов multi-city"]}
                 )
-        # участники: ссылки на Person резолвятся во view
+
         return attrs
 
 
@@ -134,8 +189,7 @@ def order_finance_summary(order: Order) -> dict:
     try:
         from finance.models import FinancialObligation
 
-        for obligation in FinancialObligation.objects.filter(order=order,
-                                                             direction="client_receivable"):
+        for obligation in FinancialObligation.objects.filter(order=order, direction="client_receivable"):
             paid[obligation.currency] = paid.get(obligation.currency, Decimal(0)) + obligation.paid_amount
             outstanding[obligation.currency] = (
                 outstanding.get(obligation.currency, Decimal(0)) + obligation.outstanding_amount

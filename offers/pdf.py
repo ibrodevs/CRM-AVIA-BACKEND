@@ -1,9 +1,3 @@
-"""Минимальный серверный PDF-рендер КП без внешних зависимостей.
-
-Генерирует корректный одностраничный PDF из snapshot версии КП. Для
-production-вёрстки подключается полноценный рендерер (weasyprint/reportlab)
-тем же интерфейсом render_proposal_pdf(snapshot) -> bytes.
-"""
 import zlib
 
 
@@ -18,7 +12,6 @@ def _to_cp1251(text: str) -> str:
         text.encode("latin-1")
         return text
     except UnicodeEncodeError:
-        # транслитерация базовой кириллицы
         table = str.maketrans(
             "абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ",
             "abvgdeejziyklmnoprstufhccss'y'euaABVGDEEJZIYKLMNOPRSTUFHCCSS'Y'EUA",
@@ -53,8 +46,11 @@ def render_proposal_pdf(snapshot: dict) -> bytes:
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
         b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        b"<< /Length " + str(len(stream)).encode() + b" /Filter /FlateDecode >>\nstream\n"
-        + stream + b"\nendstream",
+        b"<< /Length "
+        + str(len(stream)).encode()
+        + b" /Filter /FlateDecode >>\nstream\n"
+        + stream
+        + b"\nendstream",
     ]
 
     output = bytearray(b"%PDF-1.4\n")
@@ -67,6 +63,7 @@ def render_proposal_pdf(snapshot: dict) -> bytes:
     output += b"0000000000 65535 f \n"
     for offset in offsets[1:]:
         output += f"{offset:010d} 00000 n \n".encode()
-    output += (f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-               f"startxref\n{xref_position}\n%%EOF\n").encode()
+    output += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_position}\n%%EOF\n"
+    ).encode()
     return bytes(output)

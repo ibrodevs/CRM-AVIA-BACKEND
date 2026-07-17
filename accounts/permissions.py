@@ -1,10 +1,3 @@
-"""Проверка прав RBAC (ТЗ §5.3).
-
-user_permission_codes() кэшируется на объекте пользователя в рамках запроса.
-DRF-классы: require("orders.view") для view-уровня; object-level правила
-реализуются в queryset-ах приложений (например, оператор видит только свои
-заказы) и дополнительных проверках сервисов.
-"""
 from rest_framework.permissions import BasePermission
 
 from accounts.models import RolePermission
@@ -20,8 +13,9 @@ def user_permission_codes(user) -> frozenset[str]:
         codes = frozenset(PERMISSIONS.keys())
     else:
         codes = frozenset(
-            RolePermission.objects.filter(role__user_roles__user=user)
-            .values_list("permission_code", flat=True)
+            RolePermission.objects.filter(role__user_roles__user=user).values_list(
+                "permission_code", flat=True
+            )
         )
     user._perm_codes = codes
     return codes

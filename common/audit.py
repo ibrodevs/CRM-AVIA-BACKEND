@@ -1,4 +1,3 @@
-"""Запись аудита. Append-only, с redaction чувствительных полей."""
 from common.logging import redact
 from common.models import AuditEvent
 from tenancy.context import get_current_tenant_id

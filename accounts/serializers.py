@@ -30,10 +30,29 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "id", "email", "phone", "status", "first_name", "last_name", "middle_name",
-            "full_name", "avatar", "position", "department", "manager", "work_phone",
-            "internal_phone", "telegram", "hired_at", "work_status", "presence",
-            "timezone", "language", "sla_response_minutes", "last_login", "created_at",
+            "id",
+            "email",
+            "phone",
+            "status",
+            "first_name",
+            "last_name",
+            "middle_name",
+            "full_name",
+            "avatar",
+            "position",
+            "department",
+            "manager",
+            "work_phone",
+            "internal_phone",
+            "telegram",
+            "hired_at",
+            "work_status",
+            "presence",
+            "timezone",
+            "language",
+            "sla_response_minutes",
+            "last_login",
+            "created_at",
             "roles",
         ]
         read_only_fields = ["id", "email", "status", "last_login", "created_at"]
@@ -56,8 +75,15 @@ class UserPreferenceSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserPreference
         fields = [
-            "theme", "date_format", "time_format", "base_currency", "language",
-            "page_size", "start_page", "notification_channels", "notification_categories",
+            "theme",
+            "date_format",
+            "time_format",
+            "base_currency",
+            "language",
+            "page_size",
+            "start_page",
+            "notification_channels",
+            "notification_categories",
         ]
 
 
@@ -71,6 +97,14 @@ class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "email", "phone", "first_name", "last_name", "middle_name", "position",
-            "department", "manager", "timezone", "language",
+            "email",
+            "phone",
+            "first_name",
+            "last_name",
+            "middle_name",
+            "position",
+            "department",
+            "manager",
+            "timezone",
+            "language",
         ]

@@ -1,4 +1,3 @@
-"""Authentication endpoints (ТЗ §5.1)."""
 import hashlib
 import secrets
 from datetime import timedelta
@@ -18,10 +17,10 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from common.audit import audit
-from common.errors import ApiError
 from accounts.models import FailedLoginAttempt, PasswordResetToken, User, UserSession
 from accounts.tokens import issue_2fa_challenge, issue_session_tokens, rotate_session_tokens
+from common.audit import audit
+from common.errors import ApiError
 
 BRUTE_FORCE_WINDOW = timedelta(minutes=15)
 BRUTE_FORCE_LIMIT = 10
@@ -42,9 +41,7 @@ def _client_ip(request) -> str:
 
 def _check_brute_force(identifiers: list[str]) -> None:
     since = timezone.now() - BRUTE_FORCE_WINDOW
-    count = FailedLoginAttempt.objects.filter(
-        identifier__in=identifiers, attempted_at__gte=since
-    ).count()
+    count = FailedLoginAttempt.objects.filter(identifier__in=identifiers, attempted_at__gte=since).count()
     if count >= BRUTE_FORCE_LIMIT:
         raise ApiError(
             code="TOO_MANY_LOGIN_ATTEMPTS",
@@ -54,7 +51,7 @@ def _check_brute_force(identifiers: list[str]) -> None:
 
 
 class LoginSerializer(serializers.Serializer):
-    login = serializers.CharField()  # email или телефон
+    login = serializers.CharField()
     password = serializers.CharField(trim_whitespace=False)
 
 
@@ -73,17 +70,23 @@ class LoginView(APIView):
         user = User.objects.filter(Q(email__iexact=login) | Q(phone=login)).first()
         authenticated = None
         if user is not None:
-            authenticated = authenticate(request, username=user.email,
-                                         password=serializer.validated_data["password"])
+            authenticated = authenticate(
+                request, username=user.email, password=serializer.validated_data["password"]
+            )
         if authenticated is None or user.status != User.Status.ACTIVE:
-            FailedLoginAttempt.objects.bulk_create([
-                FailedLoginAttempt(identifier=login),
-                FailedLoginAttempt(identifier=ip),
-            ])
-            audit("auth.login_failed", request=request, reason=f"login={login}",
-                  tenant_id=user.tenant_id if user else None)
-            raise ApiError(code="INVALID_CREDENTIALS", message="Неверный логин или пароль",
-                           status_code=401)
+            FailedLoginAttempt.objects.bulk_create(
+                [
+                    FailedLoginAttempt(identifier=login),
+                    FailedLoginAttempt(identifier=ip),
+                ]
+            )
+            audit(
+                "auth.login_failed",
+                request=request,
+                reason=f"login={login}",
+                tenant_id=user.tenant_id if user else None,
+            )
+            raise ApiError(code="INVALID_CREDENTIALS", message="Неверный логин или пароль", status_code=401)
 
         two_factor = getattr(user, "two_factor", None)
         if two_factor is not None and two_factor.is_enabled:
@@ -113,11 +116,13 @@ class TwoFactorVerifyView(APIView):
                 serializer.validated_data["challenge_token"].encode()
             )
         except Exception:
-            raise ApiError(code="INVALID_CHALLENGE", message="Недействительный challenge token",
-                           status_code=401) from None
+            raise ApiError(
+                code="INVALID_CHALLENGE", message="Недействительный challenge token", status_code=401
+            ) from None
         if token.get("scope") != "2fa":
-            raise ApiError(code="INVALID_CHALLENGE", message="Недействительный challenge token",
-                           status_code=401)
+            raise ApiError(
+                code="INVALID_CHALLENGE", message="Недействительный challenge token", status_code=401
+            )
 
         user = User.objects.filter(pk=token["user_id"], status=User.Status.ACTIVE).first()
         two_factor = getattr(user, "two_factor", None) if user else None
@@ -129,8 +134,7 @@ class TwoFactorVerifyView(APIView):
         if not totp.verify(serializer.validated_data["code"], valid_window=1):
             FailedLoginAttempt.objects.create(identifier=user.email)
             audit("auth.2fa_failed", actor=user, request=request, tenant_id=user.tenant_id)
-            raise ApiError(code="INVALID_2FA_CODE", message="Неверный код подтверждения",
-                           status_code=401)
+            raise ApiError(code="INVALID_2FA_CODE", message="Неверный код подтверждения", status_code=401)
 
         tokens = issue_session_tokens(user, request)
         audit("auth.login", actor=user, request=request, reason="2fa", tenant_id=user.tenant_id)
@@ -151,8 +155,9 @@ class TokenRefreshView(APIView):
         try:
             refresh = RefreshToken(serializer.validated_data["refresh"])
         except TokenError:
-            raise ApiError(code="INVALID_REFRESH_TOKEN", message="Недействительный refresh token",
-                           status_code=401) from None
+            raise ApiError(
+                code="INVALID_REFRESH_TOKEN", message="Недействительный refresh token", status_code=401
+            ) from None
 
         session = UserSession.objects.filter(refresh_jti=refresh["jti"]).select_related("user").first()
         if session is None or not session.is_active:
@@ -204,16 +209,19 @@ class PasswordChangeView(APIView):
         serializer.is_valid(raise_exception=True)
         user = request.user
         if not user.check_password(serializer.validated_data["current_password"]):
-            raise ApiError(code="INVALID_CURRENT_PASSWORD", message="Текущий пароль неверен",
-                           status_code=400)
+            raise ApiError(code="INVALID_CURRENT_PASSWORD", message="Текущий пароль неверен", status_code=400)
         try:
             validate_password(serializer.validated_data["new_password"], user=user)
         except DjangoValidationError as exc:
-            raise ApiError(code="WEAK_PASSWORD", message="Пароль не соответствует требованиям",
-                           fields={"new_password": exc.messages}, status_code=400) from None
+            raise ApiError(
+                code="WEAK_PASSWORD",
+                message="Пароль не соответствует требованиям",
+                fields={"new_password": exc.messages},
+                status_code=400,
+            ) from None
         user.set_password(serializer.validated_data["new_password"])
         user.save(update_fields=["password"])
-        # Отзываем остальные сессии.
+
         sid = getattr(request.auth, "payload", request.auth or {}).get("sid") if request.auth else None
         sessions = UserSession.objects.filter(user=user, revoked_at__isnull=True)
         if sid:
@@ -238,14 +246,14 @@ class PasswordResetRequestView(APIView):
                 token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
                 expires_at=timezone.now() + timedelta(hours=1),
             )
-            # Доставка письма — через adapter (Этап 1: запись в outbox/лог).
+
             from common.outbox import emit_event
 
-            emit_event("auth.password_reset_requested", user,
-                       payload={"email": user.email}, tenant_id=user.tenant_id)
-            audit("auth.password_reset_requested", actor=user, request=request,
-                  tenant_id=user.tenant_id)
-        # Не раскрываем существование аккаунта.
+            emit_event(
+                "auth.password_reset_requested", user, payload={"email": user.email}, tenant_id=user.tenant_id
+            )
+            audit("auth.password_reset_requested", actor=user, request=request, tenant_id=user.tenant_id)
+
         return Response({"detail": "Если аккаунт существует, инструкция отправлена на email"})
 
 
@@ -263,18 +271,27 @@ class PasswordResetConfirmView(APIView):
         serializer = PasswordResetConfirmSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         token_hash = hashlib.sha256(serializer.validated_data["token"].encode()).hexdigest()
-        record = PasswordResetToken.objects.filter(
-            token_hash=token_hash, used_at__isnull=True, expires_at__gt=timezone.now()
-        ).select_related("user").first()
+        record = (
+            PasswordResetToken.objects.filter(
+                token_hash=token_hash, used_at__isnull=True, expires_at__gt=timezone.now()
+            )
+            .select_related("user")
+            .first()
+        )
         if record is None:
-            raise ApiError(code="INVALID_RESET_TOKEN",
-                           message="Токен недействителен или истёк", status_code=400)
+            raise ApiError(
+                code="INVALID_RESET_TOKEN", message="Токен недействителен или истёк", status_code=400
+            )
         user = record.user
         try:
             validate_password(serializer.validated_data["new_password"], user=user)
         except DjangoValidationError as exc:
-            raise ApiError(code="WEAK_PASSWORD", message="Пароль не соответствует требованиям",
-                           fields={"new_password": exc.messages}, status_code=400) from None
+            raise ApiError(
+                code="WEAK_PASSWORD",
+                message="Пароль не соответствует требованиям",
+                fields={"new_password": exc.messages},
+                status_code=400,
+            ) from None
         user.set_password(serializer.validated_data["new_password"])
         user.save(update_fields=["password"])
         record.used_at = timezone.now()

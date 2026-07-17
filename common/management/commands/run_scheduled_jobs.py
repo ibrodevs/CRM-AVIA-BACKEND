@@ -1,10 +1,3 @@
-"""Периодические проверки (cron / Kubernetes CronJob):
-
-    * * * * * python manage.py run_scheduled_jobs
-
-Команда идемпотентна и защищена PostgreSQL advisory lock от параллельного
-запуска (ТЗ §3.2).
-"""
 import logging
 
 from django.core.management.base import BaseCommand
@@ -14,7 +7,7 @@ from common.scheduled import all_scheduled
 
 logger = logging.getLogger("travelhub.scheduled")
 
-ADVISORY_LOCK_KEY = 0x7472_6156  # 'traV' — ключ advisory lock команды
+ADVISORY_LOCK_KEY = 0x7472_6156
 
 
 class Command(BaseCommand):

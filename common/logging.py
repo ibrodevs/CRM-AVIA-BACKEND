@@ -1,4 +1,3 @@
-"""JSON-логирование с redaction PII (ТЗ §22)."""
 import json
 import logging
 import re
@@ -22,10 +21,29 @@ def redact(obj):
 
 class JSONFormatter(logging.Formatter):
     _SKIP = {
-        "args", "asctime", "created", "exc_info", "exc_text", "filename", "funcName",
-        "levelname", "levelno", "lineno", "module", "msecs", "msg", "name", "pathname",
-        "process", "processName", "relativeCreated", "stack_info", "thread", "threadName",
-        "taskName", "message",
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "thread",
+        "threadName",
+        "taskName",
+        "message",
     }
 
     def format(self, record: logging.LogRecord) -> str:

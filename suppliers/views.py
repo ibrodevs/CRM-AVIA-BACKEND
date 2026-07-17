@@ -1,9 +1,9 @@
-"""Suppliers API (ТЗ §13)."""
 import json
 
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import serializers, status as http
+from rest_framework import serializers
+from rest_framework import status as http
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -19,11 +19,28 @@ from suppliers.models import Supplier, SupplierCredential, SupplierMarkupRule, S
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
-        fields = ["id", "name", "legal_name", "status", "organization_type", "is_global",
-                  "service_kinds", "countries", "cities", "currencies",
-                  "communication_methods", "work_hours", "settlement_type",
-                  "contract_number", "contact_person", "phone", "email",
-                  "automation_capabilities", "created_at", "version"]
+        fields = [
+            "id",
+            "name",
+            "legal_name",
+            "status",
+            "organization_type",
+            "is_global",
+            "service_kinds",
+            "countries",
+            "cities",
+            "currencies",
+            "communication_methods",
+            "work_hours",
+            "settlement_type",
+            "contract_number",
+            "contact_person",
+            "phone",
+            "email",
+            "automation_capabilities",
+            "created_at",
+            "version",
+        ]
         read_only_fields = ["id", "created_at", "version"]
 
 
@@ -35,8 +52,16 @@ class CredentialSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SupplierCredential
-        fields = ["id", "provider_adapter", "environment", "secrets", "has_secrets",
-                  "status", "last_verified_at", "rotated_at"]
+        fields = [
+            "id",
+            "provider_adapter",
+            "environment",
+            "secrets",
+            "has_secrets",
+            "status",
+            "last_verified_at",
+            "rotated_at",
+        ]
         read_only_fields = ["id", "status", "last_verified_at", "rotated_at"]
 
     def get_has_secrets(self, obj) -> bool:
@@ -46,23 +71,35 @@ class CredentialSerializer(serializers.ModelSerializer):
 class MarkupRuleSerializer(serializers.ModelSerializer):
     class Meta:
         model = SupplierMarkupRule
-        fields = ["id", "service_kind", "route", "geography", "airline", "cabin",
-                  "passenger_category", "amount_type", "amount_value", "currency",
-                  "priority", "effective_from", "effective_to"]
+        fields = [
+            "id",
+            "service_kind",
+            "route",
+            "geography",
+            "airline",
+            "cabin",
+            "passenger_category",
+            "amount_type",
+            "amount_value",
+            "currency",
+            "priority",
+            "effective_from",
+            "effective_to",
+        ]
         read_only_fields = ["id"]
 
 
 class SearchPrioritySerializer(serializers.ModelSerializer):
     class Meta:
         model = SupplierSearchPriority
-        fields = ["id", "service_kind", "ordered_suppliers", "conditions",
-                  "fallback_supplier", "is_active"]
+        fields = ["id", "service_kind", "ordered_suppliers", "conditions", "fallback_supplier", "is_active"]
         read_only_fields = ["id"]
 
 
 def _get_supplier(request, supplier_id) -> Supplier:
-    supplier = Supplier.objects.filter(pk=supplier_id, tenant_id=request.user.tenant_id,
-                                       archived_at__isnull=True).first()
+    supplier = Supplier.objects.filter(
+        pk=supplier_id, tenant_id=request.user.tenant_id, archived_at__isnull=True
+    ).first()
     if supplier is None:
         raise ApiError(code="NOT_FOUND", message="Поставщик не найден", status_code=404)
     return supplier
@@ -74,8 +111,9 @@ class SupplierListCreateView(GenericAPIView):
     serializer_class = SupplierSerializer
 
     def get(self, request):
-        qs = Supplier.objects.filter(tenant_id=request.user.tenant_id,
-                                     archived_at__isnull=True).order_by("name")
+        qs = Supplier.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True).order_by(
+            "name"
+        )
         params = request.query_params
         if q := params.get("q", "").strip():
             qs = qs.filter(Q(name__icontains=q) | Q(legal_name__icontains=q))
@@ -129,17 +167,24 @@ class SupplierCredentialsView(APIView):
         serializer.is_valid(raise_exception=True)
         secrets = serializer.validated_data.pop("secrets", {})
         credential = SupplierCredential(
-            tenant_id=request.user.tenant_id, supplier=supplier, created_by=request.user,
-            rotated_by=request.user, rotated_at=timezone.now(),
+            tenant_id=request.user.tenant_id,
+            supplier=supplier,
+            created_by=request.user,
+            rotated_by=request.user,
+            rotated_at=timezone.now(),
             **serializer.validated_data,
         )
         if secrets:
             credential.encrypted_secrets = json.dumps(secrets, ensure_ascii=False)
         credential.save()
-        # Секреты не попадают в audit body (redaction по ключам).
-        audit("suppliers.credential_created", actor=request.user, resource=supplier,
-              request=request, after={"provider_adapter": credential.provider_adapter,
-                                      "environment": credential.environment})
+
+        audit(
+            "suppliers.credential_created",
+            actor=request.user,
+            resource=supplier,
+            request=request,
+            after={"provider_adapter": credential.provider_adapter, "environment": credential.environment},
+        )
         return Response(CredentialSerializer(credential).data, status=http.HTTP_201_CREATED)
 
 
@@ -148,8 +193,7 @@ class SupplierCheckConnectionView(APIView):
 
     def post(self, request, supplier_id):
         supplier = _get_supplier(request, supplier_id)
-        job = enqueue("suppliers.check_connection", {"supplier_id": str(supplier.id)},
-                      request=request)
+        job = enqueue("suppliers.check_connection", {"supplier_id": str(supplier.id)}, request=request)
         return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
 
 
@@ -165,10 +209,8 @@ class SupplierMarkupRulesView(APIView):
         supplier = _get_supplier(request, supplier_id)
         serializer = MarkupRuleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        rule = serializer.save(tenant_id=request.user.tenant_id, supplier=supplier,
-                               created_by=request.user)
-        audit("suppliers.markup_rule_created", actor=request.user, resource=supplier,
-              request=request)
+        rule = serializer.save(tenant_id=request.user.tenant_id, supplier=supplier, created_by=request.user)
+        audit("suppliers.markup_rule_created", actor=request.user, resource=supplier, request=request)
         return Response(MarkupRuleSerializer(rule).data, status=http.HTTP_201_CREATED)
 
 
@@ -186,12 +228,12 @@ class SearchPriorityListCreateView(APIView):
         self.check_permissions(request)
         serializer = SearchPrioritySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        # деактивируем предыдущий активный приоритет этого kind
+
         SupplierSearchPriority.objects.filter(
             tenant_id=request.user.tenant_id,
-            service_kind=serializer.validated_data["service_kind"], is_active=True,
+            service_kind=serializer.validated_data["service_kind"],
+            is_active=True,
         ).update(is_active=False)
         priority = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
-        audit("suppliers.search_priority_changed", actor=request.user, request=request,
-              resource=priority)
+        audit("suppliers.search_priority_changed", actor=request.user, request=request, resource=priority)
         return Response(SearchPrioritySerializer(priority).data, status=http.HTTP_201_CREATED)

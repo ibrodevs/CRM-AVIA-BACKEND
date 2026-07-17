@@ -1,4 +1,3 @@
-"""Пользователи, роли, сессии, 2FA (ТЗ §5)."""
 import uuid
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
@@ -79,7 +78,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     language = models.CharField(max_length=8, default="ru")
     sla_response_minutes = models.PositiveIntegerField(null=True, blank=True)
 
-    is_staff = models.BooleanField(default=False)  # доступ в Django admin
+    is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     archived_at = models.DateTimeField(null=True, blank=True)
@@ -103,7 +102,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         return " ".join(p for p in [self.last_name, self.first_name, self.middle_name] if p)
 
     @property
-    def is_active(self) -> bool:  # используется Django auth
+    def is_active(self) -> bool:
         return self.status == self.Status.ACTIVE
 
 
@@ -115,7 +114,7 @@ class Role(models.Model):
     code = models.SlugField(max_length=63)
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
-    is_system = models.BooleanField(default=False)  # системные роли нельзя удалять
+    is_system = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -146,9 +145,7 @@ class UserRole(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="user_roles")
     role = models.ForeignKey(Role, on_delete=models.CASCADE, related_name="user_roles")
     assigned_at = models.DateTimeField(auto_now_add=True)
-    assigned_by = models.ForeignKey(
-        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
-    )
+    assigned_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
 
     class Meta:
         db_table = "accounts_user_role"
@@ -163,8 +160,8 @@ class UserServiceAccess(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="service_access")
-    service_kind = models.CharField(max_length=32)  # avia/rail/hotel/...
-    allowed_actions = models.JSONField(default=list)  # ["search","book","issue",...]
+    service_kind = models.CharField(max_length=32)
+    allowed_actions = models.JSONField(default=list)
 
     class Meta:
         db_table = "accounts_user_service_access"
@@ -174,8 +171,7 @@ class UserServiceAccess(models.Model):
 
 
 class UserPreference(models.Model):
-    user = models.OneToOneField(User, primary_key=True, on_delete=models.CASCADE,
-                                related_name="preferences")
+    user = models.OneToOneField(User, primary_key=True, on_delete=models.CASCADE, related_name="preferences")
     theme = models.CharField(max_length=16, default="light")
     date_format = models.CharField(max_length=16, default="DD.MM.YYYY")
     time_format = models.CharField(max_length=8, default="24h")
@@ -219,8 +215,7 @@ class UserSession(models.Model):
 
 
 class TwoFactorConfig(models.Model):
-    user = models.OneToOneField(User, primary_key=True, on_delete=models.CASCADE,
-                                related_name="two_factor")
+    user = models.OneToOneField(User, primary_key=True, on_delete=models.CASCADE, related_name="two_factor")
     totp_secret = EncryptedTextField()
     confirmed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -249,7 +244,7 @@ class FailedLoginAttempt(models.Model):
     """Счётчик неуспешных входов для блокировки brute force (без Redis)."""
 
     id = models.BigAutoField(primary_key=True)
-    identifier = models.CharField(max_length=255)  # email или ip
+    identifier = models.CharField(max_length=255)
     attempted_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

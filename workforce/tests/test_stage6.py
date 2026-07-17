@@ -11,13 +11,19 @@ def run_jobs_once():
 
 
 class TestNotifications:
-    def test_rule_creates_notification_from_event(self, admin_client, admin_user,
-                                                  operator_user, tenant):
-        # правило: все события order.* -> операторам
-        admin_client.post("/api/v1/notification-rules/", {
-            "event_type": "order.*", "name": "Заказы", "priority": "high",
-            "recipients": {"roles": ["operator"]}, "channels": ["desktop"],
-        }, format="json")
+    def test_rule_creates_notification_from_event(self, admin_client, admin_user, operator_user, tenant):
+
+        admin_client.post(
+            "/api/v1/notification-rules/",
+            {
+                "event_type": "order.*",
+                "name": "Заказы",
+                "priority": "high",
+                "recipients": {"roles": ["operator"]},
+                "channels": ["desktop"],
+            },
+            format="json",
+        )
         from common.outbox import emit_event
         from tenancy.context import tenant_context
 
@@ -29,8 +35,7 @@ class TestNotifications:
         assert body["unread_count"] == 1
         assert body["results"][0]["priority"] == "high"
 
-    def test_personal_state_isolated(self, admin_client, admin_user, operator_user,
-                                     tenant):
+    def test_personal_state_isolated(self, admin_client, admin_user, operator_user, tenant):
         from notifications.models import Notification
 
         for user in (admin_user, operator_user):
@@ -38,7 +43,7 @@ class TestNotifications:
         operator = auth_client(operator_user)
         notification_id = operator.get("/api/v1/notifications/").json()["results"][0]["id"]
         operator.post(f"/api/v1/notifications/{notification_id}/read/")
-        # у админа своё непрочитанное состояние
+
         assert admin_client.get("/api/v1/notifications/").json()["unread_count"] == 1
 
     def test_deadline_check_no_duplicates(self, admin_client, tenant, admin_user):
@@ -49,16 +54,24 @@ class TestNotifications:
         from crm.models import Person
         from services.models import OrderService
 
-        person = Person.objects.create(tenant=tenant, surname="Д", given_name="Д",
-                                       created_by=admin_user)
-        order = admin_client.post("/api/v1/orders/", {
-            "request_type": "individual", "client_person": str(person.id),
-        }, format="json").json()
+        person = Person.objects.create(tenant=tenant, surname="Д", given_name="Д", created_by=admin_user)
+        order = admin_client.post(
+            "/api/v1/orders/",
+            {
+                "request_type": "individual",
+                "client_person": str(person.id),
+            },
+            format="json",
+        ).json()
         from orders.models import Order
 
         OrderService.objects.create(
-            tenant=tenant, order=Order.objects.get(pk=order["id"]), kind="avia",
-            title="Тест", status="booked", currency="USD",
+            tenant=tenant,
+            order=Order.objects.get(pk=order["id"]),
+            kind="avia",
+            title="Тест",
+            status="booked",
+            currency="USD",
             ticketing_deadline=timezone.now() + timedelta(hours=1),
             created_by=admin_user,
         )
@@ -67,7 +80,6 @@ class TestNotifications:
         from notifications.models import Notification
 
         assert Notification.objects.filter(event_type="service.deadline").count() == 2
-        # 2 порога (24h и 2h), не 4 — дубли не создаются
 
 
 class TestShifts:
@@ -78,37 +90,59 @@ class TestShifts:
         assert response.json()["error"]["code"] == "SHIFT_ALREADY_OPEN"
 
     def test_close_with_discrepancy_confirmation(self, admin_client):
-        shift = admin_client.post("/api/v1/shifts/start/", {
-            "opening_balance": "1000.00", "currency": "KGS",
-        }, format="json").json()
-        response = admin_client.post(f"/api/v1/shifts/{shift['id']}/close/", {
-            "closing_balance": "900.00",
-        }, format="json")
+        shift = admin_client.post(
+            "/api/v1/shifts/start/",
+            {
+                "opening_balance": "1000.00",
+                "currency": "KGS",
+            },
+            format="json",
+        ).json()
+        response = admin_client.post(
+            f"/api/v1/shifts/{shift['id']}/close/",
+            {
+                "closing_balance": "900.00",
+            },
+            format="json",
+        )
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "DISCREPANCY_CONFIRMATION_REQUIRED"
-        response = admin_client.post(f"/api/v1/shifts/{shift['id']}/close/", {
-            "closing_balance": "900.00", "confirm_discrepancy": True,
-        }, format="json")
+        response = admin_client.post(
+            f"/api/v1/shifts/{shift['id']}/close/",
+            {
+                "closing_balance": "900.00",
+                "confirm_discrepancy": True,
+            },
+            format="json",
+        )
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "closed"
         assert body["closing_report"] is not None
-        # после закрытия можно открыть новую
-        assert admin_client.post("/api/v1/shifts/start/", {},
-                                 format="json").status_code == 201
+
+        assert admin_client.post("/api/v1/shifts/start/", {}, format="json").status_code == 201
 
 
 class TestDashboardAndMeta:
     def test_dashboard_shape(self, admin_client):
         body = admin_client.get("/api/v1/dashboard/?role_scope=my").json()
-        assert set(body) >= {"orders", "trips_today", "my_tasks", "sla", "finance",
-                             "integration_incidents", "attention", "calculated_at"}
+        assert set(body) >= {
+            "orders",
+            "trips_today",
+            "my_tasks",
+            "sla",
+            "finance",
+            "integration_incidents",
+            "attention",
+            "calculated_at",
+        }
 
     def test_meta(self, admin_client):
         body = admin_client.get("/api/v1/meta/").json()
         assert "orders.view" in body["user"]["permissions"]
-        assert {"code": "new", "display": "New"} in body["enums"]["order_statuses"] or \
-            any(s["code"] == "new" for s in body["enums"]["order_statuses"])
+        assert {"code": "new", "display": "New"} in body["enums"]["order_statuses"] or any(
+            s["code"] == "new" for s in body["enums"]["order_statuses"]
+        )
         assert "avia" in body["enums"]["service_kinds"]
         assert body["settings"]["base_currency"] == "USD"
 
@@ -123,15 +157,21 @@ class TestIncidents:
         from integrations.models import IntegrationIncident
 
         incident = IntegrationIncident.objects.create(
-            tenant=tenant, error_code="TIMEOUT", severity="high", operation="search",
+            tenant=tenant,
+            error_code="TIMEOUT",
+            severity="high",
+            operation="search",
         )
-        # resolve без кода — отказ
+
         response = admin_client.post(
-            f"/api/v1/integration-incidents/{incident.id}/resolve/", {}, format="json")
+            f"/api/v1/integration-incidents/{incident.id}/resolve/", {}, format="json"
+        )
         assert response.status_code == 400
         response = admin_client.post(
             f"/api/v1/integration-incidents/{incident.id}/resolve/",
-            {"resolution_code": "PROVIDER_RECOVERED"}, format="json")
+            {"resolution_code": "PROVIDER_RECOVERED"},
+            format="json",
+        )
         assert response.status_code == 200
         assert response.json()["status"] == "resolved"
 
@@ -139,11 +179,12 @@ class TestIncidents:
         from integrations.models import IntegrationIncident
 
         incident = IntegrationIncident.objects.create(
-            tenant=tenant, error_code="ISSUE_UNKNOWN", severity="critical",
+            tenant=tenant,
+            error_code="ISSUE_UNKNOWN",
+            severity="critical",
             operation="booking.issue",
         )
-        response = admin_client.post(
-            f"/api/v1/integration-incidents/{incident.id}/retry/", {}, format="json")
+        response = admin_client.post(f"/api/v1/integration-incidents/{incident.id}/retry/", {}, format="json")
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "RETRY_UNSAFE"
 

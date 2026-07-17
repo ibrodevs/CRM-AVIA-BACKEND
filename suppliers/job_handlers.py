@@ -1,4 +1,3 @@
-"""Фоновые задания поставщиков."""
 from django.utils import timezone
 
 from common.jobs import job_handler
@@ -21,7 +20,11 @@ def check_connection(job: BackgroundJob) -> dict:
         credential.status = "active" if ok else "failed"
         credential.last_verified_at = timezone.now()
         credential.save(update_fields=["status", "last_verified_at"])
-        results.append({"credential_id": str(credential.id),
-                        "provider_adapter": credential.provider_adapter,
-                        "result": "ok" if ok else "no_secrets"})
+        results.append(
+            {
+                "credential_id": str(credential.id),
+                "provider_adapter": credential.provider_adapter,
+                "result": "ok" if ok else "no_secrets",
+            }
+        )
     return {"checked": results}

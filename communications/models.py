@@ -1,4 +1,3 @@
-"""Чаты и внешние коммуникации (ТЗ §17)."""
 from django.db import models
 
 from common.models import TenantModel
@@ -11,14 +10,16 @@ class ChatThread(TenantModel):
         SUPPLIER = "supplier"
 
     type = models.CharField(max_length=10, choices=Kind.choices)
-    order = models.ForeignKey("orders.Order", null=True, blank=True,
-                              on_delete=models.CASCADE, related_name="chat_threads")
-    service = models.ForeignKey("services.OrderService", null=True, blank=True,
-                                on_delete=models.CASCADE, related_name="chat_threads")
+    order = models.ForeignKey(
+        "orders.Order", null=True, blank=True, on_delete=models.CASCADE, related_name="chat_threads"
+    )
+    service = models.ForeignKey(
+        "services.OrderService", null=True, blank=True, on_delete=models.CASCADE, related_name="chat_threads"
+    )
     title = models.CharField(max_length=255, blank=True)
-    external_channel = models.CharField(max_length=16, blank=True)  # telegram/whatsapp/max/email
+    external_channel = models.CharField(max_length=16, blank=True)
     external_account = models.CharField(max_length=255, blank=True)
-    status = models.CharField(max_length=10, default="active")  # active/archived
+    status = models.CharField(max_length=10, default="active")
 
     class Meta:
         db_table = "communications_thread"
@@ -26,18 +27,20 @@ class ChatThread(TenantModel):
 
 
 class ThreadParticipant(TenantModel):
-    thread = models.ForeignKey(ChatThread, on_delete=models.CASCADE,
-                               related_name="participants")
-    user = models.ForeignKey("accounts.User", null=True, blank=True,
-                             on_delete=models.CASCADE, related_name="chat_participations")
-    person = models.ForeignKey("crm.Person", null=True, blank=True,
-                               on_delete=models.CASCADE, related_name="chat_participations")
+    thread = models.ForeignKey(ChatThread, on_delete=models.CASCADE, related_name="participants")
+    user = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.CASCADE, related_name="chat_participations"
+    )
+    person = models.ForeignKey(
+        "crm.Person", null=True, blank=True, on_delete=models.CASCADE, related_name="chat_participations"
+    )
     external_identity = models.CharField(max_length=255, blank=True)
-    role = models.CharField(max_length=16, default="member")  # member/owner/observer
+    role = models.CharField(max_length=16, default="member")
     joined_at = models.DateTimeField(auto_now_add=True)
     left_at = models.DateTimeField(null=True, blank=True)
-    last_read_message = models.ForeignKey("communications.Message", null=True, blank=True,
-                                          on_delete=models.SET_NULL, related_name="+")
+    last_read_message = models.ForeignKey(
+        "communications.Message", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
     last_read_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -66,23 +69,28 @@ class Message(TenantModel):
         FAILED = "failed"
 
     thread = models.ForeignKey(ChatThread, on_delete=models.CASCADE, related_name="messages")
-    author_user = models.ForeignKey("accounts.User", null=True, blank=True,
-                                    on_delete=models.SET_NULL, related_name="messages")
+    author_user = models.ForeignKey(
+        "accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="messages"
+    )
     author_external = models.CharField(max_length=255, blank=True)
     type = models.CharField(max_length=14, choices=Kind.choices, default=Kind.TEXT)
     body = models.TextField(blank=True)
-    reply_to = models.ForeignKey("self", null=True, blank=True,
-                                 on_delete=models.SET_NULL, related_name="replies")
-    attachment = models.ForeignKey("documents.DocumentVersion", null=True, blank=True,
-                                   on_delete=models.PROTECT, related_name="+")
-    service_card = models.ForeignKey("offers.ServiceCard", null=True, blank=True,
-                                     on_delete=models.PROTECT, related_name="messages")
+    reply_to = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="replies"
+    )
+    attachment = models.ForeignKey(
+        "documents.DocumentVersion", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    service_card = models.ForeignKey(
+        "offers.ServiceCard", null=True, blank=True, on_delete=models.PROTECT, related_name="messages"
+    )
     external_message_id = models.CharField(max_length=128, blank=True)
-    delivery_state = models.CharField(max_length=10, choices=DeliveryState.choices,
-                                      default=DeliveryState.SENT)
+    delivery_state = models.CharField(
+        max_length=10, choices=DeliveryState.choices, default=DeliveryState.SENT
+    )
     edited_at = models.DateTimeField(null=True, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
-    original_body = models.TextField(blank=True)  # revision до edit (audit)
+    original_body = models.TextField(blank=True)
 
     class Meta:
         db_table = "communications_message"
@@ -105,8 +113,7 @@ class WebhookEvent(models.Model):
     class Meta:
         db_table = "communications_webhook_event"
         constraints = [
-            models.UniqueConstraint(fields=["provider", "external_event_id"],
-                                    name="uniq_webhook_event"),
+            models.UniqueConstraint(fields=["provider", "external_event_id"], name="uniq_webhook_event"),
         ]
 
 

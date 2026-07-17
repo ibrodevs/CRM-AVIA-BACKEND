@@ -1,17 +1,17 @@
-"""Календарь и поездки (ТЗ §7.4)."""
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import serializers, status as http
+from rest_framework import serializers
+from rest_framework import status as http
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import require
+from calendar_app.models import CalendarEvent, Trip, TripConflict
 from common.audit import audit
 from common.errors import ApiError
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
-from calendar_app.models import CalendarEvent, Trip, TripConflict
 
 
 class TripSerializer(serializers.ModelSerializer):
@@ -19,8 +19,17 @@ class TripSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Trip
-        fields = ["id", "order", "order_number", "title", "starts_at", "ends_at",
-                  "status", "criticality", "computed_at"]
+        fields = [
+            "id",
+            "order",
+            "order_number",
+            "title",
+            "starts_at",
+            "ends_at",
+            "status",
+            "criticality",
+            "computed_at",
+        ]
 
 
 class TripConflictSerializer(serializers.ModelSerializer):
@@ -32,10 +41,29 @@ class TripConflictSerializer(serializers.ModelSerializer):
 class CalendarEventSerializer(serializers.ModelSerializer):
     class Meta:
         model = CalendarEvent
-        fields = ["id", "kind", "title", "description", "starts_at", "ends_at", "timezone",
-                  "order", "service", "person", "supplier", "assignee", "scope", "priority",
-                  "notification_method", "recurrence_rule", "criterion", "action_on_problem",
-                  "status", "completed_at", "version"]
+        fields = [
+            "id",
+            "kind",
+            "title",
+            "description",
+            "starts_at",
+            "ends_at",
+            "timezone",
+            "order",
+            "service",
+            "person",
+            "supplier",
+            "assignee",
+            "scope",
+            "priority",
+            "notification_method",
+            "recurrence_rule",
+            "criterion",
+            "action_on_problem",
+            "status",
+            "completed_at",
+            "version",
+        ]
         read_only_fields = ["id", "status", "completed_at", "version"]
 
 
@@ -44,8 +72,9 @@ class TripListView(GenericAPIView):
     pagination_class = DefaultPagination
 
     def get(self, request):
-        qs = Trip.objects.filter(tenant_id=request.user.tenant_id,
-                                 archived_at__isnull=True).select_related("order")
+        qs = Trip.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True).select_related(
+            "order"
+        )
         params = request.query_params
         if from_date := params.get("from"):
             qs = qs.filter(starts_at__gte=from_date)
@@ -69,10 +98,9 @@ class TripConflictsView(APIView):
 
 
 def _events_qs(request):
-    return CalendarEvent.objects.filter(
-        tenant_id=request.user.tenant_id, archived_at__isnull=True
-    ).filter(Q(scope__in=["team", "tenant"]) | Q(assignee=request.user)
-             | Q(created_by=request.user))
+    return CalendarEvent.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True).filter(
+        Q(scope__in=["team", "tenant"]) | Q(assignee=request.user) | Q(created_by=request.user)
+    )
 
 
 class CalendarEventListCreateView(GenericAPIView):
@@ -97,10 +125,14 @@ class CalendarEventListCreateView(GenericAPIView):
     def post(self, request):
         serializer = CalendarEventSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        event = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user,
-                                assignee=serializer.validated_data.get("assignee") or request.user)
-        emit_event("calendar.event.updated", event, payload={"action": "created"},
-                   audience_user=event.assignee)
+        event = serializer.save(
+            tenant_id=request.user.tenant_id,
+            created_by=request.user,
+            assignee=serializer.validated_data.get("assignee") or request.user,
+        )
+        emit_event(
+            "calendar.event.updated", event, payload={"action": "created"}, audience_user=event.assignee
+        )
         audit("calendar.event_created", actor=request.user, resource=event, request=request)
         return Response(CalendarEventSerializer(event).data, status=http.HTTP_201_CREATED)
 
@@ -112,11 +144,8 @@ class CalendarEventCheckDuplicateView(APIView):
         starts_at = request.data.get("starts_at")
         title = str(request.data.get("title", "")).strip()
         if not starts_at or not title:
-            raise ApiError(code="VALIDATION_ERROR", message="Нужны title и starts_at",
-                           status_code=400)
-        candidates = _events_qs(request).filter(
-            title__iexact=title, starts_at=starts_at, status="scheduled"
-        )
+            raise ApiError(code="VALIDATION_ERROR", message="Нужны title и starts_at", status_code=400)
+        candidates = _events_qs(request).filter(title__iexact=title, starts_at=starts_at, status="scheduled")
         return Response({"duplicates": CalendarEventSerializer(candidates, many=True).data})
 
 
@@ -128,11 +157,11 @@ class CalendarEventCompleteView(APIView):
         if event is None:
             raise ApiError(code="NOT_FOUND", message="Событие не найдено", status_code=404)
         if event.status != CalendarEvent.Status.SCHEDULED:
-            raise ApiError(code="INVALID_EVENT_STATUS", message="Событие уже завершено/отменено",
-                           status_code=409)
+            raise ApiError(
+                code="INVALID_EVENT_STATUS", message="Событие уже завершено/отменено", status_code=409
+            )
         occurrence_at = request.data.get("occurrence_at")
         if event.recurrence_rule and occurrence_at:
-            # complete одной occurrence не завершает серию (ТЗ §30)
             from calendar_app.models import CalendarEventOccurrence
 
             occurrence, _ = CalendarEventOccurrence.objects.get_or_create(
@@ -161,18 +190,29 @@ class CalendarEventRescheduleView(APIView):
             raise ApiError(code="NOT_FOUND", message="Событие не найдено", status_code=404)
         new_starts = request.data.get("starts_at")
         if not new_starts:
-            raise ApiError(code="VALIDATION_ERROR", message="starts_at обязателен",
-                           fields={"starts_at": ["Обязательное поле"]}, status_code=400)
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="starts_at обязателен",
+                fields={"starts_at": ["Обязательное поле"]},
+                status_code=400,
+            )
         old = event.starts_at
         serializer = CalendarEventSerializer(
-            event, data={"starts_at": new_starts, "ends_at": request.data.get("ends_at")},
+            event,
+            data={"starts_at": new_starts, "ends_at": request.data.get("ends_at")},
             partial=True,
         )
         serializer.is_valid(raise_exception=True)
         serializer.save(version=event.version + 1, updated_by=request.user)
         emit_event("calendar.event.updated", event, payload={"action": "rescheduled"})
-        audit("calendar.event_rescheduled", actor=request.user, resource=event,
-              request=request, before={"starts_at": str(old)}, after={"starts_at": new_starts})
+        audit(
+            "calendar.event_rescheduled",
+            actor=request.user,
+            resource=event,
+            request=request,
+            before={"starts_at": str(old)},
+            after={"starts_at": new_starts},
+        )
         return Response(CalendarEventSerializer(event).data)
 
 
@@ -185,15 +225,18 @@ class CalendarFeedView(APIView):
         from_date = request.query_params.get("from")
         to_date = request.query_params.get("to")
         events = _events_qs(request).filter(status="scheduled")
-        trips = Trip.objects.filter(tenant_id=request.user.tenant_id,
-                                    archived_at__isnull=True).select_related("order")
+        trips = Trip.objects.filter(
+            tenant_id=request.user.tenant_id, archived_at__isnull=True
+        ).select_related("order")
         if from_date:
             events = events.filter(starts_at__gte=from_date)
             trips = trips.filter(starts_at__gte=from_date)
         if to_date:
             events = events.filter(starts_at__lte=to_date)
             trips = trips.filter(starts_at__lte=to_date)
-        return Response({
-            "events": CalendarEventSerializer(events.order_by("starts_at")[:500], many=True).data,
-            "trips": TripSerializer(trips.order_by("starts_at")[:500], many=True).data,
-        })
+        return Response(
+            {
+                "events": CalendarEventSerializer(events.order_by("starts_at")[:500], many=True).data,
+                "trips": TripSerializer(trips.order_by("starts_at")[:500], many=True).data,
+            }
+        )

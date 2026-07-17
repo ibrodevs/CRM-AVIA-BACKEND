@@ -1,6 +1,3 @@
-"""Периодические задачи обслуживания: retention событий, ключей идемпотентности
-и завершённых технических заданий. Бизнес-аудит (AuditEvent) не очищается.
-"""
 from datetime import timedelta
 
 from django.conf import settings

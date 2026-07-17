@@ -6,8 +6,7 @@ class CommonConfig(AppConfig):
     verbose_name = "Инфраструктура"
 
     def ready(self):
-        # Автообнаружение обработчиков фоновых заданий, периодических задач
-        # и outbox-процессоров во всех приложениях.
+
         from django.utils.module_loading import autodiscover_modules
 
         autodiscover_modules("job_handlers")
