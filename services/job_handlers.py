@@ -2,6 +2,7 @@ import hashlib
 import json
 from decimal import Decimal
 
+from django.conf import settings
 from django.utils import timezone
 
 from common.jobs import job_handler
@@ -81,6 +82,12 @@ def run_search(job: BackgroundJob) -> dict:
             correlation_id=job.correlation_id or str(job.id),
         )
         try:
+            if adapter_key == "mock" and not settings.ALLOW_MOCK_ADAPTER:
+                raise AdapterError(
+                    "PROVIDER_NOT_CONFIGURED",
+                    "Sandbox adapter is disabled; configure a production provider adapter",
+                    category="configuration",
+                )
             adapter = get_adapter(adapter_key)
             raw_offers = adapter.search(ctx, session.kind, session.criteria)
         except AdapterError as exc:

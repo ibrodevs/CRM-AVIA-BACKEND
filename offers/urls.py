@@ -15,6 +15,7 @@ urlpatterns = [
     path("proposals/<uuid:proposal_id>/archive/", v.ProposalArchiveView.as_view(), name="proposal-archive"),
     path("proposals/<uuid:proposal_id>/pdf/", v.ProposalPdfView.as_view(), name="proposal-pdf"),
     path("proposal-templates/", v.ProposalTemplatesView.as_view(), name="proposal-templates"),
+    path("proposal-templates/<uuid:template_id>/", v.ProposalTemplateDetailView.as_view(), name="proposal-template-detail"),
     path("service-cards/", v.ServiceCardCreateView.as_view(), name="service-card-create"),
     path("service-cards/<uuid:card_id>/send/", v.ServiceCardSendView.as_view(), name="service-card-send"),
     path(

@@ -3,10 +3,31 @@ import pytest
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from accounts.models import TwoFactorConfig, UserSession
+from accounts.models import DemoAccessRequest, TwoFactorConfig, UserSession
 from conftest import auth_client, login
 
 pytestmark = pytest.mark.django_db
+
+
+class TestDemoAccess:
+    def test_public_demo_request_is_persisted(self):
+        response = APIClient().post(
+            "/api/v1/public/demo-access/",
+            {"name": "Иван", "company": "Авиатест", "email": "demo@example.com", "phone": "+996555000000"},
+            format="json",
+        )
+        assert response.status_code == 201
+        lead = DemoAccessRequest.objects.get(email="demo@example.com")
+        assert lead.company == "Авиатест"
+        assert lead.status == DemoAccessRequest.Status.NEW
+
+    def test_public_demo_request_validates_email(self):
+        response = APIClient().post(
+            "/api/v1/public/demo-access/",
+            {"name": "Иван", "company": "Авиатест", "email": "bad"},
+            format="json",
+        )
+        assert response.status_code == 400
 
 
 class TestLogin:

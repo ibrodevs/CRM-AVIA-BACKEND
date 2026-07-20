@@ -12,6 +12,7 @@ class Supplier(TenantModel):
 
     name = models.CharField(max_length=255)
     legal_name = models.CharField(max_length=255, blank=True)
+    tax_id = models.CharField(max_length=32, blank=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
     organization_type = models.CharField(max_length=32, blank=True)
     is_global = models.BooleanField(default=False)
@@ -30,7 +31,7 @@ class Supplier(TenantModel):
 
     class Meta:
         db_table = "suppliers_supplier"
-        indexes = [models.Index(fields=["tenant", "status"])]
+        indexes = [models.Index(fields=["tenant", "status"]), models.Index(fields=["tenant", "tax_id"])]
 
     def __str__(self) -> str:
         return self.name

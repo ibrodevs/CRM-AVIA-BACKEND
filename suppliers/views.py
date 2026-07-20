@@ -23,6 +23,7 @@ class SupplierSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "legal_name",
+            "tax_id",
             "status",
             "organization_type",
             "is_global",

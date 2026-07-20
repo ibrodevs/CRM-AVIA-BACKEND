@@ -142,7 +142,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "common.pagination.DefaultPagination",
     "PAGE_SIZE": 25,
     "EXCEPTION_HANDLER": "common.errors.api_exception_handler",
-    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_SCHEMA_CLASS": "common.schema.SafeAutoSchema",
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {
         "login": "10/min",
@@ -183,6 +183,7 @@ BASE_CURRENCY = env("BASE_CURRENCY", default="USD")
 EVENT_RETENTION_DAYS = env.int("EVENT_RETENTION_DAYS", default=7)
 IDEMPOTENCY_RETENTION_DAYS = env.int("IDEMPOTENCY_RETENTION_DAYS", default=30)
 MULTI_CITY_MAX_SEGMENTS = env.int("MULTI_CITY_MAX_SEGMENTS", default=6)
+ALLOW_MOCK_ADAPTER = env.bool("ALLOW_MOCK_ADAPTER", default=False)
 
 
 FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default="")

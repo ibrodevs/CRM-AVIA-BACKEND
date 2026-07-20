@@ -72,16 +72,22 @@ class ServiceOfferSerializer(serializers.ModelSerializer):
 
 class OrderServiceSerializer(serializers.ModelSerializer):
     client_price = MoneyField(amount_field="client_total", currency_field="currency")
+    order_number = serializers.CharField(source="order.number", read_only=True)
+    supplier_name = serializers.CharField(source="supplier.name", read_only=True, default="")
+    passengers_count = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderService
         fields = [
             "id",
             "order",
+            "order_number",
             "kind",
             "status",
             "title",
             "supplier",
+            "supplier_name",
+            "passengers_count",
             "external_id",
             "source",
             "starts_at",
@@ -104,6 +110,27 @@ class OrderServiceSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "order", "status", "version", "created_at"]
+
+    def get_passengers_count(self, obj) -> int:
+        return obj.order.participants.filter(status="active").count()
+
+
+class ServiceListView(GenericAPIView):
+    permission_classes = [require("orders.view")]
+    pagination_class = DefaultPagination
+
+    def get(self, request):
+        qs = OrderService.objects.filter(
+            tenant_id=request.user.tenant_id, archived_at__isnull=True
+        ).select_related("order", "supplier").prefetch_related("order__participants")
+        if kind := request.query_params.get("kind"):
+            qs = qs.filter(kind=kind)
+        if service_status := request.query_params.get("status"):
+            qs = qs.filter(status=service_status)
+        if order_id := request.query_params.get("order"):
+            qs = qs.filter(order_id=order_id)
+        page = self.paginate_queryset(qs.order_by("-created_at"))
+        return self.get_paginated_response(OrderServiceSerializer(page, many=True).data)
 
 
 class ServiceExtraSerializer(serializers.ModelSerializer):
@@ -275,7 +302,7 @@ class OrderServicesView(GenericAPIView):
 
     def get(self, request, order_id):
         order = get_order_or_404(request.user, order_id)
-        qs = order.services.select_related("supplier").order_by("created_at")
+        qs = order.services.select_related("supplier", "order").prefetch_related("order__participants").order_by("created_at")
         page = self.paginate_queryset(qs)
         return self.get_paginated_response(OrderServiceSerializer(page, many=True).data)
 

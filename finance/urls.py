@@ -4,12 +4,18 @@ from finance import views as v
 
 urlpatterns = [
     path("finance/overview/", v.FinanceOverviewView.as_view(), name="finance-overview"),
+    path("finance/documents/", v.FinanceDocumentView.as_view(), name="finance-documents"),
     path("finance/accounts/", v.AccountListView.as_view(), name="finance-accounts"),
     path("finance/transactions/", v.TransactionListView.as_view(), name="finance-transactions"),
     path("finance/obligations/", v.ObligationListCreateView.as_view(), name="finance-obligations"),
     path("finance/payments/", v.PaymentListCreateView.as_view(), name="finance-payments"),
     path(
         "finance/payments/<uuid:payment_id>/confirm/", v.PaymentConfirmView.as_view(), name="payment-confirm"
+    ),
+    path(
+        "finance/payments/<uuid:payment_id>/payment-order/",
+        v.PaymentOrderDownloadView.as_view(),
+        name="payment-order-download",
     ),
     path(
         "finance/payments/<uuid:payment_id>/allocate/",

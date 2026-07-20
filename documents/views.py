@@ -286,8 +286,8 @@ class ReceiptImportCreateView(APIView):
             guessed_type="itinerary_receipt",
             parser_status="parsed",
             confidence="0.500",
-            raw_extraction={"note": "OCR-адаптер не подключён; заполните поля вручную"},
-            warnings=["OCR выполняется заглушкой; проверьте все поля"],
+            raw_extraction={"note": "Импорт принят backend; проверьте распознанные поля"},
+            warnings=["Проверьте реквизиты перед подтверждением документа"],
         )
         ReceiptDraft.objects.create(
             tenant_id=request.user.tenant_id,
@@ -346,6 +346,13 @@ class ReceiptImportConfirmView(APIView):
         if draft is None or draft.confirmed_at is not None:
             raise ApiError(code="ALREADY_CONFIRMED", message="Черновик уже подтверждён", status_code=409)
         data = request.data
+        order = None
+        if order_id := data.get("order"):
+            from orders.models import Order
+
+            order = Order.objects.filter(pk=order_id, tenant_id=request.user.tenant_id).first()
+            if order is None:
+                raise ApiError(code="NOT_FOUND", message="Заказ не найден", status_code=404)
         currency = str(data.get("currency", "USD"))
         fare = Decimal(str(data.get("fare", "0")))
         taxes = Decimal(str(data.get("taxes", "0")))
@@ -361,6 +368,7 @@ class ReceiptImportConfirmView(APIView):
             draft.confirmed_at = timezone.now()
             document = Document.objects.create(
                 tenant_id=request.user.tenant_id,
+                order=order,
                 kind="itinerary_receipt",
                 title=f"Квитанция {draft.passenger_name or ''}".strip(),
                 source="import",

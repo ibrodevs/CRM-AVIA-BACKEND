@@ -390,6 +390,7 @@ class ProposalTemplatesView(APIView):
                     "id": str(t.id),
                     "code": t.code,
                     "name": t.name,
+                    "body": t.body,
                     "template_version": t.template_version,
                     "status": t.status,
                 }
@@ -421,6 +422,22 @@ class ProposalTemplatesView(APIView):
             {"id": str(template.id), "template_version": template.template_version},
             status=http.HTTP_201_CREATED,
         )
+
+
+class ProposalTemplateDetailView(APIView):
+    permission_classes = [require("offers.manage_templates")]
+
+    def delete(self, request, template_id):
+        template = ProposalTemplate.objects.filter(
+            pk=template_id, tenant_id=request.user.tenant_id, archived_at__isnull=True
+        ).first()
+        if template is None:
+            raise ApiError(code="NOT_FOUND", message="Шаблон не найден", status_code=404)
+        template.archived_at = timezone.now()
+        template.updated_by = request.user
+        template.save(update_fields=["archived_at", "updated_by"])
+        audit("offers.template_archived", actor=request.user, resource=template, request=request)
+        return Response(status=http.HTTP_204_NO_CONTENT)
 
 
 class ServiceCardSerializer(serializers.ModelSerializer):

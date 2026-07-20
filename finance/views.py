@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.db.models import Q, Sum
+from django.http import HttpResponse
 from rest_framework import serializers
 from rest_framework import status as http
 from rest_framework.generics import GenericAPIView
@@ -27,26 +28,39 @@ from finance.models import (
 
 class AccountSerializer(serializers.ModelSerializer):
     balance = serializers.SerializerMethodField()
+    company_name = serializers.SerializerMethodField()
+    supplier_name = serializers.CharField(source="supplier.name", read_only=True, default=None)
 
     class Meta:
         model = FinancialAccount
-        fields = ["id", "code", "name", "kind", "currency", "company", "supplier", "is_active", "balance"]
+        fields = ["id", "code", "name", "kind", "currency", "company", "company_name", "supplier", "supplier_name", "is_active", "balance"]
 
     def get_balance(self, obj):
         debit = obj.entries.filter(direction="debit").aggregate(t=Sum("amount"))["t"] or 0
         credit = obj.entries.filter(direction="credit").aggregate(t=Sum("amount"))["t"] or 0
         return str(debit - credit)
 
+    def get_company_name(self, obj):
+        return str(obj.company) if obj.company_id else None
+
 
 class ObligationSerializer(serializers.ModelSerializer):
     outstanding = serializers.SerializerMethodField()
+    order_number = serializers.CharField(source="order.number", read_only=True, default=None)
+    service_kind = serializers.CharField(source="service.kind", read_only=True, default=None)
+    supplier_name = serializers.CharField(source="service.supplier.name", read_only=True, default=None)
+    client_name = serializers.SerializerMethodField()
 
     class Meta:
         model = FinancialObligation
         fields = [
             "id",
             "order",
+            "order_number",
             "service",
+            "service_kind",
+            "supplier_name",
+            "client_name",
             "direction",
             "due_date",
             "currency",
@@ -62,10 +76,21 @@ class ObligationSerializer(serializers.ModelSerializer):
     def get_outstanding(self, obj) -> str:
         return str(obj.outstanding_amount)
 
+    def get_client_name(self, obj):
+        if not obj.order_id:
+            return None
+        if obj.order.client_company_id:
+            return str(obj.order.client_company)
+        return obj.order.client_person.full_name if obj.order.client_person_id else None
+
 
 class PaymentSerializer(serializers.ModelSerializer):
     money = serializers.SerializerMethodField()
     allocations = serializers.SerializerMethodField()
+    order_number = serializers.CharField(source="order.number", read_only=True, default=None)
+    payer_person_name = serializers.SerializerMethodField()
+    payer_company_name = serializers.SerializerMethodField()
+    supplier_name = serializers.CharField(source="supplier.name", read_only=True, default=None)
 
     class Meta:
         model = Payment
@@ -73,9 +98,13 @@ class PaymentSerializer(serializers.ModelSerializer):
             "id",
             "direction",
             "order",
+            "order_number",
             "payer_person",
+            "payer_person_name",
             "payer_company",
+            "payer_company_name",
             "supplier",
+            "supplier_name",
             "method",
             "amount",
             "currency",
@@ -90,11 +119,17 @@ class PaymentSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "status", "confirmed_at", "created_at", "version"]
 
-    def get_money(self, obj):
+    def get_money(self, obj) -> dict[str, str]:
         return money_dict(obj.amount, obj.currency)
 
-    def get_allocations(self, obj):
+    def get_allocations(self, obj) -> list[dict[str, str]]:
         return [{"obligation": str(a.obligation_id), "amount": str(a.amount)} for a in obj.allocations.all()]
+
+    def get_payer_person_name(self, obj):
+        return obj.payer_person.full_name if obj.payer_person_id else None
+
+    def get_payer_company_name(self, obj):
+        return str(obj.payer_company) if obj.payer_company_id else None
 
 
 class RefundSerializer(serializers.ModelSerializer):
@@ -152,11 +187,54 @@ class FinanceOverviewView(APIView):
         )
 
 
+class FinanceDocumentView(APIView):
+    """Build finance documents from the data selected in the CRM UI."""
+
+    permission_classes = [require("finance.view")]
+
+    def post(self, request):
+        kind = str(request.data.get("kind", ""))
+        allowed = {"reconciliation", "invoice", "upd", "accounting_export", "reconciliation_send"}
+        if kind not in allowed:
+            raise ApiError(code="VALIDATION_ERROR", message=f"kind из {sorted(allowed)}", status_code=400)
+        payload = request.data.get("payload") or {}
+        counterpart = str(payload.get("counterpart", "Контрагент"))
+        audit(
+            "finance.document_requested",
+            actor=request.user,
+            resource=request.user.tenant,
+            request=request,
+            after={"kind": kind, "counterpart": counterpart},
+        )
+        if kind in {"accounting_export", "reconciliation_send"}:
+            return Response({"status": "queued", "kind": kind, "counterpart": counterpart})
+
+        titles = {"reconciliation": "Акт сверки", "invoice": "Счёт", "upd": "УПД"}
+        lines = [
+            titles[kind],
+            f"Контрагент: {counterpart}",
+            f"Период: {payload.get('period', 'весь период')}",
+            f"Дебет: {payload.get('debit', 0)}",
+            f"Кредит: {payload.get('credit', 0)}",
+            f"Сальдо: {payload.get('balance', 0)}",
+        ]
+        for row in payload.get("rows", []):
+            lines.append(
+                " | ".join(
+                    str(row.get(key, ""))
+                    for key in ("date", "basis", "order", "kind", "debit", "credit")
+                )
+            )
+        response = HttpResponse("\ufeff" + "\n".join(lines), content_type="text/plain; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="finance-{kind}.txt"'
+        return response
+
+
 class AccountListView(APIView):
     permission_classes = [require("finance.view")]
 
     def get(self, request):
-        accounts = FinancialAccount.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
+        accounts = FinancialAccount.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True).select_related("company", "supplier")
         return Response(AccountSerializer(accounts, many=True).data)
 
 
@@ -199,7 +277,7 @@ class ObligationListCreateView(GenericAPIView):
     serializer_class = ObligationSerializer
 
     def get(self, request):
-        qs = FinancialObligation.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
+        qs = FinancialObligation.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True).select_related("order__client_company", "order__client_person", "service__supplier")
         params = request.query_params
         if order_id := params.get("order"):
             qs = qs.filter(order_id=order_id)
@@ -230,7 +308,7 @@ class PaymentListCreateView(GenericAPIView):
     serializer_class = PaymentSerializer
 
     def get(self, request):
-        qs = Payment.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
+        qs = Payment.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True).select_related("order", "payer_person", "payer_company", "supplier").prefetch_related("allocations")
         params = request.query_params
         if order_id := params.get("order"):
             qs = qs.filter(order_id=order_id)
@@ -266,6 +344,37 @@ class PaymentConfirmView(APIView):
             request=request,
         )
         return Response(PaymentSerializer(payment).data)
+
+
+class PaymentOrderDownloadView(APIView):
+    permission_classes = [require("finance.view")]
+
+    def get(self, request, payment_id):
+        payment = Payment.objects.filter(
+            pk=payment_id, tenant_id=request.user.tenant_id, archived_at__isnull=True
+        ).select_related("order", "payer_person", "payer_company", "supplier").first()
+        if payment is None:
+            raise ApiError(code="NOT_FOUND", message="Платёж не найден", status_code=404)
+        counterparty = (
+            payment.supplier.name if payment.supplier_id else
+            str(payment.payer_company) if payment.payer_company_id else
+            payment.payer_person.full_name if payment.payer_person_id else "Контрагент"
+        )
+        body = "\n".join([
+            "ПЛАТЁЖНОЕ ПОРУЧЕНИЕ",
+            f"Номер: PMT-{str(payment.id)[:8].upper()}",
+            f"Дата: {payment.created_at:%d.%m.%Y}",
+            f"Направление: {payment.get_direction_display()}",
+            f"Контрагент: {counterparty}",
+            f"Заказ: {payment.order.number if payment.order_id else '—'}",
+            f"Сумма: {payment.amount} {payment.currency}",
+            f"Способ: {payment.method or '—'}",
+            f"Назначение: {payment.comment or '—'}",
+            f"Статус: {payment.get_status_display()}",
+        ])
+        response = HttpResponse(body, content_type="text/plain; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="payment-{str(payment.id)[:8]}.txt"'
+        return response
 
 
 class PaymentAllocateView(APIView):

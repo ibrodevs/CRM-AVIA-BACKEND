@@ -100,6 +100,27 @@ class TestPersonDocuments:
         assert response.json()["error"]["code"] == "DUPLICATE_DOCUMENT"
 
 
+class TestClients:
+    def test_create_client_with_person_atomically(self, admin_client):
+        response = admin_client.post(
+            "/api/v1/clients/",
+            {"client_type": "individual", "status": "active", "person_data": PERSON},
+            format="json",
+        )
+        assert response.status_code == 201
+        assert response.json()["person_detail"]["email"] == PERSON["email"]
+
+    def test_nested_duplicate_does_not_create_profile(self, admin_client):
+        admin_client.post("/api/v1/persons/", PERSON, format="json")
+        response = admin_client.post(
+            "/api/v1/clients/",
+            {"client_type": "individual", "person_data": PERSON},
+            format="json",
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "POSSIBLE_DUPLICATE"
+
+
 class TestCompanies:
     COMPANY = {"legal_name": "ОсОО Ромашка", "tax_id": "01234567890123", "bank_account": "KG12345678901234"}
 

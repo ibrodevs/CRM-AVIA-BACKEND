@@ -24,6 +24,9 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        REPORT["created"].clear()
+        REPORT["skipped"].clear()
+        REPORT["warnings"].clear()
         if not settings.DEBUG and not options["force"]:
             raise CommandError(
                 "seed_demo_data запрещено запускать в production (DEBUG=False). "
@@ -290,6 +293,17 @@ class Command(BaseCommand):
                 REPORT["created"].append("obligation:corporate")
             else:
                 REPORT["skipped"].append("orders (уже существуют)")
+
+            from common.demo_workspace import seed_full_workspace
+
+            seed_full_workspace(
+                tenant=tenant,
+                users=users,
+                primary_person=ivanov,
+                primary_company=company,
+                agreement=agreement,
+                report=REPORT,
+            )
 
         self.stdout.write(
             self.style.SUCCESS(

@@ -1,5 +1,6 @@
 import hashlib
 
+from django.db import transaction
 from django.db.models import Q
 from rest_framework import status as http
 from rest_framework.generics import GenericAPIView
@@ -237,9 +238,28 @@ class ClientListCreateView(GenericAPIView):
     def post(self, request):
         if not has_permission(request.user, "crm.change"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
-        serializer = ClientProfileSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        profile = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
+        payload = request.data.copy()
+        person_data = payload.pop("person_data", None)
+        with transaction.atomic():
+            if person_data is not None:
+                person_serializer = PersonSerializer(data=person_data)
+                person_serializer.is_valid(raise_exception=True)
+                duplicates = find_person_duplicates(request, person_serializer.validated_data)
+                if duplicates:
+                    raise ApiError(
+                        code="POSSIBLE_DUPLICATE",
+                        message="Найдены вероятные дубли лица",
+                        details={"candidates": PersonSerializer(duplicates, many=True).data},
+                        status_code=409,
+                    )
+                person = person_serializer.save(
+                    tenant_id=request.user.tenant_id, created_by=request.user
+                )
+                payload["person"] = str(person.id)
+            serializer = ClientProfileSerializer(data=payload)
+            serializer.is_valid(raise_exception=True)
+            profile = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
+        audit("crm.client_created", actor=request.user, resource=profile, request=request)
         return Response(ClientProfileSerializer(profile).data, status=http.HTTP_201_CREATED)
 
 

@@ -70,6 +70,9 @@ class OrderListSerializer(serializers.ModelSerializer):
     client_name = serializers.SerializerMethodField()
     operator_name = serializers.CharField(source="operator.get_full_name", read_only=True, default="")
     status_display = serializers.CharField(source="get_status_display", read_only=True)
+    services_count = serializers.SerializerMethodField()
+    total_amount = serializers.SerializerMethodField()
+    service_kind = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -89,6 +92,9 @@ class OrderListSerializer(serializers.ModelSerializer):
             "planned_start",
             "planned_end",
             "base_currency",
+            "services_count",
+            "total_amount",
+            "service_kind",
             "is_group",
             "created_at",
             "version",
@@ -100,6 +106,19 @@ class OrderListSerializer(serializers.ModelSerializer):
         if obj.client_company_id:
             return str(obj.client_company)
         return ""
+
+    def _services(self, obj):
+        return list(obj.services.all())
+
+    def get_services_count(self, obj) -> int:
+        return len(self._services(obj))
+
+    def get_total_amount(self, obj):
+        return sum((service.client_total or 0) for service in self._services(obj))
+
+    def get_service_kind(self, obj) -> str:
+        services = self._services(obj)
+        return services[0].kind if services else ""
 
 
 class OrderDetailSerializer(OrderListSerializer):

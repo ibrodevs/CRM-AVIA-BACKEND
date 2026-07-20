@@ -4,12 +4,15 @@ from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.generics import GenericAPIView
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from accounts.models import (
+    DemoAccessRequest,
     PasswordResetToken,
     Role,
     User,
@@ -31,6 +34,33 @@ from common.audit import audit
 from common.errors import ApiError
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
+
+
+class DemoAccessRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DemoAccessRequest
+        fields = ["id", "name", "company", "email", "phone", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+
+class DemoAccessThrottle(AnonRateThrottle):
+    scope = "public_response"
+
+
+class DemoAccessRequestView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [DemoAccessThrottle]
+
+    def post(self, request):
+        serializer = DemoAccessRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+        serializer.save(
+            source_ip=forwarded or request.META.get("REMOTE_ADDR") or None,
+            user_agent=request.META.get("HTTP_USER_AGENT", "")[:512],
+        )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 def _get_user_or_404(request, user_id) -> User:
@@ -191,6 +221,7 @@ class UserInviteView(APIView):
             expires_at=timezone.now() + timedelta(days=7),
         )
         user.status = User.Status.ACTIVE if user.status == User.Status.SUSPENDED else user.status
+        user.save(update_fields=["status"])
         emit_event("users.invited", user, tenant_id=user.tenant_id)
         audit("users.invited", request=request, resource=user)
 

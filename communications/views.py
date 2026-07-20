@@ -57,7 +57,7 @@ class ThreadSerializer(serializers.ModelSerializer):
             qs = qs.filter(id__gt=participant.last_read_message_id)
         return qs.exclude(author_user=request.user).count()
 
-    def get_last_message(self, obj):
+    def get_last_message(self, obj) -> dict[str, str] | None:
         message = obj.messages.filter(deleted_at__isnull=True).order_by("-created_at").first()
         if message is None:
             return None

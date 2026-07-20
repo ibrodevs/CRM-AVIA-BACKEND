@@ -66,9 +66,9 @@ def _get_notification(request, notification_id) -> Notification:
 class NotificationReadView(APIView):
     def post(self, request, notification_id):
         notification = _get_notification(request, notification_id)
-        if notification.read_at is None:
-            notification.read_at = timezone.now()
-            notification.save(update_fields=["read_at"])
+        should_read = request.data.get("read", True)
+        notification.read_at = timezone.now() if should_read else None
+        notification.save(update_fields=["read_at"])
         return Response(NotificationSerializer(notification).data)
 
 

@@ -3,6 +3,7 @@ from django.urls import path
 from accounts import views as v
 
 urlpatterns = [
+    path("public/demo-access/", v.DemoAccessRequestView.as_view(), name="demo-access"),
     path("me/", v.MeView.as_view(), name="me"),
     path("me/preferences/", v.MePreferencesView.as_view(), name="me-preferences"),
     path("me/avatar/", v.MeAvatarView.as_view(), name="me-avatar"),

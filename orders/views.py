@@ -37,6 +37,7 @@ class OrderListCreateView(GenericAPIView):
         qs = (
             orders_visible_to(request.user)
             .select_related("client_person", "client_company", "operator")
+            .prefetch_related("services")
             .order_by("-created_at")
         )
         qs = filter_orders(qs, request.query_params)
@@ -300,6 +301,7 @@ class OrderOverviewView(APIView):
                 "client_total": str(s.client_total) if s.client_total else None,
                 "currency": s.currency,
                 "ticketing_deadline": s.ticketing_deadline,
+                "version": s.version,
             }
             for s in order.services.all()
         ]

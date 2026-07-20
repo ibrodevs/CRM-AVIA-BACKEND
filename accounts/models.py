@@ -250,3 +250,27 @@ class FailedLoginAttempt(models.Model):
     class Meta:
         db_table = "accounts_failed_login"
         indexes = [models.Index(fields=["identifier", "-attempted_at"])]
+
+
+class DemoAccessRequest(models.Model):
+    """Публичная заявка на демо-доступ; хранится до обработки менеджером."""
+
+    class Status(models.TextChoices):
+        NEW = "new"
+        CONTACTED = "contacted"
+        ACTIVATED = "activated"
+        CLOSED = "closed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=150)
+    company = models.CharField(max_length=255)
+    email = models.EmailField()
+    phone = models.CharField(max_length=32, blank=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.NEW)
+    source_ip = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=512, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "accounts_demo_access_request"
+        indexes = [models.Index(fields=["status", "-created_at"]), models.Index(fields=["email"])]

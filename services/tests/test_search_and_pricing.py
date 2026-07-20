@@ -166,6 +166,11 @@ class TestAttachToOrder:
         assert service["kind"] == "avia"
         assert service["status"] == "proposed"
         assert service["client_price"]["amount"] == offer["price"]["amount"]
+        registry = admin_client.get("/api/v1/services/?kind=avia")
+        assert registry.status_code == 200
+        row = registry.json()["results"][0]
+        assert row["order_number"] == order["number"]
+        assert row["supplier_name"]
 
     def test_service_transition_machine(self, admin_client, supplier, tenant, admin_user):
         from crm.models import Person

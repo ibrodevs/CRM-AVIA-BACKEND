@@ -59,6 +59,15 @@ class TestEndpointAccess:
         )
         assert response.status_code == 400
 
+    def test_invite_reactivates_suspended_user(self, admin_client, tenant):
+        target = make_user(tenant, "reactivate@test.local")
+        target.status = "suspended"
+        target.save(update_fields=["status"])
+        response = admin_client.post(f"/api/v1/users/{target.id}/invite/", {}, format="json")
+        assert response.status_code == 200
+        target.refresh_from_db()
+        assert target.status == "active"
+
 
 class TestTenantIsolation:
     def test_admin_does_not_see_other_tenant_users(self, admin_client, other_tenant):
