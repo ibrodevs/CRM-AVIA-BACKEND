@@ -1,7 +1,7 @@
 from django.urls import path
 
 from orders import views as v
-from orders.participant_views import OrderParticipantDetailView
+from orders.participant_views import OrderParticipantDetailView, OrderParticipantsView
 from orders.task_views import OrderTaskDetailView
 
 urlpatterns = [
@@ -11,7 +11,7 @@ urlpatterns = [
     path("orders/<uuid:order_id>/cancel/", v.OrderCancelView.as_view(), name="order-cancel"),
     path("orders/<uuid:order_id>/reassign/", v.OrderReassignView.as_view(), name="order-reassign"),
     path(
-        "orders/<uuid:order_id>/participants/", v.OrderParticipantsView.as_view(), name="order-participants"
+        "orders/<uuid:order_id>/participants/", OrderParticipantsView.as_view(), name="order-participants"
     ),
     path(
         "orders/<uuid:order_id>/participants/<uuid:participant_id>/",
