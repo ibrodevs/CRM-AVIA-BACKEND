@@ -3,6 +3,7 @@ import json
 from decimal import Decimal
 
 from django.conf import settings
+from django.db import connection
 from django.utils import timezone
 
 from common.jobs import job_handler
@@ -39,14 +40,20 @@ def _suppliers_for_search(session: SearchSession) -> list[Supplier | None]:
         ordered = [by_id[sid] for sid in map(str, priority.ordered_suppliers) if sid in by_id]
         if ordered:
             return ordered
-    suppliers = list(
-        Supplier.objects.filter(
-            tenant_id=session.tenant_id,
-            status=Supplier.Status.ACTIVE,
-            service_kinds__contains=[session.kind],
-            archived_at__isnull=True,
-        )
+
+    base_qs = Supplier.objects.filter(
+        tenant_id=session.tenant_id,
+        status=Supplier.Status.ACTIVE,
+        archived_at__isnull=True,
     )
+    if connection.vendor == "sqlite":
+        suppliers = [
+            supplier
+            for supplier in base_qs
+            if session.kind in (supplier.service_kinds or [])
+        ]
+    else:
+        suppliers = list(base_qs.filter(service_kinds__contains=[session.kind]))
     return suppliers or [None]
 
 
