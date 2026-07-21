@@ -18,9 +18,12 @@ if DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3":
     DATABASES["default"]["OPTIONS"] = {
         "timeout": env.int("SQLITE_TIMEOUT", default=20),
     }
-    # Free PythonAnywhere has no always-on worker process. Service search is
-    # lightweight in demo/mock mode, so execute it inline with the API request.
-    SYNC_JOB_KINDS = ("services.search",)
+    # Free PythonAnywhere has no always-on worker process. Only jobs that are
+    # fully local, short-lived and do not call external providers run inline.
+    SYNC_JOB_KINDS = (
+        "services.search",
+        "orders.cancel",
+    )
 else:
     SYNC_JOB_KINDS = ()
 
