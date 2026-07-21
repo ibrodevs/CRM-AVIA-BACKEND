@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "travelhub-backend"
 version = "0.1.0"
@@ -17,6 +21,12 @@ dependencies = [
     "openpyxl>=3.1",
     "gunicorn>=23.0",
 ]
+
+# This repository is deployed and executed directly from its checkout.  The
+# distribution exists only to install runtime dependencies; Django apps remain
+# importable from the project directory and are not bundled into a wheel.
+[tool.setuptools]
+packages = []
 
 [dependency-groups]
 dev = [
