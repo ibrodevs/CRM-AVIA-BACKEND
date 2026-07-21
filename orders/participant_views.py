@@ -1,3 +1,4 @@
+from rest_framework import serializers
 from rest_framework import status as http
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -8,6 +9,29 @@ from common.errors import ApiError
 from common.outbox import emit_event
 from orders.selectors import get_order_or_404
 from orders.serializers import ParticipantSerializer
+
+
+class OrderAwareParticipantSerializer(ParticipantSerializer):
+    """Participant serializer with tenant checks available before model save."""
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        order = self.context["order"]
+        person = attrs.get("person", getattr(self.instance, "person", None))
+        booking_document = attrs.get(
+            "booking_document", getattr(self.instance, "booking_document", None)
+        )
+        if person is not None and person.tenant_id != order.tenant_id:
+            raise serializers.ValidationError({"person": ["Человек относится к другому tenant"]})
+        if booking_document is not None and booking_document.tenant_id != order.tenant_id:
+            raise serializers.ValidationError(
+                {"booking_document": ["Документ относится к другому tenant"]}
+            )
+        if booking_document is not None and person is not None and booking_document.person_id != person.id:
+            raise serializers.ValidationError(
+                {"booking_document": ["Документ не принадлежит выбранному человеку"]}
+            )
+        return attrs
 
 
 class OrderParticipantsView(APIView):
@@ -24,7 +48,9 @@ class OrderParticipantsView(APIView):
         if not has_permission(request.user, "orders.change"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change", status_code=403)
         order = get_order_or_404(request.user, order_id)
-        serializer = ParticipantSerializer(data=request.data, context={"order": order, "request": request})
+        serializer = OrderAwareParticipantSerializer(
+            data=request.data, context={"order": order, "request": request}
+        )
         serializer.is_valid(raise_exception=True)
         participant = serializer.save(tenant_id=order.tenant_id, order=order, created_by=request.user)
         emit_event("order.updated", order, payload={"action": "participant_added"})
@@ -46,7 +72,7 @@ class OrderParticipantDetailView(APIView):
 
     def patch(self, request, order_id, participant_id):
         order, participant = self._participant(request, order_id, participant_id)
-        serializer = ParticipantSerializer(
+        serializer = OrderAwareParticipantSerializer(
             participant,
             data=request.data,
             partial=True,
