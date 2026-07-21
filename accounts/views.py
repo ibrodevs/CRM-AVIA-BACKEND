@@ -311,6 +311,10 @@ class UserServiceAccessView(APIView):
 class UserSlaView(APIView):
     permission_classes = [require("users.manage")]
 
+    def get(self, request, user_id):
+        user = _get_user_or_404(request, user_id)
+        return Response({"sla_response_minutes": user.sla_response_minutes})
+
     def put(self, request, user_id):
         user = _get_user_or_404(request, user_id)
         minutes = request.data.get("sla_response_minutes")

@@ -230,3 +230,40 @@ class BackgroundJob(models.Model):
 
     def __str__(self) -> str:
         return f"{self.kind} [{self.status}]"
+
+
+class WorkspaceSetting(TenantModel):
+    """Версионируемые настройки интерфейса, общие для tenant или пользователя."""
+
+    namespace = models.CharField(max_length=100)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE, related_name="+"
+    )
+    value = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = "common_workspace_setting"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "namespace", "owner"], name="uniq_workspace_setting_scope"
+            )
+        ]
+        indexes = [models.Index(fields=["tenant", "namespace"], name="common_work_tenant__b4f74c_idx")]
+
+
+class WorkspaceAction(TenantModel):
+    """Durable record for UI operations that are executed by the backend."""
+
+    action = models.CharField(max_length=100)
+    resource_type = models.CharField(max_length=100, blank=True)
+    resource_id = models.CharField(max_length=64, blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, default="completed")
+    result = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = "common_workspace_action"
+        indexes = [
+            models.Index(fields=["tenant", "action", "-created_at"], name="common_work_tenant__d501e7_idx"),
+            models.Index(fields=["tenant", "resource_type", "resource_id"], name="common_work_tenant__7c2f59_idx"),
+        ]

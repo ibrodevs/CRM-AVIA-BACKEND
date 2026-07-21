@@ -14,8 +14,10 @@ from rest_framework.views import APIView
 
 from accounts.permissions import has_permission, require
 from common.errors import ApiError
+from common.audit import audit
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
+from common.models import AuditEvent
 from communications.models import (
     ChatThread,
     Message,
@@ -28,6 +30,8 @@ from communications.models import (
 class ThreadSerializer(serializers.ModelSerializer):
     unread_count = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
+    order_number = serializers.CharField(source="order.number", read_only=True, default="")
+    pinned = serializers.SerializerMethodField()
 
     class Meta:
         model = ChatThread
@@ -35,12 +39,14 @@ class ThreadSerializer(serializers.ModelSerializer):
             "id",
             "type",
             "order",
+            "order_number",
             "service",
             "title",
             "external_channel",
             "status",
             "unread_count",
             "last_message",
+            "pinned",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]
@@ -68,9 +74,20 @@ class ThreadSerializer(serializers.ModelSerializer):
             "created_at": message.created_at,
         }
 
+    def get_pinned(self, obj) -> bool:
+        request = self.context.get("request")
+        if request is None:
+            return False
+        return obj.participants.filter(
+            user=request.user, left_at__isnull=True, is_pinned=True
+        ).exists()
+
 
 class MessageSerializer(serializers.ModelSerializer):
     author_name = serializers.CharField(source="author_user.get_full_name", read_only=True, default="")
+    attachment_document = serializers.UUIDField(source="attachment.document_id", read_only=True)
+    attachment_name = serializers.CharField(source="attachment.original_name", read_only=True)
+    attachment_size = serializers.IntegerField(source="attachment.size_bytes", read_only=True)
 
     class Meta:
         model = Message
@@ -78,11 +95,15 @@ class MessageSerializer(serializers.ModelSerializer):
             "id",
             "type",
             "body",
+            "is_internal",
             "author_user",
             "author_name",
             "author_external",
             "reply_to",
             "attachment",
+            "attachment_document",
+            "attachment_name",
+            "attachment_size",
             "service_card",
             "delivery_state",
             "edited_at",
@@ -177,7 +198,16 @@ class ThreadSendView(APIView):
         body = str(request.data.get("body", "")).strip()
         message_type = str(request.data.get("type", "text"))
         internal_note = bool(request.data.get("internal_note"))
-        if not body and message_type == "text":
+        attachment = None
+        if attachment_id := request.data.get("attachment"):
+            from documents.models import DocumentVersion
+
+            attachment = DocumentVersion.objects.filter(
+                pk=attachment_id, document__tenant_id=thread.tenant_id
+            ).first()
+            if attachment is None:
+                raise ApiError(code="VALIDATION_ERROR", message="Вложение не найдено", status_code=400)
+        if not body and message_type == "text" and attachment is None:
             raise ApiError(code="VALIDATION_ERROR", message="body обязателен", status_code=400)
         with transaction.atomic():
             message = Message.objects.create(
@@ -186,6 +216,8 @@ class ThreadSendView(APIView):
                 author_user=request.user,
                 type=message_type,
                 body=body,
+                is_internal=internal_note,
+                attachment=attachment,
                 reply_to_id=request.data.get("reply_to"),
                 service_card_id=request.data.get("service_card"),
                 created_by=request.user,
@@ -208,6 +240,63 @@ class ThreadSendView(APIView):
             for mention in _extract_mentions(body):
                 emit_event("chat.mention", message, payload={"thread_id": str(thread.id), "mention": mention})
         return Response(MessageSerializer(message).data, status=http.HTTP_201_CREATED)
+
+
+class ThreadPinView(APIView):
+    permission_classes = [require("communications.view_internal", "communications.view_client")]
+
+    def post(self, request, thread_id):
+        thread = _get_thread(request, thread_id)
+        participant, _ = ThreadParticipant.objects.get_or_create(
+            thread=thread,
+            user=request.user,
+            left_at__isnull=True,
+            defaults={"tenant_id": thread.tenant_id, "created_by": request.user},
+        )
+        participant.is_pinned = bool(request.data.get("pinned", True))
+        participant.updated_by = request.user
+        participant.save(update_fields=["is_pinned", "updated_by", "updated_at"])
+        audit(
+            "communications.thread_pinned" if participant.is_pinned else "communications.thread_unpinned",
+            actor=request.user,
+            resource=thread,
+            request=request,
+        )
+        return Response({"pinned": participant.is_pinned})
+
+
+class ThreadHistoryView(APIView):
+    permission_classes = [require("communications.view_internal", "communications.view_client")]
+
+    def get(self, request, thread_id):
+        thread = _get_thread(request, thread_id)
+        audit_events = AuditEvent.objects.filter(
+            tenant_id=request.user.tenant_id,
+            resource_type="ChatThread",
+            resource_id=str(thread.id),
+        ).order_by("-occurred_at")[:100]
+        system_messages = thread.messages.filter(type=Message.Kind.SYSTEM).order_by("-created_at")[:100]
+        rows = [
+            {
+                "type": "audit",
+                "action": event.action,
+                "actor": str(event.actor_id) if event.actor_id else None,
+                "reason": event.reason,
+                "occurred_at": event.occurred_at,
+            }
+            for event in audit_events
+        ] + [
+            {
+                "type": "system_message",
+                "action": message.body,
+                "actor": str(message.author_user_id) if message.author_user_id else None,
+                "reason": "",
+                "occurred_at": message.created_at,
+            }
+            for message in system_messages
+        ]
+        rows.sort(key=lambda row: row["occurred_at"], reverse=True)
+        return Response({"thread": str(thread.id), "results": rows[:100]})
 
 
 def _extract_mentions(body: str) -> list[str]:

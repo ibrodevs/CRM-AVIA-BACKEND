@@ -42,6 +42,7 @@ class ThreadParticipant(TenantModel):
         "communications.Message", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
     last_read_at = models.DateTimeField(null=True, blank=True)
+    is_pinned = models.BooleanField(default=False)
 
     class Meta:
         db_table = "communications_participant"
@@ -75,6 +76,7 @@ class Message(TenantModel):
     author_external = models.CharField(max_length=255, blank=True)
     type = models.CharField(max_length=14, choices=Kind.choices, default=Kind.TEXT)
     body = models.TextField(blank=True)
+    is_internal = models.BooleanField(default=False)
     reply_to = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="replies"
     )

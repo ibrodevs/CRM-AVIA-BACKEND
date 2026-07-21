@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework import status as http
@@ -6,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import require
+from common.audit import audit
 from common.errors import ApiError
 from common.pagination import DefaultPagination
 from notifications.models import Notification, NotificationRule
@@ -135,3 +137,28 @@ class NotificationRulesView(APIView):
             created_by=request.user,
         )
         return Response({"id": str(rule.id)}, status=http.HTTP_201_CREATED)
+
+    def put(self, request):
+        rules = request.data.get("rules")
+        if not isinstance(rules, list):
+            raise ApiError(code="VALIDATION_ERROR", message="rules должен быть массивом", status_code=400)
+        labels = [
+            "Новые заказы", "Платежи", "SMS", "E-mail дайджест", "Telegram", "SLA",
+        ]
+        with transaction.atomic():
+            NotificationRule.objects.filter(tenant_id=request.user.tenant_id).delete()
+            created = [
+                NotificationRule.objects.create(
+                    tenant_id=request.user.tenant_id,
+                    event_type=f"ui.preference.{index}",
+                    name=labels[index] if index < len(labels) else f"Правило {index + 1}",
+                    priority="medium",
+                    recipients={"users": [str(request.user.id)]},
+                    channels=["desktop"],
+                    is_active=bool(enabled),
+                    created_by=request.user,
+                )
+                for index, enabled in enumerate(rules)
+            ]
+        audit("notifications.rules_replaced", request=request, resource=request.user, after={"rules": rules})
+        return Response({"rules": [rule.is_active for rule in created]})
