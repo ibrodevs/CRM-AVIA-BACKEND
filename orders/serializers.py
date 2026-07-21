@@ -48,6 +48,48 @@ class ParticipantSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "status"]
 
+    def validate(self, attrs):
+        instance = getattr(self, "instance", None)
+        order = attrs.get("order") or getattr(instance, "order", None)
+        person = attrs.get("person", getattr(instance, "person", None))
+        guest_snapshot = attrs.get("guest_snapshot", getattr(instance, "guest_snapshot", None))
+        booking_document = attrs.get("booking_document", getattr(instance, "booking_document", None))
+
+        if person is None and not guest_snapshot:
+            raise serializers.ValidationError(
+                {"guest_snapshot": ["Укажите существующего человека или данные гостевого пассажира"]}
+            )
+        if person is not None and guest_snapshot:
+            raise serializers.ValidationError(
+                {"guest_snapshot": ["Для существующего человека guest_snapshot должен быть пустым"]}
+            )
+
+        tenant_id = getattr(order, "tenant_id", None)
+        if tenant_id is not None and person is not None and person.tenant_id != tenant_id:
+            raise serializers.ValidationError({"person": ["Человек относится к другому tenant"]})
+        if tenant_id is not None and booking_document is not None and booking_document.tenant_id != tenant_id:
+            raise serializers.ValidationError({"booking_document": ["Документ относится к другому tenant"]})
+        if booking_document is not None and person is not None and booking_document.person_id != person.id:
+            raise serializers.ValidationError(
+                {"booking_document": ["Документ не принадлежит выбранному человеку"]}
+            )
+
+        if guest_snapshot:
+            snapshot = dict(guest_snapshot)
+            name = str(snapshot.get("name", "")).strip()
+            if not name:
+                raise serializers.ValidationError({"guest_snapshot": ["Укажите ФИО гостевого пассажира"]})
+            documents = snapshot.get("documents", [])
+            if documents is not None and not isinstance(documents, list):
+                raise serializers.ValidationError(
+                    {"guest_snapshot": ["Поле documents должно быть списком"]}
+                )
+            snapshot["name"] = name
+            snapshot["documents"] = documents or []
+            attrs["guest_snapshot"] = snapshot
+
+        return attrs
+
 
 class OrderTaskSerializer(serializers.ModelSerializer):
     class Meta:
