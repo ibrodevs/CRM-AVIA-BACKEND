@@ -1,6 +1,7 @@
 from django.urls import path
 
 from orders import views as v
+from orders.card_views import OrderRouteDetailView, OrderTaskCollectionView
 from orders.participant_views import OrderParticipantDetailView, OrderParticipantsView
 from orders.task_views import OrderTaskDetailView
 
@@ -18,10 +19,10 @@ urlpatterns = [
         OrderParticipantDetailView.as_view(),
         name="order-participant-detail",
     ),
-    path("orders/<uuid:order_id>/route/", v.OrderRouteView.as_view(), name="order-route"),
+    path("orders/<uuid:order_id>/route/", OrderRouteDetailView.as_view(), name="order-route"),
     path("orders/<uuid:order_id>/overview/", v.OrderOverviewView.as_view(), name="order-overview"),
     path("orders/<uuid:order_id>/history/", v.OrderHistoryView.as_view(), name="order-history"),
-    path("orders/<uuid:order_id>/tasks/", v.OrderTasksView.as_view(), name="order-tasks"),
+    path("orders/<uuid:order_id>/tasks/", OrderTaskCollectionView.as_view(), name="order-tasks"),
     path(
         "orders/<uuid:order_id>/tasks/<uuid:task_id>/",
         OrderTaskDetailView.as_view(),
