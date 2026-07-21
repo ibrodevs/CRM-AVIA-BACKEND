@@ -83,6 +83,32 @@ class ObligationSerializer(serializers.ModelSerializer):
             return str(obj.order.client_company)
         return obj.order.client_person.full_name if obj.order.client_person_id else None
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if request is None:
+            return attrs
+        tenant_id = request.user.tenant_id
+        order = attrs.get("order") or getattr(self.instance, "order", None)
+        service = attrs.get("service") or getattr(self.instance, "service", None)
+        fields = {}
+        if order and order.tenant_id != tenant_id:
+            fields["order"] = ["Заказ не найден в текущей организации"]
+        if service:
+            if service.tenant_id != tenant_id:
+                fields["service"] = ["Услуга не найдена в текущей организации"]
+            elif order and service.order_id != order.id:
+                fields["service"] = ["Услуга должна принадлежать выбранному заказу"]
+            elif order is None:
+                attrs["order"] = service.order
+        if fields:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Некорректные связи финансового обязательства",
+                fields=fields,
+                status_code=400,
+            )
+        return attrs
+
 
 class PaymentSerializer(serializers.ModelSerializer):
     money = serializers.SerializerMethodField()
@@ -130,6 +156,25 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     def get_payer_company_name(self, obj):
         return str(obj.payer_company) if obj.payer_company_id else None
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if request is None:
+            return attrs
+        tenant_id = request.user.tenant_id
+        fields = {}
+        for field in ("order", "payer_person", "payer_company", "supplier"):
+            obj = attrs.get(field) or getattr(self.instance, field, None)
+            if obj and obj.tenant_id != tenant_id:
+                fields[field] = ["Объект не найден в текущей организации"]
+        if fields:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Некорректные связи платежа",
+                fields=fields,
+                status_code=400,
+            )
+        return attrs
 
 
 class RefundSerializer(serializers.ModelSerializer):
@@ -295,7 +340,7 @@ class ObligationListCreateView(GenericAPIView):
     def post(self, request):
         self.permission_classes = [require("finance.create_payment")]
         self.check_permissions(request)
-        serializer = ObligationSerializer(data=request.data)
+        serializer = ObligationSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         obligation = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
         audit("finance.obligation_created", actor=request.user, resource=obligation, request=request)
@@ -321,7 +366,7 @@ class PaymentListCreateView(GenericAPIView):
     def post(self, request):
         self.permission_classes = [require("finance.create_payment")]
         self.check_permissions(request)
-        serializer = PaymentSerializer(data=request.data)
+        serializer = PaymentSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         payment = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
         audit("finance.payment_created", actor=request.user, resource=payment, request=request)

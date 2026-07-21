@@ -5,6 +5,7 @@ from offers import views as v
 urlpatterns = [
     path("proposals/", v.ProposalListCreateView.as_view(), name="proposal-list"),
     path("proposals/<uuid:proposal_id>/", v.ProposalDetailView.as_view(), name="proposal-detail"),
+    path("proposals/<uuid:proposal_id>/draft/", v.ProposalDraftReplaceView.as_view(), name="proposal-draft"),
     path(
         "proposals/<uuid:proposal_id>/versions/", v.ProposalVersionsView.as_view(), name="proposal-versions"
     ),

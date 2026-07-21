@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework import status as http
@@ -37,6 +38,7 @@ class ProposalItemSerializer(serializers.ModelSerializer):
             "id",
             "offer",
             "service",
+            "service_kind",
             "title",
             "description",
             "quantity",
@@ -107,6 +109,7 @@ def _proposal_snapshot(proposal: Proposal) -> dict:
                 "status": v.status,
                 "items": [
                     {
+                        "service_kind": i.service_kind,
                         "title": i.title,
                         "description": i.description,
                         "quantity": i.quantity,
@@ -173,11 +176,30 @@ class ProposalListCreateView(GenericAPIView):
                 for item in variant.get("items", []):
                     item_serializer = ProposalItemSerializer(data=item)
                     item_serializer.is_valid(raise_exception=True)
+                    item_data = item_serializer.validated_data
+                    service = item_data.get("service")
+                    offer = item_data.get("offer")
+                    if service is not None and (
+                        service.tenant_id != request.user.tenant_id or service.order_id != order.id
+                    ):
+                        raise ApiError(
+                            code="VALIDATION_ERROR",
+                            message="Позиция КП ссылается на недоступную услугу",
+                            fields={"service": ["Услуга должна принадлежать заказу и tenant"]},
+                            status_code=400,
+                        )
+                    if offer is not None and offer.tenant_id != request.user.tenant_id:
+                        raise ApiError(
+                            code="VALIDATION_ERROR",
+                            message="Позиция КП ссылается на недоступное предложение",
+                            fields={"offer": ["Предложение должно принадлежать tenant"]},
+                            status_code=400,
+                        )
                     ProposalItem.objects.create(
                         tenant_id=request.user.tenant_id,
                         variant=variant_obj,
                         created_by=request.user,
-                        **item_serializer.validated_data,
+                        **item_data,
                     )
         audit(
             "offers.proposal_created",
@@ -195,6 +217,91 @@ class ProposalDetailView(APIView):
 
     def get(self, request, proposal_id):
         return Response(ProposalSerializer(_get_proposal(request, proposal_id)).data)
+
+
+class ProposalDraftReplaceView(APIView):
+    permission_classes = [require("offers.change")]
+
+    def put(self, request, proposal_id):
+        proposal = _get_proposal(request, proposal_id)
+        if proposal.status not in (Proposal.Status.DRAFT, Proposal.Status.PREPARED):
+            raise ApiError(
+                code="INVALID_PROPOSAL_STATUS",
+                message="Редактировать можно только черновик или подготовленное КП",
+                status_code=409,
+            )
+        check_version(proposal, request.data.get("version"))
+        variants = request.data.get("variants")
+        if not isinstance(variants, list) or not variants:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="КП должно содержать хотя бы один вариант",
+                fields={"variants": ["Обязательное поле-список"]},
+                status_code=400,
+            )
+        before = _proposal_snapshot(proposal)
+        with transaction.atomic():
+            proposal = Proposal.objects.select_for_update().get(pk=proposal.pk)
+            check_version(proposal, request.data.get("version"))
+            if "currency" in request.data:
+                proposal.currency = str(request.data.get("currency") or proposal.currency)[:3].upper()
+            if "purpose" in request.data:
+                proposal.purpose = str(request.data.get("purpose") or "")
+            if "valid_until" in request.data:
+                raw_valid_until = request.data.get("valid_until")
+                proposal.valid_until = parse_datetime(raw_valid_until) if raw_valid_until else None
+            proposal.variants.all().delete()
+            for index, variant in enumerate(variants, start=1):
+                variant_obj = ProposalVariant.objects.create(
+                    tenant_id=request.user.tenant_id,
+                    proposal=proposal,
+                    name=variant.get("name", f"Вариант {index}"),
+                    sequence=index,
+                    created_by=request.user,
+                )
+                items = variant.get("items") or []
+                for item in items:
+                    item_serializer = ProposalItemSerializer(data=item)
+                    item_serializer.is_valid(raise_exception=True)
+                    item_data = item_serializer.validated_data
+                    service = item_data.get("service")
+                    offer = item_data.get("offer")
+                    if service is not None and (
+                        service.tenant_id != request.user.tenant_id or service.order_id != proposal.order_id
+                    ):
+                        raise ApiError(
+                            code="VALIDATION_ERROR",
+                            message="Позиция КП ссылается на недоступную услугу",
+                            fields={"service": ["Услуга должна принадлежать заказу и tenant"]},
+                            status_code=400,
+                        )
+                    if offer is not None and offer.tenant_id != request.user.tenant_id:
+                        raise ApiError(
+                            code="VALIDATION_ERROR",
+                            message="Позиция КП ссылается на недоступное предложение",
+                            fields={"offer": ["Предложение должно принадлежать tenant"]},
+                            status_code=400,
+                        )
+                    ProposalItem.objects.create(
+                        tenant_id=request.user.tenant_id,
+                        variant=variant_obj,
+                        created_by=request.user,
+                        **item_data,
+                    )
+            proposal.version += 1
+            proposal.updated_by = request.user
+            proposal.save(update_fields=["currency", "purpose", "valid_until", "version", "updated_by", "updated_at"])
+        proposal = Proposal.objects.prefetch_related("variants__items").get(pk=proposal.pk)
+        audit(
+            "offers.proposal_draft_replaced",
+            actor=request.user,
+            resource=proposal,
+            request=request,
+            before=before,
+            after=_proposal_snapshot(proposal),
+        )
+        emit_event("offers.proposal_updated", proposal, tenant_id=proposal.tenant_id)
+        return Response(ProposalSerializer(proposal).data)
 
 
 class ProposalVersionsView(APIView):

@@ -53,7 +53,7 @@ class DocumentListCreateView(GenericAPIView):
                 raise ApiError(
                     code="VALIDATION_ERROR", message="document: некорректный JSON", status_code=400
                 ) from None
-        serializer = DocumentSerializer(data=meta or request.data)
+        serializer = DocumentSerializer(data=meta or request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
             document = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)

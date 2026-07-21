@@ -9,7 +9,6 @@ from accounts.permissions import has_permission, require
 from common.audit import audit
 from common.errors import ApiError
 from common.idempotency import idempotent_command
-from common.jobs import enqueue
 from common.locking import check_version
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
@@ -143,17 +142,31 @@ class OrderCancelView(APIView):
                 },
                 status_code=409,
             )
-        job = enqueue(
-            "orders.cancel",
-            {
-                "order_id": str(order.id),
-                "reason": str(request.data.get("reason", "")),
-                "expected_version": request.data.get("version"),
-                "user_id": str(request.user.id),
-            },
-            request=request,
-        )
-        return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
+
+        from services.models import OrderService
+
+        cancelled_services = []
+        with transaction.atomic():
+            for service in active.select_for_update():
+                service.status = OrderService.Status.CANCELLED
+                service.updated_by = request.user
+                service.version += 1
+                service.save(update_fields=["status", "updated_by", "version", "updated_at"])
+                cancelled_services.append(str(service.id))
+
+            order = order_service.transition_order(
+                order_id=order_id,
+                user=request.user,
+                target_status=Order.Status.CANCELLED,
+                reason=str(request.data.get("reason", "")),
+                expected_version=request.data.get("version"),
+                request=request,
+            )
+
+        data = OrderDetailSerializer(order).data
+        data["cancelled_services"] = cancelled_services
+        data["audit_event_id"] = getattr(order, "_audit_event_id", None)
+        return Response(data)
 
 
 class OrderReassignView(APIView):

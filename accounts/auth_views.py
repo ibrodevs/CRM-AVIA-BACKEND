@@ -17,7 +17,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from accounts.models import FailedLoginAttempt, PasswordResetToken, User, UserSession
+from accounts.models import FailedLoginAttempt, PasswordResetToken, TwoFactorConfig, User, UserSession
 from accounts.tokens import issue_2fa_challenge, issue_session_tokens, rotate_session_tokens
 from common.audit import audit
 from common.errors import ApiError
@@ -139,6 +139,90 @@ class TwoFactorVerifyView(APIView):
         tokens = issue_session_tokens(user, request)
         audit("auth.login", actor=user, request=request, reason="2fa", tenant_id=user.tenant_id)
         return Response({"access": tokens["access"], "refresh": tokens["refresh"]})
+
+
+class TwoFactorStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        two_factor = getattr(request.user, "two_factor", None)
+        return Response(
+            {
+                "enabled": bool(two_factor and two_factor.is_enabled),
+                "confirmed_at": two_factor.confirmed_at if two_factor and two_factor.is_enabled else None,
+            }
+        )
+
+
+class TwoFactorSetupView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current = getattr(request.user, "two_factor", None)
+        if current is not None and current.is_enabled:
+            raise ApiError(code="TWO_FACTOR_ALREADY_ENABLED", message="2FA уже включена", status_code=409)
+        secret = pyotp.random_base32()
+        config, _ = TwoFactorConfig.objects.update_or_create(
+            user=request.user,
+            defaults={"totp_secret": secret, "confirmed_at": None},
+        )
+        audit("auth.2fa_setup_started", request=request, resource=config)
+        return Response(
+            {
+                "secret": secret,
+                "provisioning_uri": pyotp.TOTP(secret).provisioning_uri(
+                    name=request.user.email,
+                    issuer_name="Travel Hub CRM",
+                ),
+            }
+        )
+
+
+class TwoFactorConfirmSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=10)
+
+
+class TwoFactorConfirmView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = TwoFactorConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        config = getattr(request.user, "two_factor", None)
+        if config is None:
+            raise ApiError(code="TWO_FACTOR_NOT_STARTED", message="Сначала начните настройку 2FA", status_code=409)
+        if not pyotp.TOTP(config.totp_secret).verify(serializer.validated_data["code"], valid_window=1):
+            audit("auth.2fa_confirm_failed", request=request, resource=config)
+            raise ApiError(code="INVALID_2FA_CODE", message="Неверный код подтверждения", status_code=400)
+        config.confirmed_at = timezone.now()
+        config.save(update_fields=["confirmed_at"])
+        audit("auth.2fa_enabled", request=request, resource=config)
+        return Response({"enabled": True, "confirmed_at": config.confirmed_at})
+
+
+class TwoFactorDisableSerializer(serializers.Serializer):
+    current_password = serializers.CharField(trim_whitespace=False)
+    code = serializers.CharField(max_length=10)
+
+
+class TwoFactorDisableView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = TwoFactorDisableSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        if not user.check_password(serializer.validated_data["current_password"]):
+            raise ApiError(code="INVALID_CURRENT_PASSWORD", message="Текущий пароль неверен", status_code=400)
+        config = getattr(user, "two_factor", None)
+        if config is None or not config.is_enabled:
+            return Response({"enabled": False, "confirmed_at": None})
+        if not pyotp.TOTP(config.totp_secret).verify(serializer.validated_data["code"], valid_window=1):
+            audit("auth.2fa_disable_failed", request=request, resource=config)
+            raise ApiError(code="INVALID_2FA_CODE", message="Неверный код подтверждения", status_code=400)
+        config.delete()
+        audit("auth.2fa_disabled", request=request)
+        return Response({"enabled": False, "confirmed_at": None})
 
 
 class RefreshSerializer(serializers.Serializer):

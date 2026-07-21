@@ -18,9 +18,19 @@ urlpatterns = [
         "companies/<uuid:company_id>/employees/", v.CompanyEmployeesView.as_view(), name="company-employees"
     ),
     path(
+        "companies/<uuid:company_id>/employees/<uuid:employee_id>/",
+        v.CompanyEmployeeDetailView.as_view(),
+        name="company-employee-detail",
+    ),
+    path(
         "companies/<uuid:company_id>/departments/",
         v.CompanyDepartmentsView.as_view(),
         name="company-departments",
+    ),
+    path(
+        "companies/<uuid:company_id>/departments/<uuid:department_id>/",
+        v.CompanyDepartmentDetailView.as_view(),
+        name="company-department-detail",
     ),
     path(
         "companies/<uuid:company_id>/contracts/", v.CompanyContractsView.as_view(), name="company-contracts"

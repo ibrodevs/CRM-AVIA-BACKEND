@@ -89,6 +89,31 @@ class TestTwoFactor:
         assert response.status_code == 200
         assert "access" in response.json()
 
+    def test_2fa_setup_confirm_and_disable(self, admin_user):
+        client = auth_client(admin_user)
+        response = client.get("/api/v1/auth/2fa/status/")
+        assert response.status_code == 200
+        assert response.json()["enabled"] is False
+
+        response = client.post("/api/v1/auth/2fa/setup/")
+        assert response.status_code == 200
+        secret = response.json()["secret"]
+        assert "otpauth://" in response.json()["provisioning_uri"]
+
+        response = client.post("/api/v1/auth/2fa/confirm/", {"code": "000000"})
+        assert response.status_code == 400
+
+        response = client.post("/api/v1/auth/2fa/confirm/", {"code": pyotp.TOTP(secret).now()})
+        assert response.status_code == 200
+        assert response.json()["enabled"] is True
+
+        response = client.post(
+            "/api/v1/auth/2fa/disable/",
+            {"current_password": "Str0ng-Pass-123!", "code": pyotp.TOTP(secret).now()},
+        )
+        assert response.status_code == 200
+        assert response.json()["enabled"] is False
+
 
 class TestSessions:
     def test_refresh_rotation(self, admin_user):

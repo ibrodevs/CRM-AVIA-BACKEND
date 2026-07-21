@@ -66,6 +66,37 @@ class CalendarEventSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "status", "completed_at", "version"]
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if request is None:
+            return attrs
+        tenant_id = request.user.tenant_id
+        order = attrs.get("order") or getattr(self.instance, "order", None)
+        service = attrs.get("service") or getattr(self.instance, "service", None)
+        person = attrs.get("person") or getattr(self.instance, "person", None)
+        supplier = attrs.get("supplier") or getattr(self.instance, "supplier", None)
+        assignee = attrs.get("assignee") or getattr(self.instance, "assignee", None)
+        fields = {}
+        for field, obj in (
+            ("order", order),
+            ("service", service),
+            ("person", person),
+            ("supplier", supplier),
+            ("assignee", assignee),
+        ):
+            if obj and obj.tenant_id != tenant_id:
+                fields[field] = ["Объект не найден в текущей организации"]
+        if service and order and service.order_id != order.id:
+            fields["service"] = ["Услуга должна принадлежать выбранному заказу"]
+        if fields:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Некорректные связи события календаря",
+                fields=fields,
+                status_code=400,
+            )
+        return attrs
+
 
 class TripListView(GenericAPIView):
     permission_classes = [require("orders.view")]
@@ -123,7 +154,7 @@ class CalendarEventListCreateView(GenericAPIView):
         return self.get_paginated_response(CalendarEventSerializer(page, many=True).data)
 
     def post(self, request):
-        serializer = CalendarEventSerializer(data=request.data)
+        serializer = CalendarEventSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         event = serializer.save(
             tenant_id=request.user.tenant_id,

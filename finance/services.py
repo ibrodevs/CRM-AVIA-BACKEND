@@ -156,6 +156,29 @@ def allocate_payment(*, payment: Payment, obligation_id, amount: Decimal, user) 
             status_code=409,
         )
     obligation = FinancialObligation.objects.select_for_update().get(pk=obligation_id)
+    if obligation.tenant_id != payment.tenant_id:
+        raise ApiError(code="NOT_FOUND", message="Обязательство не найдено", status_code=404)
+    if payment.order_id and obligation.order_id and obligation.order_id != payment.order_id:
+        raise BusinessRejectionError(
+            code="ORDER_MISMATCH",
+            message="Платёж нельзя распределить на обязательство другого заказа",
+        )
+    allowed_directions = {
+        Payment.Direction.INCOMING: {
+            FinancialObligation.Direction.CLIENT_RECEIVABLE,
+            FinancialObligation.Direction.SUPPLIER_REFUND,
+        },
+        Payment.Direction.OUTGOING: {
+            FinancialObligation.Direction.SUPPLIER_PAYABLE,
+            FinancialObligation.Direction.CLIENT_REFUND,
+        },
+    }
+    if obligation.direction not in allowed_directions[payment.direction]:
+        raise BusinessRejectionError(
+            code="OBLIGATION_DIRECTION_MISMATCH",
+            message="Направление платежа не соответствует типу обязательства",
+            details={"payment_direction": payment.direction, "obligation_direction": obligation.direction},
+        )
     if obligation.currency != payment.currency:
         raise BusinessRejectionError(
             code="CURRENCY_MISMATCH", message="Валюта платежа и обязательства различаются"
@@ -289,6 +312,11 @@ def execute_refund(*, refund_id, user, request=None) -> Refund:
     refund.save(update_fields=["status", "executed_at", "executed_by", "version", "updated_at"])
     cash = _system_account(refund.tenant_id, "bank", refund.currency)
     receivable = _system_account(refund.tenant_id, "client_receivable", refund.currency)
+    order = None
+    if refund.payment_id and refund.payment.order_id:
+        order = refund.payment.order
+    elif refund.aftersale_case_id:
+        order = refund.aftersale_case.order
     if refund.refund_amount > 0:
         post_ledger(
             refund.tenant_id,
@@ -308,13 +336,16 @@ def execute_refund(*, refund_id, user, request=None) -> Refund:
                     "currency": refund.currency,
                 },
             ],
+            order=order,
             payment=refund.payment,
             user=user,
         )
     if refund.obligation_id:
         obligation = FinancialObligation.objects.select_for_update().get(pk=refund.obligation_id)
         obligation.refunded_amount += refund.refund_amount
-        obligation.save(update_fields=["refunded_amount", "updated_at"])
+        if obligation.refunded_amount >= obligation.original_amount:
+            obligation.status = FinancialObligation.Status.SETTLED
+        obligation.save(update_fields=["refunded_amount", "status", "updated_at"])
     audit(
         "finance.refund_executed",
         actor=user,
@@ -324,7 +355,7 @@ def execute_refund(*, refund_id, user, request=None) -> Refund:
     )
     emit_event(
         "order.updated",
-        refund.payment.order if refund.payment and refund.payment.order else refund,
+        order or refund,
         payload={"action": "refund_executed", "refund": str(refund.pk)},
     )
     return refund

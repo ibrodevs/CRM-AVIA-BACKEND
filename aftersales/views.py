@@ -23,6 +23,7 @@ from common.money import quantize
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
 from documents.serializers import DocumentSerializer
+from orders.models import OrderParticipant
 from orders.selectors import get_order_or_404
 
 
@@ -49,6 +50,11 @@ class QuoteSerializer(serializers.ModelSerializer):
 
 class CaseSerializer(serializers.ModelSerializer):
     quotes = QuoteSerializer(many=True, read_only=True)
+    participants = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=OrderParticipant.objects.all(),
+        required=False,
+    )
 
     class Meta:
         model = AfterSaleCase
@@ -66,6 +72,7 @@ class CaseSerializer(serializers.ModelSerializer):
             "currency",
             "financial_snapshot",
             "external_references",
+            "participants",
             "current_quote",
             "client_approved_at",
             "client_approved_quote_version",
@@ -83,6 +90,60 @@ class CaseSerializer(serializers.ModelSerializer):
             "created_at",
             "version",
         ]
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if request is None:
+            return attrs
+
+        tenant_id = request.user.tenant_id
+        order = attrs.get("order") or getattr(self.instance, "order", None)
+        service = attrs.get("service") or getattr(self.instance, "service", None)
+        supplier = attrs.get("supplier") or getattr(self.instance, "supplier", None)
+        responsible = attrs.get("responsible") or getattr(self.instance, "responsible", None)
+        participants = attrs.get("participants")
+        fields = {}
+
+        if order and order.tenant_id != tenant_id:
+            fields["order"] = ["Заказ не найден в текущей организации"]
+        if service:
+            if service.tenant_id != tenant_id:
+                fields["service"] = ["Услуга не найдена в текущей организации"]
+            elif order and service.order_id != order.id:
+                fields["service"] = ["Услуга должна принадлежать выбранному заказу"]
+        if supplier and supplier.tenant_id != tenant_id:
+            fields["supplier"] = ["Поставщик не найден в текущей организации"]
+        if responsible and responsible.tenant_id != tenant_id:
+            fields["responsible"] = ["Ответственный не найден в текущей организации"]
+        if participants is not None and order:
+            bad_order = [
+                str(participant.id)
+                for participant in participants
+                if participant.tenant_id != tenant_id
+                or participant.order_id != order.id
+                or participant.status != "active"
+            ]
+            if bad_order:
+                fields["participants"] = ["Участники должны быть активными участниками выбранного заказа"]
+            elif service:
+                service_participant_ids = set(
+                    service.passengers.filter(status="active").values_list("participant_id", flat=True)
+                )
+                bad_service = [
+                    str(participant.id)
+                    for participant in participants
+                    if participant.id not in service_participant_ids
+                ]
+                if bad_service:
+                    fields["participants"] = ["Участники должны быть привязаны к выбранной услуге"]
+        if fields:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Некорректные связи кейса постпродажи",
+                fields=fields,
+                status_code=400,
+            )
+        return attrs
 
 
 def _get_case(request, case_id) -> AfterSaleCase:
@@ -147,9 +208,10 @@ class CaseListCreateView(GenericAPIView):
             raise ApiError(code="VALIDATION_ERROR", message=f"type из {sorted(needed)}", status_code=400)
         if not has_permission(request.user, permission):
             raise ApiError(code="PERMISSION_DENIED", message=f"Нет права {permission}", status_code=403)
-        serializer = CaseSerializer(data=request.data)
+        serializer = CaseSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        get_order_or_404(request.user, serializer.validated_data["order"].pk)
+        order = get_order_or_404(request.user, serializer.validated_data["order"].pk)
+        participants_provided = "participants" in serializer.validated_data
         with transaction.atomic():
             case = serializer.save(
                 tenant_id=request.user.tenant_id,
@@ -157,6 +219,16 @@ class CaseListCreateView(GenericAPIView):
                 responsible=serializer.validated_data.get("responsible") or request.user,
                 created_by=request.user,
             )
+            if not participants_provided:
+                if case.service_id:
+                    default_participants = OrderParticipant.objects.filter(
+                        id__in=case.service.passengers.filter(status="active").values_list(
+                            "participant_id", flat=True
+                        )
+                    )
+                else:
+                    default_participants = order.participants.filter(status="active")
+                case.participants.set(default_participants)
             _history(case, "created", request.user, type=case_type)
             if case.service and case_type in ("refund", "exchange"):
                 from services.models import OrderService
@@ -250,9 +322,27 @@ class CaseTransitionView(APIView):
     def post(self, request, case_id):
         with transaction.atomic():
             case = AfterSaleCase.objects.select_for_update().get(pk=_get_case(request, case_id).pk)
+            target = str(request.data.get("target_status", ""))
+            if target == AfterSaleCase.Status.COMPLETED:
+                raise ApiError(
+                    code="USE_EXECUTE_ENDPOINT",
+                    message="Завершение постпродажи выполняется через execute",
+                    status_code=409,
+                )
+            if target == AfterSaleCase.Status.AWAITING_CLIENT_APPROVAL and case.current_quote_id is None:
+                raise ApiError(code="QUOTE_REQUIRED", message="Сначала создайте quote", status_code=409)
+            if (
+                target in (AfterSaleCase.Status.SUBMITTED_TO_SUPPLIER, AfterSaleCase.Status.PROCESSING)
+                and case.type in ("refund", "exchange")
+                and case.client_approved_at is None
+            ):
+                raise BusinessRejectionError(
+                    code="CLIENT_APPROVAL_REQUIRED",
+                    message="Нужно согласие клиента с актуальным расчётом",
+                )
             _transition(
                 case,
-                str(request.data.get("target_status", "")),
+                target,
                 request.user,
                 reason=str(request.data.get("reason", "")),
             )
@@ -352,8 +442,27 @@ class CaseExecuteView(APIView):
                         aftersale_case=case,
                         user=request.user,
                     )
+                    if refund.refund_amount > 0:
+                        from finance.models import FinancialObligation
+
+                        obligation = FinancialObligation.objects.create(
+                            tenant_id=case.tenant_id,
+                            order=case.order,
+                            service=case.service,
+                            aftersale_case=case,
+                            direction=FinancialObligation.Direction.CLIENT_REFUND,
+                            currency=refund.currency,
+                            original_amount=refund.refund_amount,
+                            created_by=request.user,
+                        )
+                        refund.obligation = obligation
+                        refund.save(update_fields=["obligation", "updated_at"])
                     finance_service.execute_refund(refund_id=refund.pk, user=request.user, request=request)
-                    case.financial_snapshot = refund.formula_snapshot
+                    case.financial_snapshot = {
+                        **refund.formula_snapshot,
+                        "refund_id": str(refund.id),
+                        "obligation_id": str(refund.obligation_id) if refund.obligation_id else None,
+                    }
                 elif manual_exception:
                     if not request.data.get("reason"):
                         raise ApiError(

@@ -161,6 +161,27 @@ class DepartmentSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "parent", "travel_policy"]
         read_only_fields = ["id"]
 
+    def validate(self, attrs):
+        company = self.context.get("company") or getattr(self.instance, "company", None)
+        tenant_id = self.context.get("tenant_id")
+        parent = attrs.get("parent") or getattr(self.instance, "parent", None)
+        travel_policy = attrs.get("travel_policy") or getattr(self.instance, "travel_policy", None)
+        fields = {}
+        if parent and (parent.tenant_id != tenant_id or (company and parent.company_id != company.id)):
+            fields["parent"] = ["Родительский отдел должен принадлежать этой компании"]
+        if travel_policy and travel_policy.tenant_id != tenant_id:
+            fields["travel_policy"] = ["Тревел-политика не найдена в текущей организации"]
+        if fields:
+            from common.errors import ApiError
+
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Некорректные связи отдела",
+                fields=fields,
+                status_code=400,
+            )
+        return attrs
+
 
 class EmployeeSerializer(serializers.ModelSerializer):
     person_detail = PersonSerializer(source="person", read_only=True)
@@ -169,6 +190,27 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = Employee
         fields = ["id", "person", "person_detail", "personnel_number", "department", "position", "status"]
         read_only_fields = ["id"]
+
+    def validate(self, attrs):
+        company = self.context.get("company") or getattr(self.instance, "company", None)
+        tenant_id = self.context.get("tenant_id")
+        person = attrs.get("person") or getattr(self.instance, "person", None)
+        department = attrs.get("department") or getattr(self.instance, "department", None)
+        fields = {}
+        if person and person.tenant_id != tenant_id:
+            fields["person"] = ["Лицо не найдено в текущей организации"]
+        if department and (department.tenant_id != tenant_id or (company and department.company_id != company.id)):
+            fields["department"] = ["Отдел должен принадлежать этой компании"]
+        if fields:
+            from common.errors import ApiError
+
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Некорректные связи сотрудника",
+                fields=fields,
+                status_code=400,
+            )
+        return attrs
 
 
 class FeeRuleSerializer(serializers.ModelSerializer):

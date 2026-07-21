@@ -172,6 +172,102 @@ class TestAttachToOrder:
         assert row["order_number"] == order["number"]
         assert row["supplier_name"]
 
+    def test_manual_service_binds_order_participants(self, admin_client, tenant, admin_user):
+        from crm.models import Person
+
+        person = Person.objects.create(
+            tenant=tenant, surname="Пассажир", given_name="Один", created_by=admin_user
+        )
+        order = admin_client.post(
+            "/api/v1/orders/",
+            {
+                "request_type": "individual",
+                "client_person": str(person.id),
+                "participants": [{"person": str(person.id), "role": "passenger"}],
+            },
+            format="json",
+        ).json()
+        participant_id = order["participants"][0]["id"]
+        response = admin_client.post(
+            f"/api/v1/orders/{order['id']}/services/",
+            {
+                "kind": "transfer",
+                "title": "Трансфер аэропорт-отель",
+                "currency": "USD",
+                "client_total": "50.00",
+                "participants": [participant_id],
+            },
+            format="json",
+        )
+        assert response.status_code == 201, response.content
+        service = response.json()
+        assert service["passengers_count"] == 1
+        assert service["passengers"][0]["participant"] == participant_id
+
+        response = admin_client.put(
+            f"/api/v1/services/{service['id']}/passengers/",
+            {"version": service["version"], "participants": []},
+            format="json",
+        )
+        assert response.status_code == 200, response.content
+        assert response.json()["passengers_count"] == 0
+
+    def test_manual_book_and_issue(self, admin_client, tenant, admin_user):
+        from crm.models import Person
+
+        person = Person.objects.create(
+            tenant=tenant, surname="Ручной", given_name="Пассажир", created_by=admin_user
+        )
+        order = admin_client.post(
+            "/api/v1/orders/",
+            {"request_type": "individual", "client_person": str(person.id)},
+            format="json",
+        ).json()
+        service = admin_client.post(
+            f"/api/v1/orders/{order['id']}/services/",
+            {
+                "kind": "hotel",
+                "title": "Hilton Bishkek",
+                "currency": "USD",
+                "supplier_cost": "100.00",
+                "agency_fee": "10.00",
+                "client_total": "110.00",
+            },
+            format="json",
+        ).json()
+
+        response = admin_client.post(
+            f"/api/v1/services/{service['id']}/manual-book/",
+            {
+                "version": service["version"],
+                "supplier_reference": "HTL-123",
+                "booking_number": "BN-123",
+                "payment_deadline": "2026-08-01T18:00:00Z",
+                "comment": "ручная бронь",
+            },
+            format="json",
+        )
+        assert response.status_code == 200, response.content
+        booked = response.json()
+        assert booked["status"] == "booked"
+        assert booked["external_id"] == "HTL-123"
+
+        response = admin_client.post(
+            f"/api/v1/services/{service['id']}/manual-issue/",
+            {
+                "version": booked["version"],
+                "voucher_number": "VCH-456",
+                "amount": "110.00",
+                "currency": "USD",
+                "comment": "ваучер получен",
+            },
+            format="json",
+        )
+        assert response.status_code == 200, response.content
+        issued = response.json()
+        assert issued["status"] == "issued"
+        assert issued["version"] == booked["version"] + 1
+
     def test_service_transition_machine(self, admin_client, supplier, tenant, admin_user):
         from crm.models import Person
 

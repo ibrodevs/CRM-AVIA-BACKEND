@@ -28,6 +28,9 @@ urlpatterns = [
     path(
         "services/<uuid:service_id>/transition/", v.ServiceTransitionView.as_view(), name="service-transition"
     ),
+    path("services/<uuid:service_id>/passengers/", v.ServicePassengersView.as_view(), name="service-passengers"),
+    path("services/<uuid:service_id>/manual-book/", v.ServiceManualBookView.as_view(), name="service-manual-book"),
+    path("services/<uuid:service_id>/manual-issue/", v.ServiceManualIssueView.as_view(), name="service-manual-issue"),
     path("services/<uuid:service_id>/extras/", v.ServiceExtrasView.as_view(), name="service-extras"),
     path(
         "services/<uuid:service_id>/responsible/",

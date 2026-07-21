@@ -68,6 +68,33 @@ class TestEndpointAccess:
         target.refresh_from_db()
         assert target.status == "active"
 
+    def test_role_permissions_update_changes_rbac(self, admin_client, tenant):
+        from accounts.models import Role, UserRole
+
+        target = make_user(tenant, "role-target@test.local")
+        role = Role.objects.get(tenant=tenant, code="operator")
+        UserRole.objects.create(user=target, role=role)
+        assert has_permission(target, "orders.create")
+
+        response = admin_client.put(
+            f"/api/v1/roles/{role.id}/",
+            {"permissions": ["orders.view"]},
+            format="json",
+        )
+        assert response.status_code == 200
+        assert response.json()["permissions"] == ["orders.view"]
+
+        fresh = type(target).objects.get(pk=target.pk)
+        assert has_permission(fresh, "orders.view")
+        assert not has_permission(fresh, "orders.create")
+
+    def test_admin_role_cannot_be_reduced(self, admin_client, tenant):
+        from accounts.models import Role
+
+        role = Role.objects.get(tenant=tenant, code="admin")
+        response = admin_client.put(f"/api/v1/roles/{role.id}/", {"permissions": ["orders.view"]}, format="json")
+        assert response.status_code == 409
+
 
 class TestTenantIsolation:
     def test_admin_does_not_see_other_tenant_users(self, admin_client, other_tenant):

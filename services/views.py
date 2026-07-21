@@ -1,4 +1,7 @@
+from datetime import datetime, time
+
 from django.db import transaction
+from django.utils.dateparse import parse_date, parse_datetime
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework import status as http
@@ -23,6 +26,7 @@ from services.models import (
     SearchSession,
     ServiceExtra,
     ServiceOffer,
+    ServicePassenger,
 )
 
 
@@ -75,6 +79,7 @@ class OrderServiceSerializer(serializers.ModelSerializer):
     order_number = serializers.CharField(source="order.number", read_only=True)
     supplier_name = serializers.CharField(source="supplier.name", read_only=True, default="")
     passengers_count = serializers.SerializerMethodField()
+    passengers = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderService
@@ -88,6 +93,7 @@ class OrderServiceSerializer(serializers.ModelSerializer):
             "supplier",
             "supplier_name",
             "passengers_count",
+            "passengers",
             "external_id",
             "source",
             "starts_at",
@@ -112,7 +118,27 @@ class OrderServiceSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "order", "status", "version", "created_at"]
 
     def get_passengers_count(self, obj) -> int:
-        return obj.order.participants.filter(status="active").count()
+        return obj.passengers.exclude(status__in=["cancelled", "replaced"]).count()
+
+    def get_passengers(self, obj):
+        rows = obj.passengers.select_related("participant", "participant__person").exclude(
+            status__in=["cancelled", "replaced"]
+        )
+        return [
+            {
+                "id": str(row.id),
+                "participant": str(row.participant_id),
+                "name": row.participant.person.full_name
+                if row.participant.person_id
+                else (row.participant.guest_snapshot or {}).get("name", ""),
+                "fare_code": row.fare_code,
+                "seat_ref": row.seat_ref,
+                "currency": row.currency,
+                "price": str(row.price) if row.price is not None else None,
+                "status": row.status,
+            }
+            for row in rows
+        ]
 
 
 class ServiceListView(GenericAPIView):
@@ -312,39 +338,46 @@ class OrderServicesView(GenericAPIView):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change", status_code=403)
         order = get_order_or_404(request.user, order_id)
         offer_id = request.data.get("offer_id")
-        if offer_id:
-            offer = _get_offer(request, offer_id)
-            if offer.expires_at and offer.expires_at < timezone.now():
-                raise ApiError(
-                    code="OFFER_EXPIRED",
-                    message="Предложение устарело; выполните revalidate",
-                    status_code=409,
+        with transaction.atomic():
+            if offer_id:
+                offer = _get_offer(request, offer_id)
+                if offer.expires_at and offer.expires_at < timezone.now():
+                    raise ApiError(
+                        code="OFFER_EXPIRED",
+                        message="Предложение устарело; выполните revalidate",
+                        status_code=409,
+                    )
+                service = OrderService.objects.create(
+                    tenant_id=order.tenant_id,
+                    order=order,
+                    kind=offer.kind,
+                    title=_offer_title(offer),
+                    supplier=offer.supplier,
+                    source=OrderService.Source.MANUAL if offer.is_manual else OrderService.Source.API,
+                    currency=offer.price_currency,
+                    supplier_cost=offer.price_amount,
+                    client_total=offer.price_amount,
+                    provider_snapshot=offer.raw_snapshot,
+                    policy_compliance=offer.compliance,
+                    created_by=request.user,
                 )
-            service = OrderService.objects.create(
-                tenant_id=order.tenant_id,
+            else:
+                serializer = OrderServiceSerializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+                service = serializer.save(
+                    tenant_id=order.tenant_id,
+                    order=order,
+                    source=OrderService.Source.MANUAL,
+                    created_by=request.user,
+                )
+            _sync_service_passengers(
                 order=order,
-                kind=offer.kind,
-                title=_offer_title(offer),
-                supplier=offer.supplier,
-                source=OrderService.Source.MANUAL if offer.is_manual else OrderService.Source.API,
-                currency=offer.price_currency,
-                supplier_cost=offer.price_amount,
-                client_total=offer.price_amount,
-                provider_snapshot=offer.raw_snapshot,
-                policy_compliance=offer.compliance,
-                created_by=request.user,
+                service=service,
+                participant_ids=request.data.get("participants"),
+                user=request.user,
             )
-        else:
-            serializer = OrderServiceSerializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
-            service = serializer.save(
-                tenant_id=order.tenant_id,
-                order=order,
-                source=OrderService.Source.MANUAL,
-                created_by=request.user,
-            )
-        emit_event("service.updated", service, payload={"action": "created", "order_id": str(order.id)})
-        audit("services.created", actor=request.user, resource=service, request=request)
+            emit_event("service.updated", service, payload={"action": "created", "order_id": str(order.id)})
+            audit("services.created", actor=request.user, resource=service, request=request)
         return Response(OrderServiceSerializer(service).data, status=http.HTTP_201_CREATED)
 
 
@@ -364,6 +397,238 @@ def _get_service(request, service_id) -> OrderService:
         raise ApiError(code="NOT_FOUND", message="Услуга не найдена", status_code=404)
     get_order_or_404(request.user, service.order_id)
     return service
+
+
+def _sync_service_passengers(*, order, service, participant_ids, user) -> list[ServicePassenger]:
+    if participant_ids is None:
+        participants = list(order.participants.filter(status="active"))
+    else:
+        if not isinstance(participant_ids, list):
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="participants должен быть списком ID участников заказа",
+                fields={"participants": ["Ожидается список"]},
+                status_code=400,
+            )
+        participants = list(order.participants.filter(pk__in=participant_ids, status="active"))
+        if len(participants) != len(set(map(str, participant_ids))):
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Один или несколько пассажиров не найдены в заказе",
+                fields={"participants": ["Проверьте участников заказа"]},
+                status_code=400,
+            )
+
+    service.passengers.exclude(participant__in=participants).update(status="cancelled", updated_by=user)
+    rows = []
+    for participant in participants:
+        row, created = ServicePassenger.objects.get_or_create(
+            tenant_id=order.tenant_id,
+            service=service,
+            participant=participant,
+            defaults={"status": "active", "created_by": user},
+        )
+        if not created and row.status != "active":
+            row.status = "active"
+            row.updated_by = user
+            row.save(update_fields=["status", "updated_by", "updated_at"])
+        rows.append(row)
+    return rows
+
+
+def _parse_deadline(value):
+    if not value:
+        return None
+    parsed = parse_datetime(str(value))
+    if parsed is None:
+        parsed_date = parse_date(str(value))
+        if parsed_date is not None:
+            parsed = datetime.combine(parsed_date, time(hour=18))
+    if parsed is not None and timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed)
+    return parsed
+
+
+class ServicePassengersView(APIView):
+    permission_classes = [require("orders.view")]
+
+    def get(self, request, service_id):
+        service = _get_service(request, service_id)
+        return Response(OrderServiceSerializer(service).data["passengers"])
+
+    def put(self, request, service_id):
+        if not has_permission(request.user, "orders.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change", status_code=403)
+        with transaction.atomic():
+            service = OrderService.objects.select_for_update().get(pk=_get_service(request, service_id).pk)
+            check_version(service, request.data.get("version"))
+            _sync_service_passengers(
+                order=service.order,
+                service=service,
+                participant_ids=request.data.get("participants", []),
+                user=request.user,
+            )
+            service.version += 1
+            service.updated_by = request.user
+            service.save(update_fields=["version", "updated_by", "updated_at"])
+            emit_event("service.updated", service, payload={"action": "passengers_changed"})
+            audit("services.passengers_changed", actor=request.user, resource=service, request=request)
+        return Response(OrderServiceSerializer(service).data)
+
+
+class ServiceManualBookView(APIView):
+    permission_classes = [require("orders.change")]
+
+    @idempotent_command("services.manual_book", required=False)
+    def post(self, request, service_id):
+        if not has_permission(request.user, "services.book"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права services.book", status_code=403)
+        with transaction.atomic():
+            service = OrderService.objects.select_for_update().get(pk=_get_service(request, service_id).pk)
+            if not has_service_action(request.user, service.kind, "book"):
+                raise ApiError(
+                    code="SERVICE_KIND_FORBIDDEN",
+                    message=f"Нет доступа к book для {service.kind}",
+                    status_code=403,
+                )
+            check_version(service, request.data.get("version"))
+            if service.status not in (OrderService.Status.PROPOSED, OrderService.Status.APPROVAL):
+                raise TransitionForbiddenError(
+                    code="SERVICE_STATUS_TRANSITION_FORBIDDEN",
+                    message=f"Бронирование из {service.status} запрещено",
+                    details={"current_status": service.status, "allowed": ["booked"]},
+                )
+            supplier_reference = str(request.data.get("supplier_reference") or request.data.get("pnr") or request.data.get("booking_number") or "").strip()
+            if not supplier_reference:
+                raise ApiError(
+                    code="VALIDATION_ERROR",
+                    message="Укажите supplier_reference, PNR или booking_number",
+                    fields={"supplier_reference": ["Обязательное поле для ручного бронирования"]},
+                    status_code=400,
+                )
+            old_status = service.status
+            payment_deadline = _parse_deadline(request.data.get("payment_deadline"))
+            service.status = OrderService.Status.BOOKED
+            service.external_id = supplier_reference
+            if payment_deadline:
+                service.payment_deadline = payment_deadline
+            snapshot = service.provider_snapshot or {}
+            snapshot["manual_booking"] = {
+                "supplier_reference": supplier_reference,
+                "pnr": request.data.get("pnr", ""),
+                "booking_number": request.data.get("booking_number", ""),
+                "payment_deadline": str(payment_deadline) if payment_deadline else "",
+                "comment": request.data.get("comment", ""),
+                "booked_at": timezone.now().isoformat(),
+                "booked_by": str(request.user.id),
+            }
+            service.provider_snapshot = snapshot
+            service.version += 1
+            service.updated_by = request.user
+            service.save(
+                update_fields=[
+                    "status",
+                    "external_id",
+                    "payment_deadline",
+                    "provider_snapshot",
+                    "version",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
+            if payment_deadline:
+                from orders.models import OrderTask
+
+                OrderTask.objects.create(
+                    tenant_id=service.tenant_id,
+                    order=service.order,
+                    title=f"Контроль оплаты услуги: {service.title}",
+                    description=f"Ручная бронь {supplier_reference}",
+                    due_at=payment_deadline,
+                    priority="normal",
+                    created_by=request.user,
+                )
+            emit_event("service.updated", service, payload={"action": "manual_booked"})
+            event = audit(
+                "services.manual_booked",
+                actor=request.user,
+                resource=service,
+                request=request,
+                reason=str(request.data.get("comment", "")),
+                before={"status": old_status},
+                after={"status": service.status, "supplier_reference": supplier_reference},
+            )
+        data = OrderServiceSerializer(service).data
+        data["audit_event_id"] = str(event.id)
+        return Response(data)
+
+
+class ServiceManualIssueView(APIView):
+    permission_classes = [require("orders.change")]
+
+    @idempotent_command("services.manual_issue", required=False)
+    def post(self, request, service_id):
+        if not has_permission(request.user, "services.issue"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права services.issue", status_code=403)
+        with transaction.atomic():
+            service = OrderService.objects.select_for_update().get(pk=_get_service(request, service_id).pk)
+            if not has_service_action(request.user, service.kind, "issue"):
+                raise ApiError(
+                    code="SERVICE_KIND_FORBIDDEN",
+                    message=f"Нет доступа к issue для {service.kind}",
+                    status_code=403,
+                )
+            check_version(service, request.data.get("version"))
+            if service.status not in (OrderService.Status.BOOKED, OrderService.Status.CONFIRMED):
+                raise TransitionForbiddenError(
+                    code="SERVICE_STATUS_TRANSITION_FORBIDDEN",
+                    message=f"Выписка из {service.status} запрещена",
+                    details={"current_status": service.status, "allowed": ["issued"]},
+                )
+            document_number = str(
+                request.data.get("ticket_number") or request.data.get("voucher_number") or request.data.get("document_number") or ""
+            ).strip()
+            if not document_number:
+                raise ApiError(
+                    code="VALIDATION_ERROR",
+                    message="Укажите номер билета или ваучера",
+                    fields={"document_number": ["Обязательное поле для ручной выписки"]},
+                    status_code=400,
+                )
+            old_status = service.status
+            snapshot = service.provider_snapshot or {}
+            issues = list(snapshot.get("manual_issues", []))
+            issues.append(
+                {
+                    "document_number": document_number,
+                    "issued_at": request.data.get("issued_at") or timezone.now().isoformat(),
+                    "participant": request.data.get("participant"),
+                    "amount": request.data.get("amount"),
+                    "currency": request.data.get("currency") or service.currency,
+                    "comment": request.data.get("comment", ""),
+                    "file": request.data.get("file", ""),
+                    "issued_by": str(request.user.id),
+                }
+            )
+            snapshot["manual_issues"] = issues
+            service.provider_snapshot = snapshot
+            service.status = OrderService.Status.ISSUED
+            service.version += 1
+            service.updated_by = request.user
+            service.save(update_fields=["status", "provider_snapshot", "version", "updated_by", "updated_at"])
+            emit_event("service.updated", service, payload={"action": "manual_issued"})
+            event = audit(
+                "services.manual_issued",
+                actor=request.user,
+                resource=service,
+                request=request,
+                reason=str(request.data.get("comment", "")),
+                before={"status": old_status},
+                after={"status": service.status, "document_number": document_number},
+            )
+        data = OrderServiceSerializer(service).data
+        data["audit_event_id"] = str(event.id)
+        return Response(data)
 
 
 class ServiceTransitionView(APIView):

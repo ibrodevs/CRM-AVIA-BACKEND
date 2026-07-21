@@ -64,6 +64,104 @@ class TestProposalLifecycle:
         assert len(proposal["variants"]) == 2
         assert proposal["status"] == "draft"
 
+    def test_item_service_must_belong_to_proposal_order(self, admin_client, order, tenant, admin_user):
+        from crm.models import Person
+
+        other_person = Person.objects.create(
+            tenant=tenant, surname="Другой", given_name="Клиент", created_by=admin_user
+        )
+        other_order = admin_client.post(
+            "/api/v1/orders/",
+            {"request_type": "individual", "client_person": str(other_person.id)},
+            format="json",
+        ).json()
+        service = admin_client.post(
+            f"/api/v1/orders/{other_order['id']}/services/",
+            {"kind": "transfer", "title": "Wrong order service", "currency": "USD", "client_total": "10.00"},
+            format="json",
+        ).json()
+        payload = {
+            **PROPOSAL,
+            "order": order["id"],
+            "variants": [
+                {
+                    "name": "Недоступная услуга",
+                    "items": [
+                        {
+                            "service": service["id"],
+                            "title": "Wrong order service",
+                            "quantity": 1,
+                            "price_amount": "10.00",
+                            "price_currency": "USD",
+                        }
+                    ],
+                }
+            ],
+        }
+        response = admin_client.post("/api/v1/proposals/", payload, format="json")
+        assert response.status_code == 400
+        assert response.json()["error"]["fields"]["service"]
+
+    def test_replace_draft_variants_persists_items_and_bumps_version(self, admin_client, order):
+        proposal = create_proposal(admin_client, order)
+        response = admin_client.put(
+            f"/api/v1/proposals/{proposal['id']}/draft/",
+            {
+                "version": proposal["version"],
+                "currency": "EUR",
+                "variants": [
+                    {
+                        "name": "Новый вариант",
+                        "items": [
+                            {
+                                "service_kind": "hotel",
+                                "title": "Отель",
+                                "description": "2 ночи",
+                                "quantity": 1,
+                                "price_amount": "300.00",
+                                "price_currency": "EUR",
+                            }
+                        ],
+                    }
+                ],
+            },
+            format="json",
+        )
+        assert response.status_code == 200, response.content
+        body = response.json()
+        assert body["version"] == proposal["version"] + 1
+        assert body["currency"] == "EUR"
+        assert len(body["variants"]) == 1
+        assert body["variants"][0]["items"][0]["service_kind"] == "hotel"
+
+    def test_replace_draft_requires_current_version(self, admin_client, order):
+        proposal = create_proposal(admin_client, order)
+        response = admin_client.put(
+            f"/api/v1/proposals/{proposal['id']}/draft/",
+            {"version": proposal["version"] + 1, "variants": [{"name": "A", "items": []}]},
+            format="json",
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "VERSION_CONFLICT"
+
+    def test_sent_proposal_cannot_be_replaced(self, admin_client, order):
+        proposal = create_proposal(admin_client, order)
+        proposal = admin_client.post(
+            f"/api/v1/proposals/{proposal['id']}/prepare/", {"version": proposal["version"]}, format="json"
+        ).json()
+        proposal = admin_client.post(
+            f"/api/v1/proposals/{proposal['id']}/send/",
+            {"version": proposal["version"]},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="send-replace-lock",
+        ).json()
+        response = admin_client.put(
+            f"/api/v1/proposals/{proposal['id']}/draft/",
+            {"version": proposal["version"], "variants": [{"name": "A", "items": []}]},
+            format="json",
+        )
+        assert response.status_code == 409
+
     def test_full_flow_to_approval(self, admin_client, order):
         proposal = create_proposal(admin_client, order)
         pid = proposal["id"]

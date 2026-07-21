@@ -2,6 +2,7 @@ import hashlib
 
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status as http
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
@@ -15,6 +16,8 @@ from crm.models import (
     ClientProfile,
     Company,
     Contract,
+    Department,
+    Employee,
     FeeTemplate,
     LoyaltyCard,
     Person,
@@ -277,7 +280,7 @@ class CompanyListCreateView(GenericAPIView):
             qs = qs.filter(status=company_status)
         if manager := params.get("manager"):
             qs = qs.filter(assigned_manager_id=manager)
-        page = self.paginate_queryset(qs)
+        page = self.paginate_queryset(qs.order_by("person__surname", "person__given_name", "id"))
         return self.get_paginated_response(CompanySerializer(page, many=True).data)
 
     def post(self, request):
@@ -332,17 +335,61 @@ class CompanyEmployeesView(GenericAPIView):
         qs = company.employees.filter(archived_at__isnull=True).select_related("person")
         if q := request.query_params.get("q", "").strip():
             qs = qs.filter(Q(person__surname__icontains=q) | Q(person__given_name__icontains=q))
-        page = self.paginate_queryset(qs)
+        page = self.paginate_queryset(qs.order_by("person__surname", "person__given_name", "id"))
         return self.get_paginated_response(EmployeeSerializer(page, many=True).data)
 
     def post(self, request, company_id):
         if not has_permission(request.user, "crm.change"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
         company = _get_company(request, company_id)
-        serializer = EmployeeSerializer(data=request.data)
+        serializer = EmployeeSerializer(
+            data=request.data,
+            context={"request": request, "tenant_id": request.user.tenant_id, "company": company},
+        )
         serializer.is_valid(raise_exception=True)
         employee = serializer.save(tenant_id=request.user.tenant_id, company=company, created_by=request.user)
+        audit("crm.employee_created", actor=request.user, resource=company, request=request)
         return Response(EmployeeSerializer(employee).data, status=http.HTTP_201_CREATED)
+
+
+def _get_employee(request, company, employee_id) -> Employee:
+    employee = company.employees.filter(pk=employee_id, archived_at__isnull=True).select_related("person").first()
+    if employee is None:
+        raise ApiError(code="NOT_FOUND", message="Сотрудник не найден", status_code=404)
+    return employee
+
+
+class CompanyEmployeeDetailView(APIView):
+    permission_classes = [require("crm.view")]
+
+    def patch(self, request, company_id, employee_id):
+        if not has_permission(request.user, "crm.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
+        company = _get_company(request, company_id)
+        employee = _get_employee(request, company, employee_id)
+        serializer = EmployeeSerializer(
+            employee,
+            data=request.data,
+            partial=True,
+            context={"request": request, "tenant_id": request.user.tenant_id, "company": company},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user, version=employee.version + 1)
+        audit("crm.employee_updated", actor=request.user, resource=company, request=request)
+        return Response(serializer.data)
+
+    def delete(self, request, company_id, employee_id):
+        if not has_permission(request.user, "crm.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
+        company = _get_company(request, company_id)
+        employee = _get_employee(request, company, employee_id)
+        employee.archived_at = timezone.now()
+        employee.status = "archived"
+        employee.updated_by = request.user
+        employee.version += 1
+        employee.save(update_fields=["archived_at", "status", "updated_by", "version", "updated_at"])
+        audit("crm.employee_archived", actor=request.user, resource=company, request=request)
+        return Response(status=http.HTTP_204_NO_CONTENT)
 
 
 class CompanyDepartmentsView(APIView):
@@ -357,12 +404,67 @@ class CompanyDepartmentsView(APIView):
         if not has_permission(request.user, "crm.change"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
         company = _get_company(request, company_id)
-        serializer = DepartmentSerializer(data=request.data)
+        serializer = DepartmentSerializer(
+            data=request.data,
+            context={"request": request, "tenant_id": request.user.tenant_id, "company": company},
+        )
         serializer.is_valid(raise_exception=True)
         department = serializer.save(
             tenant_id=request.user.tenant_id, company=company, created_by=request.user
         )
+        audit("crm.department_created", actor=request.user, resource=company, request=request)
         return Response(DepartmentSerializer(department).data, status=http.HTTP_201_CREATED)
+
+
+def _get_department(request, company, department_id) -> Department:
+    department = company.departments.filter(pk=department_id, archived_at__isnull=True).first()
+    if department is None:
+        raise ApiError(code="NOT_FOUND", message="Отдел не найден", status_code=404)
+    return department
+
+
+class CompanyDepartmentDetailView(APIView):
+    permission_classes = [require("crm.view")]
+
+    def patch(self, request, company_id, department_id):
+        if not has_permission(request.user, "crm.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
+        company = _get_company(request, company_id)
+        department = _get_department(request, company, department_id)
+        serializer = DepartmentSerializer(
+            department,
+            data=request.data,
+            partial=True,
+            context={"request": request, "tenant_id": request.user.tenant_id, "company": company},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user, version=department.version + 1)
+        audit("crm.department_updated", actor=request.user, resource=company, request=request)
+        return Response(serializer.data)
+
+    def delete(self, request, company_id, department_id):
+        if not has_permission(request.user, "crm.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
+        company = _get_company(request, company_id)
+        department = _get_department(request, company, department_id)
+        if company.employees.filter(department=department, archived_at__isnull=True).exists():
+            raise ApiError(
+                code="DEPARTMENT_HAS_EMPLOYEES",
+                message="Нельзя удалить отдел, пока в нём есть сотрудники",
+                status_code=409,
+            )
+        if department.children.filter(archived_at__isnull=True).exists():
+            raise ApiError(
+                code="DEPARTMENT_HAS_CHILDREN",
+                message="Нельзя удалить отдел, пока у него есть дочерние отделы",
+                status_code=409,
+            )
+        department.archived_at = timezone.now()
+        department.updated_by = request.user
+        department.version += 1
+        department.save(update_fields=["archived_at", "updated_by", "version", "updated_at"])
+        audit("crm.department_archived", actor=request.user, resource=company, request=request)
+        return Response(status=http.HTTP_204_NO_CONTENT)
 
 
 class CompanyContractsView(APIView):

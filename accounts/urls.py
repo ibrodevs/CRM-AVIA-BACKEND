@@ -17,4 +17,5 @@ urlpatterns = [
     ),
     path("users/<uuid:user_id>/sla/", v.UserSlaView.as_view(), name="user-sla"),
     path("roles/", v.RoleListView.as_view(), name="role-list"),
+    path("roles/<uuid:role_id>/", v.RoleDetailView.as_view(), name="role-detail"),
 ]

@@ -125,6 +125,7 @@ class ProposalItem(TenantModel):
         on_delete=models.PROTECT,
         related_name="proposal_items",
     )
+    service_kind = models.CharField(max_length=32, blank=True)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     quantity = models.PositiveSmallIntegerField(default=1)

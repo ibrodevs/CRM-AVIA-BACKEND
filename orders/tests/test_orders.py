@@ -145,6 +145,21 @@ class TestOrderStatusMachine:
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "FIELD_NOT_PATCHABLE"
 
+    def test_cancel_endpoint_is_synchronous(self, admin_client, order_payload):
+        order = self._create(admin_client, order_payload)
+        order = self._transition(admin_client, order, "in_progress").json()
+        response = admin_client.post(
+            f"/api/v1/orders/{order['id']}/cancel/",
+            {"version": order["version"], "reason": "клиент отменил поездку"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="test-cancel-sync",
+        )
+        assert response.status_code == 200, response.content
+        body = response.json()
+        assert body["status"] == "cancelled"
+        assert body["cancelled_services"] == []
+        assert "job_id" not in body
+
 
 class TestOrderScope:
     def test_operator_sees_only_assigned(self, admin_client, operator_user, tenant, order_payload):

@@ -15,6 +15,7 @@ from accounts.models import (
     DemoAccessRequest,
     PasswordResetToken,
     Role,
+    RolePermission,
     User,
     UserPreference,
     UserRole,
@@ -22,6 +23,7 @@ from accounts.models import (
     UserSession,
 )
 from accounts.permissions import require
+from accounts.permissions_catalog import PERMISSIONS
 from accounts.serializers import (
     MeSerializer,
     RoleSerializer,
@@ -83,6 +85,9 @@ class MeView(APIView):
             "work_phone",
             "internal_phone",
             "telegram",
+            "position",
+            "department",
+            "hired_at",
             "timezone",
             "language",
             "presence",
@@ -337,3 +342,58 @@ class RoleListView(APIView):
     def get(self, request):
         roles = Role.objects.filter(tenant_id=request.user.tenant_id).prefetch_related("permissions")
         return Response(RoleSerializer(roles, many=True).data)
+
+
+def _get_role_or_404(request, role_id) -> Role:
+    role = Role.objects.filter(pk=role_id, tenant_id=request.user.tenant_id).first()
+    if role is None:
+        raise ApiError(code="NOT_FOUND", message="Роль не найдена", status_code=404)
+    return role
+
+
+class RoleDetailView(APIView):
+    permission_classes = [require("roles.manage")]
+
+    def get(self, request, role_id):
+        return Response(RoleSerializer(_get_role_or_404(request, role_id)).data)
+
+    def put(self, request, role_id):
+        role = _get_role_or_404(request, role_id)
+        permissions = request.data.get("permissions")
+        if not isinstance(permissions, list):
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Ожидается список кодов прав",
+                fields={"permissions": ["Обязательное поле-список"]},
+                status_code=400,
+            )
+        unknown = sorted(set(permissions) - set(PERMISSIONS))
+        if unknown:
+            raise ApiError(
+                code="UNKNOWN_PERMISSION",
+                message=f"Неизвестные права: {unknown}",
+                status_code=400,
+            )
+        if role.code == "admin" and set(permissions) != set(PERMISSIONS):
+            raise ApiError(
+                code="ADMIN_ROLE_IMMUTABLE",
+                message="Системная роль admin всегда содержит полный набор прав",
+                status_code=409,
+            )
+        before = sorted(role.permissions.values_list("permission_code", flat=True))
+        wanted = set(permissions)
+        with transaction.atomic():
+            existing = set(role.permissions.values_list("permission_code", flat=True))
+            RolePermission.objects.bulk_create(
+                [RolePermission(role=role, permission_code=code) for code in sorted(wanted - existing)]
+            )
+            role.permissions.exclude(permission_code__in=wanted).delete()
+        audit(
+            "roles.permissions_changed",
+            request=request,
+            resource=role,
+            before={"permissions": before},
+            after={"permissions": sorted(wanted)},
+        )
+        role = Role.objects.prefetch_related("permissions").get(pk=role.pk)
+        return Response(RoleSerializer(role).data)

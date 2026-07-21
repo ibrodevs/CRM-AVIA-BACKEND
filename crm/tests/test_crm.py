@@ -137,6 +137,101 @@ class TestCompanies:
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "DUPLICATE_TAX_ID"
 
+    def test_company_staff_create_move_and_archive(self, admin_client):
+        company = admin_client.post("/api/v1/companies/", self.COMPANY, format="json").json()
+        sales = admin_client.post(
+            f"/api/v1/companies/{company['id']}/departments/",
+            {"name": "Продажи"},
+            format="json",
+        )
+        assert sales.status_code == 201, sales.content
+        ops = admin_client.post(
+            f"/api/v1/companies/{company['id']}/departments/",
+            {"name": "Операторы"},
+            format="json",
+        ).json()
+        person = admin_client.post(
+            "/api/v1/persons/",
+            {"surname": "Сотрудник", "given_name": "Первый", "email": "emp@test.local"},
+            format="json",
+        ).json()
+        employee = admin_client.post(
+            f"/api/v1/companies/{company['id']}/employees/",
+            {"person": person["id"], "department": sales.json()["id"], "position": "Менеджер"},
+            format="json",
+        )
+        assert employee.status_code == 201, employee.content
+
+        moved = admin_client.patch(
+            f"/api/v1/companies/{company['id']}/employees/{employee.json()['id']}/",
+            {"department": ops["id"], "position": "Старший менеджер"},
+            format="json",
+        )
+        assert moved.status_code == 200, moved.content
+        assert moved.json()["department"] == ops["id"]
+        assert moved.json()["position"] == "Старший менеджер"
+
+        response = admin_client.delete(
+            f"/api/v1/companies/{company['id']}/employees/{employee.json()['id']}/",
+            format="json",
+        )
+        assert response.status_code == 204
+        employees = admin_client.get(f"/api/v1/companies/{company['id']}/employees/").json()
+        assert employees["count"] == 0
+
+    def test_employee_department_must_belong_to_company(self, admin_client):
+        first = admin_client.post("/api/v1/companies/", self.COMPANY, format="json").json()
+        second = admin_client.post(
+            "/api/v1/companies/",
+            {"legal_name": "ОсОО Другая", "tax_id": "99999999999999"},
+            format="json",
+        ).json()
+        department = admin_client.post(
+            f"/api/v1/companies/{second['id']}/departments/",
+            {"name": "Чужой отдел"},
+            format="json",
+        ).json()
+        person = admin_client.post(
+            "/api/v1/persons/",
+            {"surname": "Сотрудник", "given_name": "Второй", "email": "emp2@test.local"},
+            format="json",
+        ).json()
+
+        response = admin_client.post(
+            f"/api/v1/companies/{first['id']}/employees/",
+            {"person": person["id"], "department": department["id"], "position": "Менеджер"},
+            format="json",
+        )
+
+        assert response.status_code == 400
+        assert "department" in response.json()["error"]["fields"]
+
+    def test_department_with_employees_cannot_be_deleted(self, admin_client):
+        company = admin_client.post("/api/v1/companies/", self.COMPANY, format="json").json()
+        department = admin_client.post(
+            f"/api/v1/companies/{company['id']}/departments/",
+            {"name": "Продажи"},
+            format="json",
+        ).json()
+        person = admin_client.post(
+            "/api/v1/persons/",
+            {"surname": "Сотрудник", "given_name": "Третий", "email": "emp3@test.local"},
+            format="json",
+        ).json()
+        admin_client.post(
+            f"/api/v1/companies/{company['id']}/employees/",
+            {"person": person["id"], "department": department["id"], "position": "Менеджер"},
+            format="json",
+        )
+
+        response = admin_client.delete(
+            f"/api/v1/companies/{company['id']}/departments/{department['id']}/",
+            format="json",
+        )
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "DEPARTMENT_HAS_EMPLOYEES"
+
 
 class TestTravelPolicy:
     def test_policy_check(self, admin_client):
