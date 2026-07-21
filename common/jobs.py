@@ -2,10 +2,11 @@ from dataclasses import dataclass
 from typing import Callable
 
 from django.conf import settings
+from django.utils import timezone
 
 from common.logging import redact
 from common.models import BackgroundJob
-from tenancy.context import get_current_tenant_id
+from tenancy.context import get_current_tenant_id, tenant_context
 
 
 class JobRetry(Exception):
@@ -48,6 +49,44 @@ def get_handler(kind: str) -> JobHandler | None:
     return _REGISTRY.get(kind)
 
 
+def _run_synchronously(job: BackgroundJob, handler: JobHandler) -> None:
+    """Execute selected lightweight jobs inline for hosts without a worker process."""
+    started_at = timezone.now()
+    BackgroundJob.objects.filter(pk=job.pk).update(
+        status=BackgroundJob.Status.RUNNING,
+        started_at=started_at,
+        locked_by="inline",
+        locked_at=started_at,
+        heartbeat_at=started_at,
+        attempts=1,
+    )
+    job.refresh_from_db()
+
+    try:
+        with tenant_context(job.tenant_id):
+            result = handler.func(job)
+    except Exception as exc:
+        BackgroundJob.objects.filter(pk=job.pk).update(
+            status=BackgroundJob.Status.FAILED,
+            error_code=type(exc).__name__.upper()[:100],
+            error_message=str(exc)[:2000],
+            completed_at=timezone.now(),
+            locked_by="",
+            locked_at=None,
+        )
+        raise
+
+    BackgroundJob.objects.filter(pk=job.pk).update(
+        status=BackgroundJob.Status.SUCCEEDED,
+        progress=100,
+        completed_at=timezone.now(),
+        result=result,
+        locked_by="",
+        locked_at=None,
+    )
+    job.refresh_from_db()
+
+
 def enqueue(
     kind: str,
     payload: dict | None = None,
@@ -60,7 +99,7 @@ def enqueue(
     tenant_id=None,
 ) -> BackgroundJob:
     handler = _REGISTRY.get(kind)
-    return BackgroundJob.objects.create(
+    job = BackgroundJob.objects.create(
         tenant_id=tenant_id or get_current_tenant_id(),
         kind=kind,
         payload=redact(payload or {}),
@@ -72,3 +111,18 @@ def enqueue(
         request_id=getattr(request, "request_id", "") if request is not None else "",
         correlation_id=correlation_id,
     )
+
+    sync_job_kinds = set(getattr(settings, "SYNC_JOB_KINDS", ()))
+    if kind in sync_job_kinds:
+        if handler is None:
+            BackgroundJob.objects.filter(pk=job.pk).update(
+                status=BackgroundJob.Status.FAILED,
+                error_code="UNKNOWN_JOB_KIND",
+                error_message=f"Обработчик '{kind}' не зарегистрирован",
+                completed_at=timezone.now(),
+            )
+            job.refresh_from_db()
+        else:
+            _run_synchronously(job, handler)
+
+    return job
