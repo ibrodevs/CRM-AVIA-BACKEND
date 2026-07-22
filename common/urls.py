@@ -1,6 +1,12 @@
 from django.urls import path
 
-from common.views import EventFeedView, JobCancelView, JobDetailView, WorkspaceActionListCreateView, WorkspaceSettingView
+from common.views import (
+    EventFeedView,
+    JobCancelView,
+    JobDetailView,
+    WorkspaceActionListCreateView,
+    WorkspaceSettingView,
+)
 
 urlpatterns = [
     path("events/", EventFeedView.as_view(), name="event-feed"),

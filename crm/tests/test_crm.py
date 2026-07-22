@@ -124,6 +124,15 @@ class TestClients:
 class TestCompanies:
     COMPANY = {"legal_name": "ОсОО Ромашка", "tax_id": "01234567890123", "bank_account": "KG12345678901234"}
 
+    def test_list_companies_uses_company_fields_for_sorting(self, admin_client):
+        admin_client.post("/api/v1/companies/", self.COMPANY, format="json")
+
+        response = admin_client.get("/api/v1/companies/")
+
+        assert response.status_code == 200, response.content
+        assert response.json()["count"] == 1
+        assert response.json()["results"][0]["legal_name"] == self.COMPANY["legal_name"]
+
     def test_create_and_mask_bank_account(self, admin_client):
         response = admin_client.post("/api/v1/companies/", self.COMPANY, format="json")
         assert response.status_code == 201

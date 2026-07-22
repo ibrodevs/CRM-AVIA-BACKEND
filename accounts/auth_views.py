@@ -18,6 +18,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import FailedLoginAttempt, PasswordResetToken, TwoFactorConfig, User, UserSession
+from accounts.serializers import MeSerializer
 from accounts.tokens import issue_2fa_challenge, issue_session_tokens, rotate_session_tokens
 from common.audit import audit
 from common.errors import ApiError
@@ -95,7 +96,13 @@ class LoginView(APIView):
 
         tokens = issue_session_tokens(user, request)
         audit("auth.login", actor=user, request=request, tenant_id=user.tenant_id)
-        return Response({"access": tokens["access"], "refresh": tokens["refresh"]})
+        return Response(
+            {
+                "access": tokens["access"],
+                "refresh": tokens["refresh"],
+                "user": MeSerializer(user).data,
+            }
+        )
 
 
 class TwoFactorVerifySerializer(serializers.Serializer):
@@ -138,7 +145,13 @@ class TwoFactorVerifyView(APIView):
 
         tokens = issue_session_tokens(user, request)
         audit("auth.login", actor=user, request=request, reason="2fa", tenant_id=user.tenant_id)
-        return Response({"access": tokens["access"], "refresh": tokens["refresh"]})
+        return Response(
+            {
+                "access": tokens["access"],
+                "refresh": tokens["refresh"],
+                "user": MeSerializer(user).data,
+            }
+        )
 
 
 class TwoFactorStatusView(APIView):

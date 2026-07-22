@@ -13,11 +13,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import has_permission, require
-from common.errors import ApiError
 from common.audit import audit
+from common.errors import ApiError
+from common.models import AuditEvent
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
-from common.models import AuditEvent
 from communications.models import (
     ChatThread,
     Message,

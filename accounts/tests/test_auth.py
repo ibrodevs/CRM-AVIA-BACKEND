@@ -34,6 +34,7 @@ class TestLogin:
     def test_login_success(self, admin_user):
         tokens = login(APIClient(), admin_user.email)
         assert "access" in tokens and "refresh" in tokens
+        assert tokens["user"]["email"] == admin_user.email
         assert UserSession.objects.filter(user=admin_user, revoked_at__isnull=True).count() == 1
 
     def test_login_wrong_password(self, admin_user):
@@ -87,7 +88,9 @@ class TestTwoFactor:
         code = pyotp.TOTP(secret).now()
         response = client.post("/api/v1/auth/2fa/verify/", {"challenge_token": challenge, "code": code})
         assert response.status_code == 200
-        assert "access" in response.json()
+        body = response.json()
+        assert "access" in body and "refresh" in body
+        assert body["user"]["email"] == admin_user.email
 
     def test_2fa_setup_confirm_and_disable(self, admin_user):
         client = auth_client(admin_user)

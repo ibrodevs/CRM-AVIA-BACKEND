@@ -280,7 +280,7 @@ class CompanyListCreateView(GenericAPIView):
             qs = qs.filter(status=company_status)
         if manager := params.get("manager"):
             qs = qs.filter(assigned_manager_id=manager)
-        page = self.paginate_queryset(qs.order_by("person__surname", "person__given_name", "id"))
+        page = self.paginate_queryset(qs.order_by("short_name", "legal_name", "id"))
         return self.get_paginated_response(CompanySerializer(page, many=True).data)
 
     def post(self, request):

@@ -1,5 +1,5 @@
-from .prod import *  # noqa: F401,F403
 from .base import BASE_DIR, env
+from .prod import *  # noqa: F401,F403
 
 # PythonAnywhere free accounts do not provide PostgreSQL. Use a persistent
 # SQLite database by default while still allowing DATABASE_URL to override it.
