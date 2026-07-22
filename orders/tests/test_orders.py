@@ -65,6 +65,17 @@ class TestOrderCreate:
         order_id = admin_client.post("/api/v1/orders/", order_payload, format="json").json()["id"]
         assert OrderStatusHistory.objects.filter(order_id=order_id).count() == 1
 
+    def test_created_order_persists_after_reload(self, admin_client, order_payload):
+        created = admin_client.post("/api/v1/orders/", order_payload, format="json").json()
+
+        detail = admin_client.get(f"/api/v1/orders/{created['id']}/")
+        listing = admin_client.get("/api/v1/orders/")
+
+        assert detail.status_code == 200, detail.content
+        assert detail.json()["id"] == created["id"]
+        assert listing.status_code == 200, listing.content
+        assert any(item["id"] == created["id"] for item in listing.json()["results"])
+
 
 class TestOrderStatusMachine:
     def _create(self, client, payload) -> dict:
