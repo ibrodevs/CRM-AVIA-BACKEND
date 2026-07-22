@@ -10,7 +10,6 @@ from common.errors import ApiError
 from common.locking import check_version
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
-from orders.models import OrderTask
 from orders.selectors import get_order_or_404
 from orders.serializers import OrderTaskSerializer, RoutePointSerializer, RouteSerializer
 
@@ -90,6 +89,9 @@ class OrderRouteDetailView(APIView):
             audit("order.route_changed", actor=request.user, resource=order, request=request)
 
         return Response(RouteSerializer(route).data)
+
+    def put(self, request, order_id):
+        return self.patch(request, order_id)
 
 
 class OrderTaskCollectionView(GenericAPIView):

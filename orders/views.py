@@ -298,7 +298,7 @@ class OrderOverviewView(APIView):
         order = (
             orders_visible_to(request.user)
             .select_related("client_person", "client_company", "operator", "contact_person")
-            .prefetch_related("participants__person", "route__points", "services")
+            .prefetch_related("participants__person", "route__points", "services__passengers", "tasks")
             .filter(pk=order_id)
             .first()
         )
@@ -318,6 +318,33 @@ class OrderOverviewView(APIView):
             }
             for s in order.services.all()
         ]
+        route = getattr(order, "route", None)
+        tasks = order.tasks.order_by("due_at", "created_at")
+        history = OrderStatusHistory.objects.filter(order=order).select_related("changed_by")[:100]
+        finance = order_finance_summary(order)
+        from aftersales.models import AfterSaleCase
+        from aftersales.views import CaseSerializer
+        from documents.models import Document
+        from documents.serializers import DocumentSerializer
+        from offers.models import Proposal
+        from offers.views import ProposalSerializer
+
+        proposals_qs = (
+            Proposal.objects.filter(tenant_id=request.user.tenant_id, order=order, archived_at__isnull=True)
+            .prefetch_related("variants__items")
+            .order_by("-created_at")
+        )
+        documents_qs = Document.objects.filter(
+            tenant_id=request.user.tenant_id, order=order, archived_at__isnull=True
+        ).order_by("-created_at")
+        returns_qs = (
+            AfterSaleCase.objects.filter(tenant_id=request.user.tenant_id, order=order, archived_at__isnull=True)
+            .prefetch_related("participants", "quotes")
+            .order_by("-created_at")
+        )
+        proposals = ProposalSerializer(proposals_qs, many=True).data
+        documents = DocumentSerializer(documents_qs, many=True).data
+        returns = CaseSerializer(returns_qs, many=True, context={"request": request}).data
         deadlines = [
             {"service_id": s["id"], "kind": "ticketing", "at": s["ticketing_deadline"]}
             for s in services_summary
@@ -331,9 +358,29 @@ class OrderOverviewView(APIView):
         return Response(
             {
                 "order": OrderDetailSerializer(order).data,
-                "allowed_actions": order_service.allowed_actions(order, request.user),
+                "route": RouteSerializer(route).data if route else [],
+                "participants": ParticipantSerializer(order.participants.filter(status="active").select_related("person"), many=True).data,
                 "services": services_summary,
-                "finance_summary": order_finance_summary(order),
+                "tasks": OrderTaskSerializer(tasks, many=True).data,
+                "history": [
+                    {
+                        "id": h.id,
+                        "from_status": h.from_status,
+                        "to_status": h.to_status,
+                        "from_stage": h.from_stage,
+                        "to_stage": h.to_stage,
+                        "reason": h.reason,
+                        "changed_by": str(h.changed_by_id) if h.changed_by_id else None,
+                        "changed_at": h.changed_at,
+                    }
+                    for h in history
+                ],
+                "finance": finance,
+                "finance_summary": finance,
+                "proposals": proposals,
+                "documents": documents,
+                "returns": returns,
+                "allowed_actions": order_service.allowed_actions(order, request.user),
                 "deadlines": deadlines,
                 "warnings": warnings,
             }

@@ -1,8 +1,8 @@
 from datetime import datetime, time
 
 from django.db import transaction
-from django.utils.dateparse import parse_date, parse_datetime
 from django.utils import timezone
+from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework import serializers
 from rest_framework import status as http
 from rest_framework.generics import GenericAPIView
@@ -381,6 +381,54 @@ class OrderServicesView(GenericAPIView):
         return Response(OrderServiceSerializer(service).data, status=http.HTTP_201_CREATED)
 
 
+class ServiceDetailView(APIView):
+    permission_classes = [require("orders.view")]
+
+    def get(self, request, service_id):
+        service = _get_service(request, service_id)
+        return Response(OrderServiceSerializer(service).data)
+
+    def patch(self, request, service_id):
+        if not has_permission(request.user, "orders.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change", status_code=403)
+        with transaction.atomic():
+            service = OrderService.objects.select_for_update().get(pk=_get_service(request, service_id).pk)
+            check_version(service, request.data.get("version"))
+            forbidden = set(request.data) & {"order", "status", "source"}
+            if forbidden:
+                raise ApiError(
+                    code="FIELD_NOT_PATCHABLE",
+                    message="Заказ, источник и статус услуги меняются отдельными командами",
+                    fields={field: ["Используйте командный endpoint"] for field in forbidden},
+                    status_code=400,
+                )
+            serializer = OrderServiceSerializer(service, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            service = serializer.save(updated_by=request.user, version=service.version + 1)
+            emit_event("service.updated", service, payload={"action": "patched"})
+            audit("services.updated", actor=request.user, resource=service, request=request)
+        return Response(OrderServiceSerializer(service).data)
+
+    def delete(self, request, service_id):
+        if not has_permission(request.user, "orders.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change", status_code=403)
+        with transaction.atomic():
+            service = OrderService.objects.select_for_update().get(pk=_get_service(request, service_id).pk)
+            if service.status in (OrderService.Status.BOOKED, OrderService.Status.CONFIRMED, OrderService.Status.ISSUED):
+                raise ApiError(
+                    code="SERVICE_HAS_ACTIVE_BOOKING",
+                    message="Услугу с активной бронью или выпиской нельзя удалить без отмены",
+                    status_code=409,
+                )
+            service.archived_at = timezone.now()
+            service.updated_by = request.user
+            service.version += 1
+            service.save(update_fields=["archived_at", "updated_by", "version", "updated_at"])
+            emit_event("service.updated", service, payload={"action": "archived"})
+            audit("services.archived", actor=request.user, resource=service, request=request)
+        return Response(status=http.HTTP_204_NO_CONTENT)
+
+
 def _offer_title(offer: ServiceOffer) -> str:
     itinerary = offer.itinerary or {}
     if offer.kind == "avia" and itinerary.get("segments"):
@@ -693,6 +741,97 @@ class ServiceTransitionView(APIView):
         data = OrderServiceSerializer(service).data
         data["audit_event_id"] = str(event.id)
         return Response(data)
+
+
+class ServiceActionView(APIView):
+    permission_classes = [require("orders.change")]
+    target_status = None
+    action_name = ""
+
+    @idempotent_command("services.action", required=False)
+    def post(self, request, service_id):
+        if not self.target_status:
+            raise ApiError(code="VALIDATION_ERROR", message="Не задан target_status", status_code=400)
+        with transaction.atomic():
+            service = OrderService.objects.select_for_update().get(pk=_get_service(request, service_id).pk)
+            check_version(service, request.data.get("version"))
+            allowed = SERVICE_TRANSITIONS.get(service.status, set())
+            if self.target_status not in allowed:
+                raise TransitionForbiddenError(
+                    code="SERVICE_STATUS_TRANSITION_FORBIDDEN",
+                    message=f"Переход из {service.status} в {self.target_status} запрещён",
+                    details={"current_status": service.status, "allowed": sorted(allowed)},
+                )
+            if self.action_name and not has_permission(request.user, f"services.{self.action_name}"):
+                raise ApiError(
+                    code="PERMISSION_DENIED",
+                    message=f"Нет права services.{self.action_name}",
+                    status_code=403,
+                )
+            if self.action_name and not has_service_action(request.user, service.kind, self.action_name):
+                raise ApiError(
+                    code="SERVICE_KIND_FORBIDDEN",
+                    message=f"Нет доступа к {self.action_name} для {service.kind}",
+                    status_code=403,
+                )
+            if self.target_status == OrderService.Status.ISSUED and service.source == OrderService.Source.API and not service.external_id:
+                raise ApiError(
+                    code="ISSUE_REQUIRES_PROVIDER_RESULT",
+                    message="Выписка API-услуги выполняется через booking workflow",
+                    status_code=409,
+                )
+            old_status = service.status
+            service.status = self.target_status
+            service.version += 1
+            service.updated_by = request.user
+            service.save(update_fields=["status", "version", "updated_by", "updated_at"])
+            emit_event(
+                "service.updated",
+                service,
+                payload={"action": self.action_name or "transition", "from": old_status, "to": service.status},
+            )
+            event = audit(
+                f"services.{self.action_name or 'transition'}",
+                actor=request.user,
+                resource=service,
+                request=request,
+                reason=str(request.data.get("reason", "")),
+                before={"status": old_status},
+                after={"status": service.status},
+            )
+        data = OrderServiceSerializer(service).data
+        data["audit_event_id"] = str(event.id)
+        return Response(data)
+
+
+class ServiceBookView(ServiceActionView):
+    target_status = OrderService.Status.BOOKED
+    action_name = "book"
+
+
+class ServiceIssueView(ServiceActionView):
+    target_status = OrderService.Status.ISSUED
+    action_name = "issue"
+
+
+class ServiceCancelView(ServiceActionView):
+    target_status = OrderService.Status.CANCELLED
+    action_name = "cancel"
+
+
+class ServiceRevalidateView(APIView):
+    permission_classes = [require("services.search")]
+
+    def post(self, request, service_id):
+        service = _get_service(request, service_id)
+        snapshot = service.provider_snapshot or {}
+        adapter_name = snapshot.get("provider_adapter") or "mock"
+        try:
+            adapter = get_adapter(adapter_name)
+            result = adapter.revalidate(AdapterContext(tenant_id=request.user.tenant_id, supplier_id=service.supplier_id), snapshot)
+        except AdapterError as exc:
+            raise ApiError(code=exc.code, message=str(exc), status_code=502) from None
+        return Response({"service": OrderServiceSerializer(service).data, "revalidation": result})
 
 
 class ServiceExtrasView(APIView):

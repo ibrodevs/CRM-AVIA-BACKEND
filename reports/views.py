@@ -23,7 +23,9 @@ class DashboardView(APIView):
         date_from = request.query_params.get("from")
         date_to = request.query_params.get("to")
 
-        orders = orders_visible_to(request.user)
+        orders = orders_visible_to(request.user).select_related(
+            "client_person", "client_company", "operator"
+        )
         if scope == "my":
             orders = orders.filter(operator=request.user)
         if date_from:
@@ -32,6 +34,15 @@ class DashboardView(APIView):
             orders = orders.filter(created_at__date__lte=date_to)
 
         status_breakdown = dict(orders.values_list("status").annotate(count=Count("id")))
+        active_statuses = {
+            "new",
+            "in_progress",
+            "awaiting_confirmation",
+            "awaiting_payment",
+            "needs_review",
+            "on_hold",
+            "data_missing",
+        }
 
         from calendar_app.models import Trip
 
@@ -46,7 +57,7 @@ class DashboardView(APIView):
             tenant_id=request.user.tenant_id,
             assignee=request.user,
             status__in=["open", "in_progress"],
-        ).order_by("due_at")[:20]
+        ).select_related("order").order_by("due_at")[:20]
 
         sla = SlaInstance.objects.filter(
             tenant_id=request.user.tenant_id,
@@ -96,7 +107,38 @@ class DashboardView(APIView):
             ticketing_deadline__gt=now,
             ticketing_deadline__lte=now + timedelta(hours=24),
             status__in=["booked", "confirmed"],
-        ).select_related("order")
+        ).select_related("order", "supplier")
+
+        recent_orders = orders.order_by("-created_at")[:20]
+        warnings = [
+            {
+                "type": "integration_incident",
+                "severity": incident.severity,
+                "title": incident.error_code,
+                "description": incident.sanitized_error,
+                "created_at": incident.created_at,
+                "resource_id": str(incident.id),
+            }
+            for incident in incidents.order_by("-created_at")[:20]
+        ]
+        recent_activity = [
+            {
+                "type": "order",
+                "title": order.number,
+                "description": order.purpose,
+                "created_at": order.updated_at,
+                "order": str(order.id),
+                "order_number": order.number,
+            }
+            for order in orders.order_by("-updated_at")[:20]
+        ]
+
+        def order_client_name(order):
+            if order.client_company:
+                return order.client_company.short_name or order.client_company.legal_name
+            if order.client_person:
+                return order.client_person.full_name
+            return ""
 
         return Response(
             {
@@ -106,6 +148,30 @@ class DashboardView(APIView):
                     "by_status": status_breakdown,
                     "new_today": orders.filter(created_at__date=today).count(),
                 },
+                "kpi": {
+                    "orders_total": orders.count(),
+                    "orders_new_today": orders.filter(created_at__date=today).count(),
+                    "orders_active": orders.filter(status__in=active_statuses).count(),
+                    "tasks_open": len(my_tasks),
+                    "sla_open": sla.count(),
+                    "sla_breached": sla_breached,
+                    "trips_today": trips_today.count(),
+                    "integration_incidents_open": incidents.count(),
+                },
+                "recent_orders": [
+                    {
+                        "id": str(order.id),
+                        "number": order.number,
+                        "status": order.status,
+                        "stage": order.stage,
+                        "priority": order.priority,
+                        "client": order_client_name(order),
+                        "operator": order.operator.get_full_name() if order.operator else "",
+                        "created_at": order.created_at,
+                        "planned_start": order.planned_start,
+                    }
+                    for order in recent_orders
+                ],
                 "trips_today": [
                     {
                         "id": str(t.id),
@@ -138,8 +204,24 @@ class DashboardView(APIView):
                         "service": str(s.id),
                         "order_number": s.order.number,
                         "deadline": s.ticketing_deadline,
+                        "title": s.title,
+                        "supplier": s.supplier.name if s.supplier else "",
                     }
                     for s in upcoming_deadlines[:20]
                 ],
+                "deadlines": [
+                    {
+                        "type": "ticketing_deadline",
+                        "service": str(s.id),
+                        "order": str(s.order_id),
+                        "order_number": s.order.number,
+                        "title": s.title,
+                        "deadline": s.ticketing_deadline,
+                        "status": s.status,
+                    }
+                    for s in upcoming_deadlines[:20]
+                ],
+                "warnings": warnings,
+                "recent_activity": recent_activity,
             }
         )

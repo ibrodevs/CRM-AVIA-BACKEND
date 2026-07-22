@@ -186,12 +186,21 @@ class TestOrderMisc:
         body = admin_client.get(f"/api/v1/orders/{order['id']}/overview/").json()
         assert set(body) == {
             "order",
-            "allowed_actions",
+            "route",
+            "participants",
             "services",
+            "tasks",
+            "history",
+            "finance",
             "finance_summary",
+            "proposals",
+            "documents",
+            "returns",
+            "allowed_actions",
             "deadlines",
             "warnings",
         }
+        assert body["finance"] == body["finance_summary"]
         assert "in_progress" in body["allowed_actions"]["transitions"]
 
     def test_duplicate(self, admin_client, order_payload):
