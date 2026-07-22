@@ -61,6 +61,14 @@ python manage.py bootstrap_tenant \
   --admin-password 'replace-with-a-strong-password'
 ```
 
+Для повторного production-обновления уже настроенного проекта можно выполнить:
+
+```bash
+bash scripts/pythonanywhere_deploy.sh
+```
+
+Скрипт делает `git pull`, обновляет пакет в virtualenv, запускает `check`, `migrate` и `collectstatic`. После него всё равно нужно нажать **Reload** на вкладке Web в PythonAnywhere.
+
 ## 4. Web App
 
 Создайте Manual configuration Web App с Python 3.12.
