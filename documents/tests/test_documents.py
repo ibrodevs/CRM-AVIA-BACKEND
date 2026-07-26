@@ -180,6 +180,26 @@ class TestDocuments:
         assert body["draft"]["passenger_name"] == ""
         assert body["draft"]["fare"] is None
 
+    def test_receipt_import_pdf_garbage_is_not_used_as_text(self, admin_client):
+        response = admin_client.post(
+            "/api/v1/receipt-imports/",
+            {
+                "file": upload_file(
+                    "receipt.pdf",
+                    b"%PDF-1.4\n/dStyles <</Para [18 0 R 19 0 R 20 0 R]>> /ShowGrid false\n%%EOF",
+                    "application/pdf",
+                )
+            },
+            format="multipart",
+        )
+        assert response.status_code == 201, response.content
+
+        result = admin_client.get(f"/api/v1/receipt-imports/{response.json()['id']}/result/")
+        assert result.status_code == 200, result.content
+        body = result.json()
+        assert body["parser_status"] == "manual_review"
+        assert body["draft"]["passenger_name"] == ""
+
     def test_receipt_import_confirm_creates_corrected_version_and_order_service(self, admin_client, order):
         from documents.models import ReceiptImportJob
         from services.models import OrderService

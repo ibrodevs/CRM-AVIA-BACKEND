@@ -20,6 +20,16 @@ ALLOWED_FILE_SIGNATURES: dict[str, list[bytes]] = {
 MAX_FILE_SIZE = 25 * 1024 * 1024
 
 
+def _manual_receipt_result(*, name: str, mime: str, warning: str) -> dict:
+    return {
+        "status": "manual_review",
+        "confidence": Decimal("0.000"),
+        "fields": {},
+        "raw": {"file_name": name, "mime": mime, "text_available": False},
+        "warnings": [warning],
+    }
+
+
 def _decode_text(content: bytes) -> str:
     for encoding in ("utf-8", "cp1251", "latin-1"):
         try:
@@ -109,19 +119,22 @@ def _first_currency(text: str) -> str:
 
 def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") -> dict:
     """Best-effort extraction from a text layer; scanned images still require OCR/manual entry."""
-    text = _extract_pdf_text(content) if mime == "application/pdf" or content.startswith(b"%PDF") else _decode_text(content)
-    if not text.strip():
-        text = _decode_text(content)
+    is_pdf = mime == "application/pdf" or content.startswith(b"%PDF")
+    if mime in {"image/jpeg", "image/png"}:
+        return _manual_receipt_result(
+            name=name,
+            mime=mime,
+            warning="Файл является изображением. Для распознавания фото/сканов нужен OCR или ручное заполнение.",
+        )
+    text = _extract_pdf_text(content) if is_pdf else _decode_text(content)
     text = text.replace("\\n", "\n").replace("\\r", "\n")
     visible_text = re.sub(r"\s+", " ", text).strip()
     if len(visible_text) < 20:
-        return {
-            "status": "manual_review",
-            "confidence": Decimal("0.000"),
-            "fields": {},
-            "raw": {"file_name": name, "mime": mime, "text_available": False},
-            "warnings": ["Не удалось извлечь текст из файла. Для сканов нужен OCR или ручное заполнение."],
-        }
+        return _manual_receipt_result(
+            name=name,
+            mime=mime,
+            warning="Не удалось извлечь текст из файла. Для сканов нужен OCR или ручное заполнение.",
+        )
 
     currency = _first_currency(text)
     fare = _money(text, [
