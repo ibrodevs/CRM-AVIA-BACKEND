@@ -177,6 +177,72 @@ def _first_currency(text: str) -> str:
     return {"СОМ": "KGS", "РУБ": "RUB", "РУБ.": "RUB", "₽": "RUB", "$": "USD", "€": "EUR"}.get(currency, currency)
 
 
+def _normalize_date(value: str) -> str:
+    value = (value or "").strip()
+    match = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", value)
+    if not match:
+        return value
+    day, month, year = match.groups()
+    if len(year) == 2:
+        year = "20" + year
+    return f"{int(day):02d}.{int(month):02d}.{year}"
+
+
+def _extract_segments(text: str, *, service_kind: str) -> list[dict]:
+    route = _first_match(text, [
+        r"(?:route|маршрут|направление)\s*[:\-]\s*([^\n\r]+)",
+        r"(?:from|откуда)\s*[:\-]\s*([A-ZА-ЯЁ0-9 .'-]{2,40})\s+(?:to|куда|[-–—>→]+)\s*([A-ZА-ЯЁ0-9 .'-]{2,40})",
+    ])
+    if route and "  " in route:
+        route = re.sub(r"\s{2,}", " ", route)
+    date = _normalize_date(_first_match(text, [
+        r"(?:departure date|travel date|route date|дата выезда|дата отправления|дата поездки)\s*[:\-]\s*([^\n\r]+)",
+        r"^date\s*[:\-]\s*([^\n\r]+)",
+    ]))
+    dep = _first_match(text, [r"(?:departure|depart|dep|вылет|отправление|заезд|check[\s-]?in)\s*[:\-]\s*(\d{1,2}:\d{2})"])
+    arr = _first_match(text, [r"(?:arrival|arr|прил[её]т|прибытие|выезд|check[\s-]?out)\s*[:\-]\s*(\d{1,2}:\d{2})"])
+    flight = _first_match(text, [
+        r"(?:flight|рейс)\s*(?:no|№|number)?\s*[:\-]?\s*([A-ZА-Я0-9]{2,4}\s?-?\d{1,5})",
+        r"(?:train|поезд)\s*(?:no|№|number)?\s*[:\-]?\s*([A-ZА-Я0-9 -]{1,12})",
+        r"(?:room|номер)\s*[:\-]\s*([^\n\r]+)",
+        r"(?:car|vehicle|машина|авто)\s*[:\-]\s*([^\n\r]+)",
+    ])
+    if not route and service_kind == "hotel":
+        route = _first_match(text, [r"(?:hotel|отель|гостиница)\s*[:\-]\s*([^\n\r]+)"])
+    if not route and service_kind == "transfer":
+        route = _first_match(text, [r"(?:pickup|встреча|маршрут трансфера)\s*[:\-]\s*([^\n\r]+)"])
+    if not route:
+        return []
+
+    parts = [p.strip(" .") for p in re.split(r"\s*(?:→|->|[-–—])\s*", route) if p.strip(" .")]
+    if len(parts) >= 2:
+        legs = []
+        for index in range(len(parts) - 1):
+            legs.append({
+                "from": parts[index],
+                "fromCode": parts[index] if re.fullmatch(r"[A-ZА-ЯЁ]{2,5}", parts[index]) else "",
+                "to": parts[index + 1],
+                "toCode": parts[index + 1] if re.fullmatch(r"[A-ZА-ЯЁ]{2,5}", parts[index + 1]) else "",
+                "date": date,
+                "dep": dep if index == 0 else "",
+                "arr": arr if index == len(parts) - 2 else "",
+                "flightNo": flight,
+                "dir": "back" if len(parts) == 3 and index == 1 and parts[0] == parts[-1] else ("out" if index == 0 else "seg"),
+            })
+        return legs
+    return [{
+        "from": "" if service_kind == "hotel" else route,
+        "fromCode": "",
+        "to": route if service_kind == "hotel" else "",
+        "toCode": "",
+        "date": date,
+        "dep": dep,
+        "arr": arr,
+        "flightNo": flight,
+        "dir": "out",
+    }]
+
+
 def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") -> dict:
     """Best-effort extraction from a text layer; scanned images still require OCR/manual entry."""
     is_pdf = mime == "application/pdf" or content.startswith(b"%PDF")
@@ -240,6 +306,14 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
     dob = _first_match(text, [
         r"(?:дата рождения|dob|date of birth)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
     ])
+    issue_date = _normalize_date(_first_match(text, [
+        r"(?:issued date|issue date|дата выписки|дата оформления|выдано)\s*[:\-]\s*([^\n\r]+)",
+    ]))
+    booking_class = _first_match(text, [r"(?:class|класс)\s*[:\-]\s*([A-ZА-Я0-9 -]{1,20})"])
+    fare_basis = _first_match(text, [r"(?:fare basis|тарифный код|код тарифа)\s*[:\-]\s*([A-ZА-Я0-9 -]{2,32})"])
+    baggage = _first_match(text, [r"(?:baggage|багаж)\s*[:\-]\s*([^\n\r]+)"])
+    hand_baggage = _first_match(text, [r"(?:hand baggage|ручная кладь|cabin baggage)\s*[:\-]\s*([^\n\r]+)"])
+    segments = _extract_segments(text, service_kind=service_kind)
 
     fields = {
         "issuer": issuer,
@@ -248,11 +322,16 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
         "taxes": taxes,
         "total": total,
         "currency": currency,
-        "segments": [],
+        "segments": segments,
         "reference": reference,
         "ticket_number": ticket,
         "document_number": document_number,
         "date_of_birth": dob,
+        "issue_date": issue_date,
+        "booking_class": booking_class,
+        "fare_basis": fare_basis,
+        "baggage": baggage,
+        "hand_baggage": hand_baggage,
         "service_kind": service_kind,
         "service_type": SERVICE_KIND_LABELS[service_kind],
     }
@@ -276,8 +355,14 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
             "ticket_number": ticket,
             "document_number": document_number,
             "date_of_birth": dob,
+            "issue_date": issue_date,
+            "booking_class": booking_class,
+            "fare_basis": fare_basis,
+            "baggage": baggage,
+            "hand_baggage": hand_baggage,
             "service_kind": service_kind,
             "service_type": SERVICE_KIND_LABELS[service_kind],
+            "segments": segments,
             "text_sample": visible_text[:1000],
         },
         "warnings": warnings or ["Проверьте распознанные поля перед подтверждением документа."],

@@ -301,6 +301,52 @@ class TestDocuments:
         assert body["extracted"]["document_number"] == "2213067219"
         assert body["extracted"]["date_of_birth"] == "18.05.1993"
 
+    def test_receipt_import_maps_route_and_service_fields(self, admin_client):
+        receipt = upload_file(
+            "detailed_receipt.txt",
+            (
+                "Service: Air ticket\n"
+                "Passenger: IVANOV IVAN\n"
+                "Carrier: Test Air\n"
+                "PNR: ABC123\n"
+                "Ticket No: 5551234567890\n"
+                "Document number: ID9876543\n"
+                "Date of birth: 15.04.1990\n"
+                "Issued date: 21.07.2026\n"
+                "Route: FRU - IST\n"
+                "Departure date: 12.08.2026\n"
+                "Flight: TK347\n"
+                "Departure: 09:30\n"
+                "Arrival: 12:20\n"
+                "Class: Y\n"
+                "Fare basis: YOWKG\n"
+                "Baggage: 1PC\n"
+                "Hand baggage: 8KG\n"
+                "Currency: USD\n"
+                "Fare: 250.00\n"
+                "Taxes: 42.50\n"
+                "Total: 292.50\n"
+            ).encode(),
+        )
+        response = admin_client.post("/api/v1/receipt-imports/", {"file": receipt}, format="multipart")
+        assert response.status_code == 201, response.content
+
+        result = admin_client.get(f"/api/v1/receipt-imports/{response.json()['id']}/result/")
+        body = result.json()
+        segment = body["draft"]["segments"][0]
+        assert body["extracted"]["service_kind"] == "avia"
+        assert body["extracted"]["issue_date"] == "21.07.2026"
+        assert body["extracted"]["booking_class"] == "Y"
+        assert body["extracted"]["fare_basis"] == "YOWKG"
+        assert body["extracted"]["baggage"] == "1PC"
+        assert body["extracted"]["hand_baggage"] == "8KG"
+        assert segment["from"] == "FRU"
+        assert segment["to"] == "IST"
+        assert segment["date"] == "12.08.2026"
+        assert segment["flightNo"] == "TK347"
+        assert segment["dep"] == "09:30"
+        assert segment["arr"] == "12:20"
+
     def test_receipt_import_extracts_pdf_stream_text(self, admin_client):
         text = (
             "Passenger: PETROV PETR\\n"
