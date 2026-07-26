@@ -385,6 +385,106 @@ class TestDocuments:
         assert body["extracted"]["reference"] == "KJ7T2L"
         assert body["extracted"]["ticket_number"] == "421 2135356261"
 
+    def test_receipt_import_extracts_utf16_hex_pdf_airline_receipt(self, admin_client):
+        lines = [
+            "Электронный билет (маршрут/квитанция для пассажира)",
+            "ДАТА :",
+            "29ЯНВ26",
+            "ФАМИЛИЯ :",
+            "VLASOV/IGOR ALEKSANDROVICH",
+            "MR",
+            "ПС4621115548",
+            "ОТПРВ/НАЗН :",
+            "SVOSVO",
+            "ВЫДАН ОТ",
+            ": АЭРОФЛОТ",
+            "КОД БРОНИРОВАНИЯ",
+            ": 8STR64",
+            "НОМЕР БИЛЕТА",
+            ": 555 2379040899",
+            "МАРШРУТ/ПЕРЕВОЗЧИК",
+            "РЕЙС",
+            "КЛАСС",
+            "ДАТА",
+            "ВРЕМЯ ОТПР",
+            "ВРЕМЯ ПРИБ",
+            "СТАТУС",
+            "МОСКВА, ШЕРЕМЕТЬЕВО",
+            "SVO B / АЭРОФЛОТ",
+            "SU-1412",
+            "T",
+            "02ФЕВ",
+            "0945",
+            "1420",
+            "OK",
+            "ЕКАТЕРИНБУРГ, КОЛЬЦОВО",
+            "SVX / АЭРОФЛОТ",
+            "SU-1419",
+            "G",
+            "11ФЕВ",
+            "1530",
+            "1640",
+            "OK",
+            "МОСКВА, ШЕРЕМЕТЬЕВО",
+            "SVO B",
+            "ТАРИФ",
+            ": RUB20000",
+            "СБОР/TAX",
+            ": RUB1172",
+            "RI932RUB YR240RUB",
+            "ИТОГО ПО БИЛЕТУ",
+            ": RUB21172",
+            "СБОР СА",
+            ": RUB0",
+            "СБОР АСБ",
+            ": RUB650",
+            "ВСЕГО К ОПЛАТЕ",
+            ": RUB21822",
+        ]
+        stream = "BT\n" + "\n".join(
+            f"[<{line.encode('utf-16-be').hex().upper()}>] TJ" for line in lines
+        ) + "\nET"
+        compressed = zlib.compress(stream.encode("latin-1"))
+        pdf = (
+            b"%PDF-1.4\n1 0 obj<<>>endobj\n2 0 obj<< /Length "
+            + str(len(compressed)).encode()
+            + b" /Filter /FlateDecode >>stream\n"
+            + compressed
+            + b"\nendstream\nendobj\n%%EOF"
+        )
+        response = admin_client.post(
+            "/api/v1/receipt-imports/",
+            {"file": upload_file("aeroflot_receipt.pdf", pdf, "application/pdf")},
+            format="multipart",
+        )
+        assert response.status_code == 201, response.content
+
+        result = admin_client.get(f"/api/v1/receipt-imports/{response.json()['id']}/result/")
+        body = result.json()
+        assert body["parser_status"] == "parsed"
+        assert body["extracted"]["service_kind"] == "avia"
+        assert body["extracted"]["reference"] == "8STR64"
+        assert body["extracted"]["ticket_number"] == "555 2379040899"
+        assert body["draft"]["passenger_name"] == "VLASOV/IGOR ALEKSANDROVICH"
+        assert body["draft"]["issuer"] == "АЭРОФЛОТ"
+        assert body["draft"]["fare"] == "20000.00"
+        assert body["draft"]["taxes"] == "1172.00"
+        assert body["draft"]["fees"] == "650.00"
+        assert body["draft"]["total"] == "21822.00"
+        assert body["draft"]["currency"] == "RUB"
+        assert body["draft"]["trip_type"] == "roundtrip"
+        assert body["draft"]["tax_breakdown"] == [
+            {"code": "RI", "label": "RI", "amount": "932", "currency": "RUB"},
+            {"code": "YR", "label": "YR", "amount": "240", "currency": "RUB"},
+        ]
+        assert body["draft"]["fee_breakdown"][-1]["amount"] == "650"
+        assert body["draft"]["segments"][0]["fromCode"] == "SVO"
+        assert body["draft"]["segments"][0]["toCode"] == "SVX"
+        assert body["draft"]["segments"][0]["date"] == "02.02.2026"
+        assert body["draft"]["segments"][0]["dep"] == "09:45"
+        assert body["draft"]["segments"][0]["arr"] == "14:20"
+        assert body["draft"]["segments"][1]["dir"] == "back"
+
     @pytest.mark.parametrize(
         ("name", "content", "service_kind", "service_type"),
         [

@@ -325,9 +325,13 @@ class ReceiptImportCreateView(APIView):
                 passenger_name=fields.get("passenger_name") or "",
                 fare=fields.get("fare"),
                 taxes=fields.get("taxes"),
+                fees=fields.get("fees"),
+                tax_breakdown=fields.get("tax_breakdown") or [],
+                fee_breakdown=fields.get("fee_breakdown") or [],
                 total=fields.get("total"),
                 currency=fields.get("currency") or "",
                 segments=fields.get("segments") or [],
+                trip_type=fields.get("trip_type") or "",
             )
         return Response({"id": str(import_job.id)}, status=http.HTTP_201_CREATED)
 
@@ -357,6 +361,9 @@ class ReceiptImportResultView(APIView):
                     "baggage": (import_job.raw_extraction or {}).get("baggage", ""),
                     "hand_baggage": (import_job.raw_extraction or {}).get("hand_baggage", ""),
                     "segments": (import_job.raw_extraction or {}).get("segments", []),
+                    "trip_type": (import_job.raw_extraction or {}).get("trip_type", ""),
+                    "tax_breakdown": (import_job.raw_extraction or {}).get("tax_breakdown", []),
+                    "fee_breakdown": (import_job.raw_extraction or {}).get("fee_breakdown", []),
                     "service_kind": (import_job.raw_extraction or {}).get("service_kind", import_job.guessed_type),
                     "service_type": (import_job.raw_extraction or {}).get("service_type", ""),
                 },
@@ -369,6 +376,8 @@ class ReceiptImportResultView(APIView):
                     "fare": str(draft.fare) if draft.fare else None,
                     "taxes": str(draft.taxes) if draft.taxes else None,
                     "fees": str(draft.fees) if draft.fees else None,
+                    "tax_breakdown": draft.tax_breakdown,
+                    "fee_breakdown": draft.fee_breakdown,
                     "total": str(draft.total) if draft.total else None,
                     "currency": draft.currency,
                 }
@@ -411,7 +420,10 @@ class ReceiptImportConfirmView(APIView):
             draft.issuer = str(data.get("issuer", ""))
             draft.passenger_name = str(data.get("passenger_name", ""))
             draft.segments = data.get("segments", [])
+            draft.trip_type = str(data.get("trip_type", draft.trip_type or ""))
             draft.fare, draft.taxes, draft.fees = fare, taxes, fees
+            draft.tax_breakdown = data.get("tax_breakdown", draft.tax_breakdown or [])
+            draft.fee_breakdown = data.get("fee_breakdown", draft.fee_breakdown or [])
             draft.total = total
             draft.currency = currency
             draft.confirmed_at = timezone.now()
@@ -439,9 +451,12 @@ class ReceiptImportConfirmView(APIView):
                         "issuer": draft.issuer,
                         "passenger_name": draft.passenger_name,
                         "segments": draft.segments,
+                        "trip_type": draft.trip_type,
                         "fare": str(fare),
                         "taxes": str(taxes),
                         "fees": str(fees),
+                        "tax_breakdown": draft.tax_breakdown,
+                        "fee_breakdown": draft.fee_breakdown,
                         "total": str(total),
                         "currency": currency,
                     },

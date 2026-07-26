@@ -25,6 +25,20 @@ SERVICE_KIND_LABELS = {
     "transfer": "Трансфер",
     "other": "Прочее",
 }
+RU_MONTHS = {
+    "ЯНВ": 1,
+    "ФЕВ": 2,
+    "МАР": 3,
+    "АПР": 4,
+    "МАЙ": 5,
+    "ИЮН": 6,
+    "ИЮЛ": 7,
+    "АВГ": 8,
+    "СЕН": 9,
+    "ОКТ": 10,
+    "НОЯ": 11,
+    "ДЕК": 12,
+}
 
 
 def _detect_service_kind(text: str, *, name: str = "") -> str:
@@ -110,6 +124,60 @@ def _decode_pdf_literal(value: str) -> str:
     return re.sub(r"\\([0-7]{1,3})", lambda m: chr(int(m.group(1), 8)), value)
 
 
+def _decode_pdf_hex(value: str) -> str:
+    hex_value = re.sub(r"\s+", "", value)
+    if not hex_value:
+        return ""
+    if len(hex_value) % 2:
+        hex_value += "0"
+    try:
+        raw = bytes.fromhex(hex_value)
+    except ValueError:
+        return ""
+    candidates = []
+    if raw.startswith(b"\xfe\xff"):
+        candidates.append(raw[2:].decode("utf-16-be", errors="ignore"))
+    if len(raw) % 2 == 0:
+        candidates.append(raw.decode("utf-16-be", errors="ignore"))
+    candidates.extend(
+        [
+            raw.decode("utf-8", errors="ignore"),
+            raw.decode("latin-1", errors="ignore"),
+        ]
+    )
+
+    def score(text: str) -> int:
+        return sum(
+            1
+            for ch in text
+            if ch.isalnum() or ch.isspace() or ch in "№:;.,/\\-–—()\"'«»$€₽"
+        )
+
+    return max(candidates, key=score).replace("\x00", "")
+
+
+def _extract_pdf_text_fragments(text: str) -> list[str]:
+    chunks: list[str] = []
+    for literal in re.findall(r"\((?:\\.|[^\\()])*\)\s*Tj", text):
+        chunks.append(_decode_pdf_literal(literal[1 : literal.rfind(")")]))
+    for hex_text in re.findall(r"<([0-9A-Fa-f\s]+)>\s*Tj", text):
+        decoded = _decode_pdf_hex(hex_text)
+        if decoded:
+            chunks.append(decoded)
+    for array in re.findall(r"\[(.*?)\]\s*TJ", text, flags=re.DOTALL):
+        parts = []
+        for match in re.finditer(r"\((?:\\.|[^\\()])*\)|<([0-9A-Fa-f\s]+)>", array):
+            token = match.group(0)
+            if token.startswith("("):
+                parts.append(_decode_pdf_literal(token[1:-1]))
+            else:
+                parts.append(_decode_pdf_hex(token[1:-1]))
+        joined = "".join(parts).strip()
+        if joined:
+            chunks.append(joined)
+    return chunks
+
+
 def _extract_pdf_text(content: bytes) -> str:
     chunks: list[str] = []
     try:
@@ -131,13 +199,7 @@ def _extract_pdf_text(content: bytes) -> str:
             pass
         for candidate in candidates:
             text = candidate.decode("latin-1", errors="ignore")
-            literals = re.findall(r"\((?:\\.|[^\\()])*\)\s*Tj", text)
-            array_literals = re.findall(r"\[(.*?)\]\s*TJ", text, flags=re.DOTALL)
-            extracted = []
-            for literal in literals:
-                extracted.append(_decode_pdf_literal(literal[1:literal.rfind(")")]))
-            for array in array_literals:
-                extracted.extend(_decode_pdf_literal(item) for item in re.findall(r"\((?:\\.|[^\\()])*\)", array))
+            extracted = _extract_pdf_text_fragments(text)
             if extracted:
                 chunks.append("\n".join(extracted))
     return "\n".join(chunk for chunk in chunks if chunk)
@@ -152,17 +214,77 @@ def _first_match(text: str, patterns: list[str]) -> str:
 
 
 def _money(text: str, patterns: list[str]) -> Decimal | None:
-    value = _first_match(text, patterns)
-    if not value:
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE | re.MULTILINE):
+            value = match.group(1).strip(" :;,\n\t")
+            amount = re.search(r"-?\d[\d\s]*(?:[,.]\d{1,2})?", value)
+            if not amount:
+                continue
+            normalized = amount.group(0).replace(" ", "").replace(",", ".")
+            try:
+                return Decimal(normalized)
+            except (InvalidOperation, ValueError):
+                continue
+    return None
+
+
+def _amount_and_currency(value: str) -> tuple[str, Decimal] | None:
+    match = re.search(
+        r"(?:(USD|EUR|RUB|KGS|KZT|сом|руб\.?|₽|\$|€)\s*)?(-?\d[\d\s]*(?:[,.]\d{1,2})?)\s*(USD|EUR|RUB|KGS|KZT|сом|руб\.?|₽|\$|€)?",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if not match:
         return None
-    amount = re.search(r"-?\d[\d\s]*(?:[,.]\d{1,2})?", value)
-    if not amount:
-        return None
-    normalized = amount.group(0).replace(" ", "").replace(",", ".")
+    cur = (match.group(1) or match.group(3) or "").upper()
+    normalized = match.group(2).replace(" ", "").replace(",", ".")
     try:
-        return Decimal(normalized)
+        amount = Decimal(normalized)
     except (InvalidOperation, ValueError):
         return None
+    return {"СОМ": "KGS", "РУБ": "RUB", "РУБ.": "RUB", "₽": "RUB", "$": "USD", "€": "EUR"}.get(cur, cur), amount
+
+
+def _money_breakdown(text: str, labels: list[tuple[str, str]]) -> list[dict]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    rows: list[dict] = []
+    for index, line in enumerate(lines):
+        for code, pattern in labels:
+            if not re.search(pattern, line, flags=re.IGNORECASE):
+                continue
+            joined = " ".join(lines[index : index + 2])
+            parsed = _amount_and_currency(joined)
+            if parsed:
+                currency, amount = parsed
+                rows.append({"code": code, "label": line.strip(" :"), "amount": str(amount), "currency": currency})
+                break
+    return rows
+
+
+def _tax_breakdown(text: str) -> list[dict]:
+    rows = _money_breakdown(text, [("TAX", r"\b(?:tax|такс|сбор/tax|аэропортовые сборы)\b")])
+    components = []
+    for code, amount, currency in re.findall(
+        r"\b([A-ZА-Я]{2,4})\s*(\d[\d\s]*(?:[,.]\d{1,2})?)\s*(USD|EUR|RUB|KGS|KZT|сом|руб\.?|₽|\$|€)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        try:
+            value = Decimal(amount.replace(" ", "").replace(",", "."))
+        except (InvalidOperation, ValueError):
+            continue
+        components.append({"code": code.upper(), "label": code.upper(), "amount": str(value), "currency": _first_currency(currency) or currency.upper()})
+    return components or rows
+
+
+def _fee_breakdown(text: str) -> list[dict]:
+    return _money_breakdown(
+        text,
+        [
+            ("SA", r"\bсбор\s+са\b|\bservice\s+fee\b|сервисн(?:ый|ого)\s+сбор"),
+            ("ASB", r"\bсбор\s+асб\b|\bагентск(?:ий|ого)\s+сбор"),
+        ],
+    )
 
 
 def _first_currency(text: str) -> str:
@@ -171,6 +293,7 @@ def _first_currency(text: str) -> str:
         [
             r"(?:валюта|currency)\s*[:\-]?\s*(USD|EUR|RUB|KGS|KZT|сом|руб\.?|₽|\$|€)",
             r"\b(USD|EUR|RUB|KGS|KZT)\b",
+            r"\b(USD|EUR|RUB|KGS|KZT)(?=\d)",
             r"([₽$€])",
         ],
     ).upper()
@@ -180,15 +303,102 @@ def _first_currency(text: str) -> str:
 def _normalize_date(value: str) -> str:
     value = (value or "").strip()
     match = re.search(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b", value)
+    if match:
+        day, month, year = match.groups()
+        if len(year) == 2:
+            year = "20" + year
+        return f"{int(day):02d}.{int(month):02d}.{year}"
+    match = re.search(r"\b(\d{1,2})\s*([А-ЯЁA-Z]{3})\s*(\d{2,4})?\b", value, flags=re.IGNORECASE)
     if not match:
         return value
-    day, month, year = match.groups()
+    day, month_name, year = match.groups()
+    month = RU_MONTHS.get(month_name.upper().replace("Ё", "Е")[:3])
+    if not month:
+        return value
+    year = year or ""
     if len(year) == 2:
         year = "20" + year
-    return f"{int(day):02d}.{int(month):02d}.{year}"
+    return f"{int(day):02d}.{month:02d}.{year}" if year else f"{int(day):02d}.{month:02d}"
+
+
+def _format_time(value: str) -> str:
+    value = (value or "").strip()
+    if re.fullmatch(r"\d{3,4}", value):
+        value = value.zfill(4)
+        return f"{value[:2]}:{value[2:]}"
+    return value
+
+
+def _date_with_year(value: str, year: str = "") -> str:
+    normalized = _normalize_date(value)
+    if year and re.fullmatch(r"\d{2}\.\d{2}", normalized):
+        return f"{normalized}.{year}"
+    return normalized
+
+
+def _extract_issue_year(text: str) -> str:
+    value = _first_match(text, [r"(?:дата|issued date|issue date|дата выписки|дата оформления)\s*[:\-]?\s*([^\n\r]+)"])
+    normalized = _normalize_date(value)
+    match = re.search(r"\b(20\d{2})\b", normalized)
+    return match.group(1) if match else ""
+
+
+def _guess_trip_type(segments: list[dict], service_kind: str) -> str:
+    if service_kind == "hotel":
+        return "stay"
+    if len(segments) >= 2 and segments[0].get("fromCode") == segments[-1].get("toCode"):
+        return "roundtrip"
+    if len(segments) > 1:
+        return "complex"
+    return "oneway"
+
+
+def _extract_transport_table_segments(text: str, *, service_kind: str) -> list[dict]:
+    if service_kind not in {"avia", "rail"}:
+        return []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    stops = []
+    for index in range(len(lines) - 1):
+        code_line = lines[index + 1]
+        code_match = re.match(r"^([A-ZА-Я]{3})(?:\s+[A-Z0-9])?(?:\s*/.*)?$", code_line)
+        if not code_match:
+            continue
+        if (
+            not re.search(r"[А-ЯA-Z]", lines[index])
+            or not re.search(r",|аэропорт|airport|вокзал|станци", lines[index], flags=re.IGNORECASE)
+            or re.search(r"маршрут|рейс|класс|статус|тариф|баг", lines[index], flags=re.IGNORECASE)
+        ):
+            continue
+        stops.append({"name": lines[index], "code": code_match.group(1), "city_index": index, "code_index": index + 1})
+    if len(stops) < 2:
+        return []
+    year = _extract_issue_year(text)
+    segments = []
+    for index in range(len(stops) - 1):
+        block = lines[stops[index]["code_index"] + 1 : stops[index + 1]["city_index"]]
+        flight = next((line for line in block if re.fullmatch(r"[A-ZА-Я]{2}\s?-?\d{2,5}", line)), "")
+        date = next((line for line in block if re.fullmatch(r"\d{1,2}[А-ЯЁA-Z]{3}(?:\d{2,4})?|\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?", line, flags=re.IGNORECASE)), "")
+        times = [_format_time(line) for line in block if re.fullmatch(r"\d{3,4}", line)]
+        segments.append(
+            {
+                "from": stops[index]["name"],
+                "fromCode": stops[index]["code"],
+                "to": stops[index + 1]["name"],
+                "toCode": stops[index + 1]["code"],
+                "date": _date_with_year(date, year),
+                "dep": times[0] if times else "",
+                "arr": times[1] if len(times) > 1 else "",
+                "flightNo": flight.replace(" ", ""),
+                "dir": "back" if index and stops[0]["code"] == stops[index + 1]["code"] else ("out" if index == 0 else "seg"),
+            }
+        )
+    return segments
 
 
 def _extract_segments(text: str, *, service_kind: str) -> list[dict]:
+    table_segments = _extract_transport_table_segments(text, service_kind=service_kind)
+    if table_segments:
+        return table_segments
     route = _first_match(text, [
         r"(?:route|маршрут|направление)\s*[:\-]\s*([^\n\r]+)",
         r"(?:from|откуда)\s*[:\-]\s*([A-ZА-ЯЁ0-9 .'-]{2,40})\s+(?:to|куда|[-–—>→]+)\s*([A-ZА-ЯЁ0-9 .'-]{2,40})",
@@ -269,26 +479,32 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
         r"(?:стоимость перевозки|базовый тариф)\s*[:\-]?\s*([^\n\r]+)",
     ])
     taxes = _money(text, [
-        r"(?:taxes|таксы|аэропортовые сборы|сборы|tax)\s*[:\-]?\s*([^\n\r]+)",
+        r"(?:taxes|таксы|аэропортовые сборы|сбор/tax|tax)\s*[:\-]?\s*([^\n\r]+)",
         r"(?:таксы и сборы)\s*[:\-]?\s*([^\n\r]+)",
     ])
     total = _money(text, [
-        r"(?:total|итого|к оплате|amount|общая стоимость|всего)\s*[:\-]?\s*([^\n\r]+)",
+        r"(?:total|итого по билету|итого|всего к оплате|к оплате|amount|общая стоимость|всего)\s*[:\-]?\s*([^\n\r]+)",
         r"(?:сумма)\s*[:\-]?\s*([^\n\r]+)",
     ])
+    payable_total = _money(text, [r"(?:всего к оплате|grand total|amount due)\s*[:\-]?\s*([^\n\r]+)"])
+    if payable_total is not None:
+        total = payable_total
+    tax_breakdown = _tax_breakdown(text)
+    fee_breakdown = _fee_breakdown(text)
+    fees = sum((Decimal(row["amount"]) for row in fee_breakdown), Decimal("0")) if fee_breakdown else None
     passenger = _first_match(
         text,
         [
-            r"(?:passenger|пассажир|traveller)\s*[:\-]?\s*([^\n]+)",
-            r"(?:фамилия\s*/?\s*имя|пассажир\(ы\))\s*[:\-]?\s*([^\n]+)",
-            r"(?:name|фио)\s*[:\-]?\s*([^\n]+)",
+            r"(?:^|\n)\s*(?:passenger|пассажир|traveller)\s*[:\-]?\s*([^\n]+)",
+            r"(?:^|\n)\s*(?:фамилия\s*/?\s*имя|фамилия|пассажир\(ы\))\s*[:\-]?\s*([^\n]+)",
+            r"(?:^|\n)\s*(?:name|фио)\s*[:\-]?\s*([^\n]+)",
         ],
     )
     issuer = _first_match(
         text,
         [
-            r"(?:carrier|airline|перевозчик|поставщик)\s*[:\-]?\s*([^\n]+)",
-            r"(?:issued by|выдано)\s*[:\-]?\s*([^\n]+)",
+            r"(?:^|\n)\s*(?:carrier|airline|перевозчик|поставщик)\s*[:\-]\s*([^\n]+)",
+            r"(?:^|\n)\s*(?:issued by|выдано|выдан от)\s*[:\-]?\s*([^\n]+)",
         ],
     )
     reference = _first_match(text, [
@@ -301,28 +517,33 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
         [r"(?:ticket|билет|номер билета|электронный билет)\s*(?:no|№|number)?\s*[:\-]?\s*([0-9A-ZА-Я -]{6,24})"],
     )
     document_number = _first_match(text, [
-        r"(?:документ|паспорт|document)\s*(?:№|no|number)?\s*[:\-]?\s*([0-9A-ZА-Я -]{5,24})",
+        r"(?:^|\n)\s*(?:документ|паспорт|document)\s*(?:№|no|number)?\s*[:\-]\s*([0-9A-ZА-Я -]{5,24})",
     ])
     dob = _first_match(text, [
         r"(?:дата рождения|dob|date of birth)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
     ])
     issue_date = _normalize_date(_first_match(text, [
-        r"(?:issued date|issue date|дата выписки|дата оформления|выдано)\s*[:\-]\s*([^\n\r]+)",
+        r"(?:issued date|issue date|дата выписки|дата оформления|дата|выдано)\s*[:\-]\s*([^\n\r]+)",
     ]))
     booking_class = _first_match(text, [r"(?:class|класс)\s*[:\-]\s*([A-ZА-Я0-9 -]{1,20})"])
     fare_basis = _first_match(text, [r"(?:fare basis|тарифный код|код тарифа)\s*[:\-]\s*([A-ZА-Я0-9 -]{2,32})"])
     baggage = _first_match(text, [r"(?:baggage|багаж)\s*[:\-]\s*([^\n\r]+)"])
     hand_baggage = _first_match(text, [r"(?:hand baggage|ручная кладь|cabin baggage)\s*[:\-]\s*([^\n\r]+)"])
     segments = _extract_segments(text, service_kind=service_kind)
+    trip_type = _guess_trip_type(segments, service_kind)
 
     fields = {
         "issuer": issuer,
         "passenger_name": passenger,
         "fare": fare,
         "taxes": taxes,
+        "fees": fees,
         "total": total,
         "currency": currency,
         "segments": segments,
+        "trip_type": trip_type,
+        "tax_breakdown": tax_breakdown,
+        "fee_breakdown": fee_breakdown,
         "reference": reference,
         "ticket_number": ticket,
         "document_number": document_number,
@@ -360,9 +581,12 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
             "fare_basis": fare_basis,
             "baggage": baggage,
             "hand_baggage": hand_baggage,
+            "tax_breakdown": tax_breakdown,
+            "fee_breakdown": fee_breakdown,
             "service_kind": service_kind,
             "service_type": SERVICE_KIND_LABELS[service_kind],
             "segments": segments,
+            "trip_type": trip_type,
             "text_sample": visible_text[:1000],
         },
         "warnings": warnings or ["Проверьте распознанные поля перед подтверждением документа."],

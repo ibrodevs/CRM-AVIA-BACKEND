@@ -157,6 +157,8 @@ class ReceiptDraft(TenantModel):
     fare = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     taxes = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     fees = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    tax_breakdown = models.JSONField(default=list, blank=True)
+    fee_breakdown = models.JSONField(default=list, blank=True)
     total = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     currency = models.CharField(max_length=3, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
