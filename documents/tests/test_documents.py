@@ -105,3 +105,45 @@ class TestDocuments:
         )
         assert response.status_code == 400
         assert response.json()["error"]["fields"]["service"]
+
+    def test_receipt_import_extracts_text_fields(self, admin_client):
+        receipt = upload_file(
+            "receipt.txt",
+            (
+                "Passenger: TELEGIN IVAN KONSTANTINOVICH\n"
+                "Carrier: Smartavia\n"
+                "PNR: V942WP\n"
+                "Ticket No: 316 2445197354\n"
+                "Currency: RUB\n"
+                "Fare: 25328\n"
+                "Taxes: 120\n"
+                "Total: 25448\n"
+            ).encode(),
+        )
+        response = admin_client.post("/api/v1/receipt-imports/", {"file": receipt}, format="multipart")
+        assert response.status_code == 201, response.content
+
+        result = admin_client.get(f"/api/v1/receipt-imports/{response.json()['id']}/result/")
+        assert result.status_code == 200, result.content
+        body = result.json()
+        assert body["parser_status"] == "parsed"
+        assert body["draft"]["passenger_name"] == "TELEGIN IVAN KONSTANTINOVICH"
+        assert body["draft"]["fare"] == "25328.00"
+        assert body["draft"]["taxes"] == "120.00"
+        assert body["draft"]["total"] == "25448.00"
+        assert body["draft"]["currency"] == "RUB"
+
+    def test_receipt_import_without_text_requires_manual_review(self, admin_client):
+        response = admin_client.post(
+            "/api/v1/receipt-imports/",
+            {"file": upload_file("blank.txt", b"\x00\x01\x02")},
+            format="multipart",
+        )
+        assert response.status_code == 201, response.content
+
+        result = admin_client.get(f"/api/v1/receipt-imports/{response.json()['id']}/result/")
+        assert result.status_code == 200, result.content
+        body = result.json()
+        assert body["parser_status"] == "manual_review"
+        assert body["draft"]["passenger_name"] == ""
+        assert body["draft"]["fare"] is None

@@ -19,7 +19,7 @@ from documents.models import (
 )
 from documents.selectors import documents_visible_to, get_document_or_404
 from documents.serializers import DocumentSerializer, DocumentVersionSerializer
-from documents.services import add_document_version, validate_upload
+from documents.services import add_document_version, extract_receipt_fields, validate_upload
 
 
 class DocumentListCreateView(GenericAPIView):
@@ -280,19 +280,29 @@ class ReceiptImportCreateView(APIView):
         if file is None:
             raise ApiError(code="VALIDATION_ERROR", message="Файл file обязателен", status_code=400)
         validate_upload(file)
+        content = file.read()
+        extraction = extract_receipt_fields(content, mime=file.content_type, name=file.name)
+        fields = extraction["fields"]
         import_job = ReceiptImportJob.objects.create(
             tenant_id=request.user.tenant_id,
             created_by=request.user,
             guessed_type="itinerary_receipt",
-            parser_status="parsed",
-            confidence="0.500",
-            raw_extraction={"note": "Импорт принят backend; проверьте распознанные поля"},
-            warnings=["Проверьте реквизиты перед подтверждением документа"],
+            parser_status=extraction["status"],
+            confidence=extraction["confidence"],
+            raw_extraction=extraction["raw"],
+            warnings=extraction["warnings"],
         )
         ReceiptDraft.objects.create(
             tenant_id=request.user.tenant_id,
             import_job=import_job,
             created_by=request.user,
+            issuer=fields.get("issuer") or "",
+            passenger_name=fields.get("passenger_name") or "",
+            fare=fields.get("fare"),
+            taxes=fields.get("taxes"),
+            total=fields.get("total"),
+            currency=fields.get("currency") or "",
+            segments=fields.get("segments") or [],
         )
         return Response({"id": str(import_job.id)}, status=http.HTTP_201_CREATED)
 
