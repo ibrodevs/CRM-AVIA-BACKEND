@@ -311,7 +311,7 @@ class ReceiptImportCreateView(APIView):
                 tenant_id=request.user.tenant_id,
                 created_by=request.user,
                 file_version=original_version,
-                guessed_type="itinerary_receipt",
+                guessed_type=fields.get("service_kind") or "other",
                 parser_status=extraction["status"],
                 confidence=extraction["confidence"],
                 raw_extraction=extraction["raw"],
@@ -351,6 +351,8 @@ class ReceiptImportResultView(APIView):
                     "ticket_number": (import_job.raw_extraction or {}).get("ticket_number", ""),
                     "document_number": (import_job.raw_extraction or {}).get("document_number", ""),
                     "date_of_birth": (import_job.raw_extraction or {}).get("date_of_birth", ""),
+                    "service_kind": (import_job.raw_extraction or {}).get("service_kind", import_job.guessed_type),
+                    "service_type": (import_job.raw_extraction or {}).get("service_type", ""),
                 },
                 "draft": {
                     "issuer": draft.issuer,

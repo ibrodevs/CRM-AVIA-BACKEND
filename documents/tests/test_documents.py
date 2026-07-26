@@ -338,3 +338,27 @@ class TestDocuments:
         assert body["draft"]["total"] == "17360.00"
         assert body["extracted"]["reference"] == "KJ7T2L"
         assert body["extracted"]["ticket_number"] == "421 2135356261"
+
+    @pytest.mark.parametrize(
+        ("name", "content", "service_kind", "service_type"),
+        [
+            ("blank.pdf", "Flight ticket\nPassenger: A\nPNR: AVA123\nFare: 10 USD\nTotal: 10 USD", "avia", "Авиа"),
+            ("blank.pdf", "Rail ticket\nTrain 702\nWagon 4\nPassenger: A\nTotal: 10 USD", "rail", "ЖД"),
+            ("blank.pdf", "Hotel voucher\nRoom deluxe\nCheck-in 12.08\nPassenger: A\nTotal: 10 USD", "hotel", "Гостиница"),
+            ("blank.pdf", "Transfer voucher\nPickup airport\nDriver phone\nPassenger: A\nTotal: 10 USD", "transfer", "Трансфер"),
+            ("blank.pdf", "Service receipt\nPassenger: A\nDocument: X12345\nTotal: 10 USD", "other", "Прочее"),
+        ],
+    )
+    def test_receipt_import_detects_service_kind(self, admin_client, name, content, service_kind, service_type):
+        response = admin_client.post(
+            "/api/v1/receipt-imports/",
+            {"file": upload_file(name, content.encode(), "text/plain")},
+            format="multipart",
+        )
+        assert response.status_code == 201, response.content
+
+        result = admin_client.get(f"/api/v1/receipt-imports/{response.json()['id']}/result/")
+        assert result.status_code == 200, result.content
+        body = result.json()
+        assert body["extracted"]["service_kind"] == service_kind
+        assert body["extracted"]["service_type"] == service_type

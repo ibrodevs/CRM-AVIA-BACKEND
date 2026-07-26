@@ -18,14 +18,74 @@ ALLOWED_FILE_SIGNATURES: dict[str, list[bytes]] = {
     "text/plain": [],
 }
 MAX_FILE_SIZE = 25 * 1024 * 1024
+SERVICE_KIND_LABELS = {
+    "avia": "Авиа",
+    "rail": "ЖД",
+    "hotel": "Гостиница",
+    "transfer": "Трансфер",
+    "other": "Прочее",
+}
+
+
+def _detect_service_kind(text: str, *, name: str = "") -> str:
+    haystack = re.sub(r"[_\-/]+", " ", f"{name}\n{text}".lower())
+    service_line = _first_match(text, [r"(?:service|услуга|тип услуги)\s*[:\-]\s*([^\n\r]+)"]).lower()
+    if service_line:
+        if re.search(r"\b(?:hotel|room)\b|гостиниц|отел|проживан", service_line):
+            return "hotel"
+        if re.search(r"\b(?:transfer|pickup|driver|car)\b|трансфер|водител|встреч", service_line):
+            return "transfer"
+        if re.search(r"\b(?:rail|train)\b|ржд|\bжд\b|ж/д|поезд", service_line):
+            return "rail"
+        if re.search(r"\b(?:air|avia|flight)\b|авиа|рейс", service_line):
+            return "avia"
+        if re.search(r"\bother\b|проч", service_line):
+            return "other"
+    rules = {
+        "hotel": [
+            r"\bhotel\b", r"\broom\b", r"\bcheck[\s-]?in\b", r"\bcheck[\s-]?out\b",
+            r"\bservice\s*:\s*hotel\b", r"гостиниц", r"отел", r"проживан", r"бронь\s+отел", r"номер\s+в\s+отел",
+        ],
+        "transfer": [
+            r"\btransfer\b", r"\bpickup\b", r"\bpick[\s-]?up\b", r"\bdriver\b", r"\bcar\b",
+            r"\bservice\s*:\s*transfer\b", r"трансфер", r"водител", r"встреч", r"аэропорт\s*[-–—]\s*отел", r"машин",
+        ],
+        "rail": [
+            r"\brail\b", r"\btrain\b", r"\brzd\b", r"ржд", r"\bжд\b", r"ж/д", r"поезд",
+            r"\bservice\s*:\s*rail\b", r"вагон", r"место", r"станци", r"электронный\s+проездной",
+        ],
+        "avia": [
+            r"\bavia\b", r"\bflight\b", r"\bairline\b", r"\bair\s*ticket\b", r"\bservice\s*:\s*air\b",
+            r"\bpnr\b", r"\bticket\b", r"авиа", r"рейс", r"перевозчик", r"маршрут[-\s]?квитанц",
+            r"электронн(?:ый|ого)\s+билет",
+        ],
+    }
+    scores = {}
+    for kind, patterns in rules.items():
+        score = 0
+        for pattern in patterns:
+            if re.search(pattern, haystack, flags=re.IGNORECASE):
+                score += 3 if kind != "avia" else 1
+        scores[kind] = score
+    if re.search(r"\b(?:flight|airline|air\s*ticket|service\s*:\s*air)\b|авиа|рейс", haystack):
+        scores["avia"] += 4
+    kind, score = max(scores.items(), key=lambda item: item[1])
+    return kind if score else "other"
 
 
 def _manual_receipt_result(*, name: str, mime: str, warning: str) -> dict:
+    service_kind = _detect_service_kind("", name=name)
     return {
         "status": "manual_review",
         "confidence": Decimal("0.000"),
-        "fields": {},
-        "raw": {"file_name": name, "mime": mime, "text_available": False},
+        "fields": {"service_kind": service_kind, "service_type": SERVICE_KIND_LABELS[service_kind]},
+        "raw": {
+            "file_name": name,
+            "mime": mime,
+            "text_available": False,
+            "service_kind": service_kind,
+            "service_type": SERVICE_KIND_LABELS[service_kind],
+        },
         "warnings": [warning],
     }
 
@@ -136,6 +196,7 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
             warning="Не удалось извлечь текст из файла. Для сканов нужен OCR или ручное заполнение.",
         )
 
+    service_kind = _detect_service_kind(text, name=name)
     currency = _first_currency(text)
     fare = _money(text, [
         r"(?:base fare|fare|тариф|стоимость тарифа)\s*[:\-]?\s*([^\n\r]+)",
@@ -192,6 +253,8 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
         "ticket_number": ticket,
         "document_number": document_number,
         "date_of_birth": dob,
+        "service_kind": service_kind,
+        "service_type": SERVICE_KIND_LABELS[service_kind],
     }
     filled = sum(1 for key in ("passenger_name", "fare", "taxes", "total", "currency") if fields.get(key))
     warnings = []
@@ -213,6 +276,8 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
             "ticket_number": ticket,
             "document_number": document_number,
             "date_of_birth": dob,
+            "service_kind": service_kind,
+            "service_type": SERVICE_KIND_LABELS[service_kind],
             "text_sample": visible_text[:1000],
         },
         "warnings": warnings or ["Проверьте распознанные поля перед подтверждением документа."],
