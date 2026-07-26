@@ -283,27 +283,52 @@ class ReceiptImportCreateView(APIView):
         content = file.read()
         extraction = extract_receipt_fields(content, mime=file.content_type, name=file.name)
         fields = extraction["fields"]
-        import_job = ReceiptImportJob.objects.create(
-            tenant_id=request.user.tenant_id,
-            created_by=request.user,
-            guessed_type="itinerary_receipt",
-            parser_status=extraction["status"],
-            confidence=extraction["confidence"],
-            raw_extraction=extraction["raw"],
-            warnings=extraction["warnings"],
-        )
-        ReceiptDraft.objects.create(
-            tenant_id=request.user.tenant_id,
-            import_job=import_job,
-            created_by=request.user,
-            issuer=fields.get("issuer") or "",
-            passenger_name=fields.get("passenger_name") or "",
-            fare=fields.get("fare"),
-            taxes=fields.get("taxes"),
-            total=fields.get("total"),
-            currency=fields.get("currency") or "",
-            segments=fields.get("segments") or [],
-        )
+        with transaction.atomic():
+            document = Document.objects.create(
+                tenant_id=request.user.tenant_id,
+                kind="itinerary_receipt",
+                title=file.name,
+                source="supplier",
+                metadata={
+                    "supplier_original": {
+                        "name": file.name,
+                        "mime": file.content_type,
+                        "size": file.size,
+                    },
+                    "receipt_import": {"stage": "uploaded"},
+                },
+                created_by=request.user,
+            )
+            original_version = add_document_version(
+                document,
+                content=content,
+                mime=file.content_type,
+                name=file.name,
+                user=request.user,
+                origin="uploaded",
+            )
+            import_job = ReceiptImportJob.objects.create(
+                tenant_id=request.user.tenant_id,
+                created_by=request.user,
+                file_version=original_version,
+                guessed_type="itinerary_receipt",
+                parser_status=extraction["status"],
+                confidence=extraction["confidence"],
+                raw_extraction=extraction["raw"],
+                warnings=extraction["warnings"],
+            )
+            ReceiptDraft.objects.create(
+                tenant_id=request.user.tenant_id,
+                import_job=import_job,
+                created_by=request.user,
+                issuer=fields.get("issuer") or "",
+                passenger_name=fields.get("passenger_name") or "",
+                fare=fields.get("fare"),
+                taxes=fields.get("taxes"),
+                total=fields.get("total"),
+                currency=fields.get("currency") or "",
+                segments=fields.get("segments") or [],
+            )
         return Response({"id": str(import_job.id)}, status=http.HTTP_201_CREATED)
 
 
@@ -321,6 +346,12 @@ class ReceiptImportResultView(APIView):
                 "parser_status": import_job.parser_status,
                 "confidence": str(import_job.confidence) if import_job.confidence else None,
                 "warnings": import_job.warnings,
+                "extracted": {
+                    "reference": (import_job.raw_extraction or {}).get("reference", ""),
+                    "ticket_number": (import_job.raw_extraction or {}).get("ticket_number", ""),
+                    "document_number": (import_job.raw_extraction or {}).get("document_number", ""),
+                    "date_of_birth": (import_job.raw_extraction or {}).get("date_of_birth", ""),
+                },
                 "draft": {
                     "issuer": draft.issuer,
                     "entity": draft.entity,
@@ -376,16 +407,74 @@ class ReceiptImportConfirmView(APIView):
             draft.total = total
             draft.currency = currency
             draft.confirmed_at = timezone.now()
-            document = Document.objects.create(
+            source_document = import_job.file_version.document if import_job.file_version_id else None
+            document = source_document or Document.objects.create(
                 tenant_id=request.user.tenant_id,
-                order=order,
                 kind="itinerary_receipt",
                 title=f"Квитанция {draft.passenger_name or ''}".strip(),
-                source="import",
-                amount=total,
-                currency=currency,
+                source="supplier",
                 created_by=request.user,
             )
+            document.order = order
+            document.title = f"Квитанция {draft.passenger_name or ''}".strip()
+            document.source = "corrected"
+            document.amount = total
+            document.currency = currency
+            document.metadata = {
+                **(document.metadata or {}),
+                "receipt_import": {
+                    "stage": "confirmed",
+                    "import_id": str(import_job.id),
+                    "parser_status": import_job.parser_status,
+                    "warnings": import_job.warnings,
+                    "corrected_fields": {
+                        "issuer": draft.issuer,
+                        "passenger_name": draft.passenger_name,
+                        "segments": draft.segments,
+                        "fare": str(fare),
+                        "taxes": str(taxes),
+                        "fees": str(fees),
+                        "total": str(total),
+                        "currency": currency,
+                    },
+                },
+            }
+            if order is not None and data.get("create_services", True):
+                from services.models import OrderService
+
+                service_type = str(data.get("service_type", "avia"))
+                kind_map = {
+                    "Авиа": "avia",
+                    "ЖД": "rail",
+                    "Гостиница": "hotel",
+                    "Трансфер": "transfer",
+                    "Автобус": "bus",
+                    "Тур": "tour",
+                    "Страхование": "insurance",
+                    "Виза": "visa",
+                    "Прочее": "other",
+                }
+                service = OrderService.objects.create(
+                    tenant_id=request.user.tenant_id,
+                    order=order,
+                    kind=kind_map.get(service_type, service_type if service_type in kind_map.values() else "other"),
+                    status=OrderService.Status.ISSUED,
+                    title=(draft.issuer or service_type or "Услуга") + (
+                        f" · {draft.passenger_name}" if draft.passenger_name else ""
+                    ),
+                    source=OrderService.Source.IMPORT,
+                    supplier_cost=quantize(fare + taxes, currency),
+                    agency_fee=fees,
+                    markup=Decimal(str(data.get("markup", "0"))),
+                    commission=Decimal(str(data.get("commission", "0"))),
+                    client_total=Decimal(str(data.get("client_total", total))),
+                    currency=currency,
+                    created_by=request.user,
+                    updated_by=request.user,
+                )
+                document.service = service
+                document.metadata["receipt_import"]["created_service"] = str(service.id)
+            document.save(update_fields=["order", "service", "title", "source", "amount", "currency", "metadata"])
             draft.result_document = document
             draft.save()
             content = (
@@ -400,6 +489,8 @@ class ReceiptImportConfirmView(APIView):
                 name="receipt.txt",
                 user=request.user,
                 origin="generated",
+                correction_reason="Подтверждённые данные после импорта; оригинал поставщика сохранён в v1",
+                correction_diff=document.metadata["receipt_import"]["corrected_fields"],
             )
         audit("documents.receipt_confirmed", actor=request.user, resource=document, request=request)
         return Response({"document_id": str(document.id), "total": str(total), "currency": currency})
