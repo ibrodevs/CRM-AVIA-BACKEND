@@ -180,6 +180,75 @@ class TestDocuments:
         assert body["draft"]["passenger_name"] == ""
         assert body["draft"]["fare"] is None
 
+    def test_receipt_import_confirm_creates_corrected_version_and_order_service(self, admin_client, order):
+        from documents.models import ReceiptImportJob
+        from services.models import OrderService
+
+        receipt = upload_file(
+            "service_receipt.txt",
+            (
+                "Passenger: IVANOV IVAN\n"
+                "Carrier: Test Air\n"
+                "PNR: ABC123\n"
+                "Ticket No: 5551234567890\n"
+                "Currency: USD\n"
+                "Fare: 250.00\n"
+                "Taxes: 42.50\n"
+                "Total: 292.50\n"
+            ).encode(),
+        )
+        response = admin_client.post("/api/v1/receipt-imports/", {"file": receipt}, format="multipart")
+        assert response.status_code == 201, response.content
+        import_job = ReceiptImportJob.objects.get(pk=response.json()["id"])
+        original_document = import_job.file_version.document
+        assert original_document.source == "supplier"
+        assert original_document.current_version == 1
+
+        confirm = admin_client.post(
+            f"/api/v1/receipt-imports/{response.json()['id']}/confirm/",
+            {
+                "issuer": "Test Air",
+                "passenger_name": "IVANOV IVAN EDITED",
+                "segments": [],
+                "fare": "250.00",
+                "taxes": "42.50",
+                "fees": "15.00",
+                "currency": "USD",
+                "order": order["id"],
+                "create_services": True,
+                "service_type": "Авиа",
+                "client_total": "320.00",
+                "markup": "55.00",
+                "commission": "7.00",
+            },
+            format="json",
+        )
+        assert confirm.status_code == 200, confirm.content
+
+        original_document.refresh_from_db()
+        assert str(original_document.id) == confirm.json()["document_id"]
+        assert str(original_document.order_id) == order["id"]
+        assert original_document.source == "corrected"
+        assert original_document.current_version == 2
+        versions = list(original_document.versions.order_by("version"))
+        assert versions[0].version == 1
+        assert versions[0].origin == "uploaded"
+        assert versions[0].original_name == "service_receipt.txt"
+        assert versions[1].version == 2
+        assert versions[1].origin == "generated"
+        assert versions[1].correction_reason
+
+        service = OrderService.objects.get(pk=original_document.service_id)
+        assert str(service.order_id) == order["id"]
+        assert service.kind == "avia"
+        assert service.source == OrderService.Source.IMPORT
+        assert service.supplier_cost == service.supplier_cost.__class__("292.50")
+        assert service.agency_fee == service.agency_fee.__class__("15.00")
+        assert service.markup == service.markup.__class__("55.00")
+        assert service.commission == service.commission.__class__("7.00")
+        assert service.client_total == service.client_total.__class__("320.00")
+        assert original_document.metadata["receipt_import"]["created_service"] == str(service.id)
+
     def test_receipt_import_extracts_russian_fields(self, admin_client):
         receipt = upload_file(
             "russian_receipt.txt",

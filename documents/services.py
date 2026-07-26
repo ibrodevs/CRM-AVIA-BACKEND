@@ -152,7 +152,9 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
         ],
     )
     reference = _first_match(text, [
-        r"\b(?:PNR|booking ref|бронь|код бронирования|номер брони)\s*[:\-]?\s*([A-Z0-9А-Я-]{5,12})",
+        r"\bbooking\s*(?:ref(?:erence)?|reference)\s*(?:/\s*PNR)?\s*[:\-]?\s*([A-Z0-9А-Я-]{5,12})",
+        r"\bPNR\s*[:\-]?\s*([A-Z0-9А-Я-]{5,12})",
+        r"\b(?:бронь|код бронирования|номер брони)\s*[:\-]?\s*([A-Z0-9А-Я-]{5,12})",
     ])
     ticket = _first_match(
         text,
