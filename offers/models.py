@@ -50,9 +50,16 @@ class Proposal(TenantModel):
         ARCHIVED = "archived"
 
     number = models.CharField(max_length=20)
-    order = models.ForeignKey("orders.Order", on_delete=models.PROTECT, related_name="proposals")
+    order = models.ForeignKey(
+        "orders.Order", null=True, blank=True, on_delete=models.PROTECT, related_name="proposals"
+    )
     type = models.CharField(max_length=32, blank=True)
     purpose = models.CharField(max_length=255, blank=True)
+    source = models.CharField(max_length=16, default="manual")
+    source_text = models.TextField(blank=True)
+    recipient = models.CharField(max_length=255, blank=True)
+    payment_terms = models.CharField(max_length=255, blank=True)
+    brief = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=14, choices=Status.choices, default=Status.DRAFT)
     currency = models.CharField(max_length=3, default="USD")
     valid_until = models.DateTimeField(null=True, blank=True)

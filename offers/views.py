@@ -68,6 +68,11 @@ class ProposalSerializer(serializers.ModelSerializer):
             "order",
             "type",
             "purpose",
+            "source",
+            "source_text",
+            "recipient",
+            "payment_terms",
+            "brief",
             "status",
             "currency",
             "valid_until",
@@ -99,6 +104,14 @@ def _get_proposal(request, proposal_id) -> Proposal:
 def _proposal_snapshot(proposal: Proposal) -> dict:
     return {
         "number": proposal.number,
+        "order": str(proposal.order_id) if proposal.order_id else None,
+        "type": proposal.type,
+        "purpose": proposal.purpose,
+        "source": proposal.source,
+        "source_text": proposal.source_text,
+        "recipient": proposal.recipient,
+        "payment_terms": proposal.payment_terms,
+        "brief": proposal.brief,
         "status": proposal.status,
         "currency": proposal.currency,
         "valid_until": proposal.valid_until.isoformat() if proposal.valid_until else None,
@@ -158,7 +171,8 @@ class ProposalListCreateView(GenericAPIView):
         self.check_permissions(request)
         serializer = ProposalSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        order = get_order_or_404(request.user, serializer.validated_data["order"].pk)
+        requested_order = serializer.validated_data.get("order")
+        order = get_order_or_404(request.user, requested_order.pk) if requested_order is not None else None
         with transaction.atomic():
             proposal = serializer.save(
                 tenant_id=request.user.tenant_id,
@@ -180,7 +194,9 @@ class ProposalListCreateView(GenericAPIView):
                     service = item_data.get("service")
                     offer = item_data.get("offer")
                     if service is not None and (
-                        service.tenant_id != request.user.tenant_id or service.order_id != order.id
+                        order is None
+                        or service.tenant_id != request.user.tenant_id
+                        or service.order_id != order.id
                     ):
                         raise ApiError(
                             code="VALIDATION_ERROR",
@@ -206,7 +222,7 @@ class ProposalListCreateView(GenericAPIView):
             actor=request.user,
             resource=proposal,
             request=request,
-            after={"order": str(order.id)},
+            after={"order": str(order.id) if order else None},
         )
         proposal.refresh_from_db()
         return Response(ProposalSerializer(proposal).data, status=http.HTTP_201_CREATED)
@@ -247,6 +263,14 @@ class ProposalDraftReplaceView(APIView):
                 proposal.currency = str(request.data.get("currency") or proposal.currency)[:3].upper()
             if "purpose" in request.data:
                 proposal.purpose = str(request.data.get("purpose") or "")
+            if "order" in request.data:
+                raw_order = request.data.get("order")
+                proposal.order = get_order_or_404(request.user, raw_order) if raw_order else None
+            for field in ("source", "source_text", "recipient", "payment_terms"):
+                if field in request.data:
+                    setattr(proposal, field, str(request.data.get(field) or ""))
+            if "brief" in request.data:
+                proposal.brief = request.data.get("brief") or {}
             if "valid_until" in request.data:
                 raw_valid_until = request.data.get("valid_until")
                 proposal.valid_until = parse_datetime(raw_valid_until) if raw_valid_until else None
@@ -267,7 +291,9 @@ class ProposalDraftReplaceView(APIView):
                     service = item_data.get("service")
                     offer = item_data.get("offer")
                     if service is not None and (
-                        service.tenant_id != request.user.tenant_id or service.order_id != proposal.order_id
+                        proposal.order_id is None
+                        or service.tenant_id != request.user.tenant_id
+                        or service.order_id != proposal.order_id
                     ):
                         raise ApiError(
                             code="VALIDATION_ERROR",
@@ -290,7 +316,22 @@ class ProposalDraftReplaceView(APIView):
                     )
             proposal.version += 1
             proposal.updated_by = request.user
-            proposal.save(update_fields=["currency", "purpose", "valid_until", "version", "updated_by", "updated_at"])
+            proposal.save(
+                update_fields=[
+                    "order",
+                    "currency",
+                    "purpose",
+                    "source",
+                    "source_text",
+                    "recipient",
+                    "payment_terms",
+                    "brief",
+                    "valid_until",
+                    "version",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
         proposal = Proposal.objects.prefetch_related("variants__items").get(pk=proposal.pk)
         audit(
             "offers.proposal_draft_replaced",
@@ -335,11 +376,12 @@ def _proposal_transition(request, proposal: Proposal, target: str, *, reason: st
     proposal.version += 1
     proposal.updated_by = request.user
     proposal.save(update_fields=["status", "version", "updated_by", "updated_at"])
-    emit_event(
-        "order.updated",
-        proposal.order,
-        payload={"action": "proposal_status", "proposal": str(proposal.id), "to": target},
-    )
+    if proposal.order_id:
+        emit_event(
+            "order.updated",
+            proposal.order,
+            payload={"action": "proposal_status", "proposal": str(proposal.id), "to": target},
+        )
     audit(
         f"offers.proposal_{target}",
         actor=request.user,
@@ -413,6 +455,12 @@ class ProposalApproveView(APIView):
             proposal.approved_variant = variant
             proposal.save(update_fields=["approved_variant"])
 
+            if request.data.get("create_services") and proposal.order_id is None:
+                raise ApiError(
+                    code="PROPOSAL_ORDER_REQUIRED",
+                    message="Чтобы создать услуги из выбранного варианта, сначала привяжите КП к заказу",
+                    status_code=409,
+                )
             if request.data.get("create_services"):
                 from services.models import OrderService
 

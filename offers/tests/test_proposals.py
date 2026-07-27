@@ -64,6 +64,79 @@ class TestProposalLifecycle:
         assert len(proposal["variants"]) == 2
         assert proposal["status"] == "draft"
 
+    def test_create_standalone_proposal_without_order(self, admin_client):
+        response = admin_client.post(
+            "/api/v1/proposals/",
+            {
+                **PROPOSAL,
+                "source": "chat",
+                "source_text": "Нужен Бишкек — Стамбул на двоих и гостиница",
+                "recipient": "ОсОО Клиент",
+                "payment_terms": "100% до подтверждения",
+                "brief": {"route": "Бишкек — Стамбул", "passengers": 2},
+            },
+            format="json",
+        )
+        assert response.status_code == 201, response.content
+        proposal = response.json()
+        assert proposal["order"] is None
+        assert proposal["source"] == "chat"
+        assert proposal["brief"]["passengers"] == 2
+
+    def test_standalone_proposal_can_be_prepared_and_sent(self, admin_client):
+        created = admin_client.post(
+            "/api/v1/proposals/",
+            {**PROPOSAL, "source": "manual"},
+            format="json",
+        ).json()
+        prepared = admin_client.post(
+            f"/api/v1/proposals/{created['id']}/prepare/",
+            {"version": created["version"]},
+            format="json",
+        )
+        assert prepared.status_code == 200, prepared.content
+        sent = admin_client.post(
+            f"/api/v1/proposals/{created['id']}/send/",
+            {"version": prepared.json()["version"]},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="standalone-send",
+        )
+        assert sent.status_code == 200, sent.content
+        assert sent.json()["status"] == "sent"
+        versions = admin_client.get(f"/api/v1/proposals/{created['id']}/versions/").json()
+        assert versions[0]["snapshot"]["order"] is None
+        assert versions[0]["snapshot"]["source"] == "manual"
+
+    def test_standalone_approval_does_not_create_order_services(self, admin_client):
+        created = admin_client.post(
+            "/api/v1/proposals/",
+            {**PROPOSAL, "source": "manual"},
+            format="json",
+        ).json()
+        prepared = admin_client.post(
+            f"/api/v1/proposals/{created['id']}/prepare/",
+            {"version": created["version"]},
+            format="json",
+        ).json()
+        sent = admin_client.post(
+            f"/api/v1/proposals/{created['id']}/send/",
+            {"version": prepared["version"]},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="standalone-send-for-approval",
+        ).json()
+        response = admin_client.post(
+            f"/api/v1/proposals/{created['id']}/approve/",
+            {
+                "variant": sent["variants"][0]["id"],
+                "version": sent["version"],
+                "create_services": True,
+            },
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="standalone-approve-services",
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "PROPOSAL_ORDER_REQUIRED"
+
     def test_item_service_must_belong_to_proposal_order(self, admin_client, order, tenant, admin_user):
         from crm.models import Person
 
