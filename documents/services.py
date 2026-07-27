@@ -1,7 +1,9 @@
 import hashlib
 import re
+import unicodedata
 import zlib
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 
 from django.core.files.base import ContentFile
 
@@ -31,6 +33,7 @@ RU_MONTHS = {
     "МАР": 3,
     "АПР": 4,
     "МАЙ": 5,
+    "МАЯ": 5,
     "ИЮН": 6,
     "ИЮЛ": 7,
     "АВГ": 8,
@@ -178,31 +181,68 @@ def _extract_pdf_text_fragments(text: str) -> list[str]:
     return chunks
 
 
+def _clean_extracted_text(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text or "")
+    text = text.replace("\x00", "").replace("\xa0", " ").replace("\r", "\n").replace("\f", "\n")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
+def _pdf_text_score(text: str) -> int:
+    if not text:
+        return -10_000
+    controls = sum(1 for char in text if ord(char) < 32 and char not in "\n\t")
+    letters = sum(1 for char in text if char.isalpha())
+    labels = len(
+        re.findall(
+            r"пассажир|билет|брон|маршрут|заезд|отправлен|стоимост|итого|total|passenger|ticket",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    return letters + labels * 80 + min(text.count("\n"), 250) * 2 - controls * 100
+
+
 def _extract_pdf_text(content: bytes) -> str:
-    chunks: list[str] = []
+    candidates: list[str] = []
     try:
         from pypdf import PdfReader  # type: ignore
 
-        from io import BytesIO
-
-        reader = PdfReader(BytesIO(content))
-        chunks.extend((page.extract_text() or "") for page in reader.pages)
+        reader = PdfReader(BytesIO(content), strict=False)
+        pages = []
+        for page in reader.pages:
+            try:
+                pages.append(page.extract_text() or "")
+            except Exception:
+                continue
+        candidates.append("\n".join(pages))
     except Exception:
         pass
 
+    try:
+        from pdfminer.high_level import extract_text  # type: ignore
+
+        candidates.append(extract_text(BytesIO(content)))
+    except Exception:
+        pass
+
+    raw_chunks: list[str] = []
     for match in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", content, flags=re.DOTALL):
         raw = match.group(1).strip(b"\r\n")
-        candidates = [raw]
+        stream_candidates = [raw]
         try:
-            candidates.append(zlib.decompress(raw))
+            stream_candidates.append(zlib.decompress(raw))
         except zlib.error:
             pass
-        for candidate in candidates:
+        for candidate in stream_candidates:
             text = candidate.decode("latin-1", errors="ignore")
             extracted = _extract_pdf_text_fragments(text)
             if extracted:
-                chunks.append("\n".join(extracted))
-    return "\n".join(chunk for chunk in chunks if chunk)
+                raw_chunks.append("\n".join(extracted))
+    candidates.append("\n".join(raw_chunks))
+
+    cleaned = [_clean_extracted_text(candidate) for candidate in candidates]
+    return max(cleaned, key=_pdf_text_score, default="")
 
 
 def _first_match(text: str, patterns: list[str]) -> str:
@@ -294,6 +334,7 @@ def _first_currency(text: str) -> str:
             r"(?:валюта|currency)\s*[:\-]?\s*(USD|EUR|RUB|KGS|KZT|сом|руб\.?|₽|\$|€)",
             r"\b(USD|EUR|RUB|KGS|KZT)\b",
             r"\b(USD|EUR|RUB|KGS|KZT)(?=\d)",
+            r"\b(сом|руб\.?)\b",
             r"([₽$€])",
         ],
     ).upper()
@@ -308,7 +349,7 @@ def _normalize_date(value: str) -> str:
         if len(year) == 2:
             year = "20" + year
         return f"{int(day):02d}.{int(month):02d}.{year}"
-    match = re.search(r"\b(\d{1,2})\s*([А-ЯЁA-Z]{3})\s*(\d{2,4})?\b", value, flags=re.IGNORECASE)
+    match = re.search(r"\b(\d{1,2})\s*([А-ЯЁA-Z]{3,9})\s*(\d{2,4})?\b", value, flags=re.IGNORECASE)
     if not match:
         return value
     day, month_name, year = match.groups()
@@ -341,6 +382,637 @@ def _extract_issue_year(text: str) -> str:
     normalized = _normalize_date(value)
     match = re.search(r"\b(20\d{2})\b", normalized)
     return match.group(1) if match else ""
+
+
+def _date_parts(value: str, *, default_year: str = "") -> str:
+    normalized = _normalize_date(value)
+    if default_year and re.fullmatch(r"\d{2}\.\d{2}", normalized):
+        normalized = f"{normalized}.{default_year}"
+    return normalized
+
+
+def _first_labeled_value(
+    text: str,
+    labels: list[str],
+    *,
+    lookahead_lines: int = 6,
+    reject: str = "",
+) -> str:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        for label in labels:
+            match = re.search(label, line, flags=re.IGNORECASE)
+            if not match:
+                continue
+            inline = line[match.end() :].strip(" :;-")
+            values = ([inline] if inline else []) + lines[index + 1 : index + 1 + lookahead_lines]
+            for value in values:
+                value = value.strip(" :;-")
+                if not value or re.search(
+                    r"^(?:name(?: of (?:passenger|guest))?|passenger|traveller|guest|фамилия|имя|пассажир|гост[ьи]|номер|"
+                    r"ticket|document|e-ticket|order|заказ|выдан|issued|carrier|перевозчик)$",
+                    value,
+                    flags=re.IGNORECASE,
+                ):
+                    continue
+                if reject and re.search(reject, value, flags=re.IGNORECASE):
+                    continue
+                return value
+    return ""
+
+
+def _money_near_label(
+    text: str,
+    labels: list[str],
+    *,
+    window: int = 700,
+    allow_bare: bool = True,
+    prefer_max: bool = False,
+) -> tuple[Decimal | None, str]:
+    currency_pattern = r"USD|EUR|RUB|KGS|KZT|СОМ|РУБ\.?|₽|\$|€|CNY"
+    amount_pattern = r"-?\d[\d ]*(?:[,.]\s*\d{1,2})?"
+    for label in labels:
+        match = re.search(label, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        fragment = text[match.end() : match.end() + window]
+        currency_matches = list(re.finditer(
+            rf"(?:(?P<before>{currency_pattern})\s*)?(?P<amount>{amount_pattern})\s*(?P<after>{currency_pattern})",
+            fragment,
+            flags=re.IGNORECASE,
+        ))
+        if not currency_matches:
+            currency_matches = list(re.finditer(
+                rf"(?P<before>{currency_pattern})\s*(?P<amount>{amount_pattern})",
+                fragment,
+                flags=re.IGNORECASE,
+            ))
+        parsed_matches = []
+        for currency_match in currency_matches:
+            amount = currency_match.group("amount").replace(" ", "").replace(",.", ".").replace(", ", ",")
+            try:
+                value = Decimal(amount.replace(",", "."))
+            except InvalidOperation:
+                continue
+            currency = _first_currency(currency_match.group("before") or currency_match.groupdict().get("after") or "")
+            parsed_matches.append((value, currency))
+        if parsed_matches:
+            return max(parsed_matches, key=lambda item: item[0]) if prefer_max else parsed_matches[0]
+        if allow_bare:
+            for line in fragment.splitlines()[:8]:
+                number = re.search(r"-?\d[\d ]*(?:[,.]\d{1,2})?", line)
+                if not number or re.search(r"\d{1,2}[.:]\d{2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}", line):
+                    continue
+                try:
+                    return Decimal(number.group(0).replace(" ", "").replace(",", ".")), ""
+                except InvalidOperation:
+                    continue
+    return None, ""
+
+
+def _normalize_person(value: str) -> str:
+    value = re.sub(r"\s+(?:MR|MRS|MS|Г-Н|Г-ЖА)$", "", value.strip(), flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", value.replace("/", " ")).strip(" ,")
+
+
+def _extract_passenger(text: str, *, service_kind: str) -> str:
+    if service_kind == "transfer":
+        match = re.search(
+            r"Примечания\s*\n([А-ЯЁA-Z][А-ЯЁA-Za-z'-]+(?:\s+[А-ЯЁA-Z][А-ЯЁA-Za-z'-]+){1,3})\s*\n\+?\d",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return _normalize_person(match.group(1))
+
+    if service_kind == "hotel":
+        guests = re.search(r"Гости\s*:\s*\n(?P<body>.*?)(?=\nВажная информация)", text, flags=re.IGNORECASE | re.DOTALL)
+        if guests:
+            names = [
+                line.strip(" ,")
+                for line in guests.group("body").splitlines()
+                if re.search(r"[A-Za-zА-ЯЁа-яё]", line)
+            ]
+            if names:
+                return ", ".join(names)
+
+    passenger = _first_match(
+        text,
+        [
+            r"(?:^|\n)\s*(?:passenger|traveller|фио)\b\s*[:\-]?\s*([^\n]+)",
+            r"(?:^|\n)\s*фамилия\s*[:\-]\s*([^\n]+)",
+            r"(?:^|\n)\s*(?:имя гостя|guest name)\s*[:\-]?\s*([^\n]+)",
+        ],
+    )
+    if passenger:
+        return _normalize_person(passenger)
+
+    passenger = _first_labeled_value(
+        text,
+        [
+            r"^(?:пассажир|passenger)$",
+            r"^фамилия пассажира$",
+            r"^имя гостя\s*:?$",
+            r"^гости\s*:?$",
+        ],
+        lookahead_lines=8,
+        reject=r"телефон|таблич|примечан|данные|авиакомпан|кроват|важная|^[+\d]",
+    )
+    if passenger:
+        return _normalize_person(passenger)
+
+    if service_kind == "rail":
+        patterns = [
+            r"\n([А-ЯЁ]{2,}(?:\s+[А-ЯЁ]{2,}){2,3})\s*\n(?:Посадка|ПН)",
+            r"\n([А-ЯЁ]{2,}\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.)\s*\nПН",
+        ]
+        passenger = _first_match(text, patterns)
+        if passenger:
+            return _normalize_person(passenger)
+    return ""
+
+
+def _extract_reference(text: str, *, service_kind: str) -> str:
+    reference = _first_match(
+        text,
+        [
+            r"\bкод бронирования\s*[:\-]?\s*([A-Z0-9А-Я-]{5,16})",
+            r"\bbooking\s*(?:ref(?:erence)?|reference)\s*(?:/\s*PNR)?\s*[:\-]?\s*([A-Z0-9А-Я-]{5,16})",
+            r"\bPNR\s*[:\-]?\s*([A-Z0-9А-Я-]{5,16})",
+            r"\bбронирование\s+([0-9]{6,16})",
+            r"\bзаказ\b\s*(?:№|No)?\s*[:\-]?\s*([A-ZА-Я0-9-]*\d[A-ZА-Я0-9-]{4,19})",
+            r"\bномер заказа\b(?:\s*Order number)?\s*([0-9]{6,20})",
+        ],
+    )
+    if reference:
+        return reference
+    if service_kind == "transfer":
+        reference = _first_labeled_value(text, [r"^Заказ$"], lookahead_lines=5, reject=r"^Заказ$")
+        if re.search(r"\d", reference):
+            return reference
+    if service_kind == "avia":
+        marker = re.search(r"КОД БРОНИРОВАНИЯ(?P<body>.{0,500})", text, flags=re.IGNORECASE | re.DOTALL)
+        if marker:
+            codes = re.findall(r"(?:^|\n)\s*:?\s*([A-Z0-9]{6})\s*(?:\n|$)", marker.group("body"))
+            if codes:
+                return codes[0]
+    return ""
+
+
+def _extract_ticket_number(text: str, *, service_kind: str) -> str:
+    if service_kind == "avia":
+        patterns = [
+            r"(?:номер билета|ticket number)\s*[:\-]?\s*(?:Ticket number\s*)?(\d{3}\s+\d{10}|\d{10,13})",
+            r"\b(\d{3}\s+\d{10})\b",
+        ]
+    elif service_kind == "rail":
+        patterns = [
+            r"(?:электронный билет\s*\(номер\)|e-ticket number)\s*(?:E-ticket number\s*)?(\d{13,16})",
+            r"(?:номер квитанции|receipt number)\s*(\d{13,16})",
+            r"(?:№|No)\s*([\d ]{13,20})",
+        ]
+    else:
+        patterns = [r"(?:ваучер|voucher)\s*(?:№|number)?\s*[:\-]?\s*([A-ZА-Я0-9-]{5,20})"]
+    ticket = _first_match(text, patterns)
+    if ticket:
+        return re.sub(r"\s+", " ", ticket).strip()
+
+    marker = re.search(r"НОМЕР БИЛЕТА(?P<body>.{0,400})", text, flags=re.IGNORECASE | re.DOTALL)
+    if marker:
+        values = re.findall(r"(?:^|\n)\s*:?\s*(\d{10,13}|\d{3}\s+\d{10})\s*(?:\n|$)", marker.group("body"))
+        if values:
+            return values[0]
+    return ""
+
+
+def _city_code(value: str) -> tuple[str, str]:
+    match = re.match(r"(.+?),\s*([A-Z]{3})$", value.strip())
+    return (match.group(1).strip(), match.group(2)) if match else (value.strip(), "")
+
+
+def _avia_segments(text: str) -> list[dict]:
+    route_codes = _first_match(text, [r"ОТПРВ/НАЗН\s*:\s*([A-Z]{6})"])
+    if route_codes:
+        from_code, to_code = route_codes[:3], route_codes[3:]
+        lines = text.splitlines()
+        from_name = from_code
+        to_name = to_code
+        for index, line in enumerate(lines):
+            if re.match(rf"^{from_code}\s*/", line):
+                names = [value for value in lines[max(0, index - 2) : index] if not re.search(r"МАРШРУТ", value)]
+                from_name = " ".join(names)
+            if line == to_code and index:
+                to_name = lines[index - 1]
+        flight_match = re.search(r"\b([A-Z0-9]{2})-\s*\n?\s*(\d{2,5})\b", text)
+        schedule = re.search(
+            r"ОТПР\s*\n?\s*(\d{1,2}[А-ЯЁ]{3})\s+(\d{3,4}).*?ПРИБ\s*\n?\s*(\d{3,4})",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        date = schedule.group(1) if schedule else ""
+        year = _extract_issue_year(text)
+        return [{
+            "from": re.sub(r"\s+", " ", from_name),
+            "fromCode": from_code,
+            "to": re.sub(r"\s+", " ", to_name),
+            "toCode": to_code,
+            "date": _date_parts(date, default_year=year),
+            "dep": _format_time(schedule.group(2)) if schedule else "",
+            "arr": _format_time(schedule.group(3)) if schedule else "",
+            "flightNo": "".join(flight_match.groups()) if flight_match else "",
+            "dir": "out",
+        }]
+
+    city_blocks = re.findall(
+        r"(?m)^([^\n]{2,80},\s*[A-Z]{3})\s*\n(\d{1,2}:\d{2})\s*\n(?:[^\n]*,\s*)?"
+        r"(\d{1,2}\s+[А-ЯЁA-Z]{3,8}\s+20\d{2})$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if len(city_blocks) >= 2:
+        by_date: dict[str, list[tuple[str, str]]] = {}
+        for city, time, date in city_blocks:
+            by_date.setdefault(_normalize_date(date), []).append((city, time))
+        flight_by_route = {
+            (from_code, to_code): flight
+            for flight, from_code, to_code in re.findall(
+                r"\b([A-Z0-9]{2}-\d{2,5})\s+([A-Z]{3})\s*[-–—]\s*([A-Z]{3})\b", text
+            )
+        }
+        segments = []
+        for date, stops in by_date.items():
+            if len(stops) < 2:
+                continue
+            (from_value, dep), (to_value, arr) = stops[:2]
+            from_name, from_code = _city_code(from_value)
+            to_name, to_code = _city_code(to_value)
+            segments.append({
+                "from": from_name,
+                "fromCode": from_code,
+                "to": to_name,
+                "toCode": to_code,
+                "date": date,
+                "dep": dep,
+                "arr": arr,
+                "flightNo": flight_by_route.get((from_code, to_code), ""),
+                "dir": "out" if not segments else ("back" if to_code == segments[0]["fromCode"] else "seg"),
+            })
+        if segments:
+            return segments
+
+    if "Рейс/Flight" in text and "Номер билета" in text:
+        prefix = text[: text.find("Номер билета")]
+        names = [
+            line for line in prefix.splitlines()
+            if re.fullmatch(r"[А-ЯЁ][А-ЯЁа-яё .'-]{2,50}", line)
+            and not re.search(r"Электрон|Фамилия|Документ|Маршрут|Билет", line, flags=re.IGNORECASE)
+        ]
+        flight = re.search(r"\b([A-ZА-Я]{2})\s*[- ]?\s*(\d{2,5})\b", text)
+        dates = re.findall(r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{4})\b", text)
+        times = re.findall(r"\b(\d{1,2}:\d{2})\b", text)
+        if len(names) >= 2 and flight and dates and len(times) >= 2:
+            return [{
+                "from": names[-2],
+                "fromCode": "",
+                "to": names[-1],
+                "toCode": "",
+                "date": _normalize_date(dates[0]),
+                "dep": times[0],
+                "arr": times[1],
+                "flightNo": "".join(flight.groups()),
+                "dir": "out",
+            }]
+
+    route = re.search(r"(?m)^([А-ЯЁA-Z][^\n]{2,40})\s+([А-ЯЁA-Z][^\n]{2,40})\s*$", text)
+    flight = re.search(r"\b([A-ZА-Я]{2})\s*[- ]?\s*(\d{2,5})\b", text)
+    dates = re.findall(r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{4})\b", text)
+    times = re.findall(r"\b(\d{1,2}:\d{2})\b", text)
+    if route and flight and dates and len(times) >= 2:
+        return [{
+            "from": route.group(1).strip(),
+            "fromCode": "",
+            "to": route.group(2).strip(),
+            "toCode": "",
+            "date": _normalize_date(dates[0]),
+            "dep": times[-2],
+            "arr": times[-1],
+            "flightNo": "".join(flight.groups()),
+            "dir": "out",
+        }]
+    return []
+
+
+def _rail_segments(text: str) -> list[dict]:
+    train = _first_match(text, [
+        r"(?:Поезд|Поезда)\s*(?:\n|:)\s*(?:Train\s*\n)?([0-9][0-9A-ZА-Я]{2,11})",
+        r"\b([0-9]{3,4}[A-ZА-Я]{0,2})\s+\d{1,2}[./]\d{1,2}[./]\d{4}\s+\d{1,2}:\d{2}",
+    ])
+    if len(train) % 2 == 0 and train[: len(train) // 2] == train[len(train) // 2 :]:
+        train = train[: len(train) // 2]
+    route = re.search(
+        r"(\d{1,2}[./]\d{1,2}(?:[./]\d{4})?)\s*\n(\d{1,2}:\d{2})\s*\n"
+        r"([А-ЯЁA-Z][А-ЯЁA-Z0-9 .'-]{2,50})\s*\n(?:->\s*)?"
+        r"([А-ЯЁA-Z][А-ЯЁA-Z0-9 .'-]{2,50})\s*\n"
+        r"(\d{1,2}[./]\d{1,2}(?:[./]\d{4})?)\s*\n(\d{1,2}:\d{2})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if route:
+        date, dep, from_name, to_name, _arrival_date, arr = route.groups()
+        return [{
+            "from": from_name,
+            "fromCode": "",
+            "to": to_name,
+            "toCode": "",
+            "date": _date_parts(
+                date,
+                default_year=_first_match(text, [r"Год совершения поездки\s*:\s*(20\d{2})"]) or _extract_issue_year(text),
+            ),
+            "dep": dep,
+            "arr": arr,
+            "flightNo": train,
+            "dir": "out",
+        }]
+
+    departure = re.search(
+        r"(?:Отправление|Departure)(?P<body>.{0,350}?)(?:Прибытие|Arrival)(?P<arrival>.{0,350})",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if departure:
+        body, arrival = departure.group("body"), departure.group("arrival")
+        from_name = _first_match(body, [r"\n([А-ЯЁ][А-ЯЁA-Z0-9 .'-]{3,50})\n\d{1,2}[./]\d{1,2}[./]\d{4}"])
+        to_name = _first_match(arrival, [r"\n([А-ЯЁ][А-ЯЁA-Z0-9 .'-]{3,50})\n\d{1,2}[./]\d{1,2}[./]\d{4}"])
+        dep_date = _first_match(body, [r"(\d{1,2}[./]\d{1,2}[./]\d{4})"])
+        dep_time = _first_match(body, [r"(\d{1,2}:\d{2})"])
+        arr_time = _first_match(arrival, [r"(\d{1,2}:\d{2})"])
+        if from_name and to_name:
+            return [{
+                "from": from_name,
+                "fromCode": "",
+                "to": to_name,
+                "toCode": "",
+                "date": _normalize_date(dep_date),
+                "dep": dep_time,
+                "arr": arr_time,
+                "flightNo": train,
+                "dir": "out",
+            }]
+
+    stations = []
+    for pattern in [r"(?i)(?:М|M)?ОСКВА[^\n;]*", r"(?i)(?:Р|R)?ЯЗАНЬ[^\n;]*"]:
+        match = re.search(pattern, text)
+        if match:
+            stations.append(match.group(0).strip())
+    leading = text[: text.find("Возврат онлайн") if "Возврат онлайн" in text else len(text)]
+    times = list(dict.fromkeys(re.findall(r"\b(\d{1,2}:\d{2})\b", leading)))
+    dates = re.findall(r"\b(\d{1,2}[./]\d{1,2}[./]\d{4})\b", leading)
+    if len(stations) >= 2 and len(times) >= 2 and dates:
+        return [{
+            "from": re.sub(r"^(?:ММ|MМ|M)?(?=осква)", "М", stations[0], flags=re.IGNORECASE),
+            "fromCode": "",
+            "to": re.sub(r"^(?:РР|RР|R)?(?=язань)", "Р", stations[1], flags=re.IGNORECASE),
+            "toCode": "",
+            "date": _normalize_date(dates[0]),
+            "dep": times[0],
+            "arr": times[1],
+            "flightNo": train,
+            "dir": "out",
+        }]
+    return []
+
+
+def _hotel_segment(text: str) -> tuple[list[dict], str, str]:
+    hotel = _first_match(text, [
+        r"Название отеля\s*:\s*([^\n]+)",
+        r"Размещение забронировано нашим партнером\s*\n(?:Пассажирский Сервисный Центр\s*\n)?"
+        r"(?:\+?[\d ]+\s*\n)?([^\n]+)",
+    ])
+    if not hotel:
+        hotel = _first_labeled_value(text, [r"^Название отеля\s*:?$"], lookahead_lines=3)
+    checkin = _first_match(text, [
+        r"Дата заезда\s*/\s*Дата\s*\n?выезда\s*:\s*(\d{1,2}[./]\d{1,2}[./]\d{4}\s+\d{1,2}:\d{2})",
+        r"Заезд\s*\n(\d{1,2}[./]\d{1,2}[./]\d{4}(?:,\s*с)?\s*\n?\d{1,2}:\d{2}(?::\d{2})?)",
+    ])
+    checkout = _first_match(text, [
+        r"Дата заезда\s*/\s*Дата\s*\n?выезда\s*:\s*[^\n/]+\s*/\s*(\d{1,2}[./]\d{1,2}[./]\d{4}\s+\d{1,2}:\d{2})",
+        r"Выезд\s*\n(\d{1,2}[./]\d{1,2}[./]\d{4}(?:,\s*до)?\s*\n?\d{1,2}:\d{2}(?::\d{2})?)",
+    ])
+
+    def split_stay(value: str) -> tuple[str, str]:
+        date = _first_match(value, [r"(\d{1,2}[./]\d{1,2}[./]\d{4})"])
+        time = _first_match(value, [r"(\d{1,2}:\d{2})"])
+        return _normalize_date(date), time
+
+    start_date, start_time = split_stay(checkin)
+    end_date, end_time = split_stay(checkout)
+    room = _first_match(text, [
+        r"Категория номера\s*:\s*([^\n]+)",
+        r"(Стандартный номер[^\n]+)",
+        r"(Двухместный люкс[^\n]+)",
+    ])
+    if hotel and start_date:
+        return [{
+            "from": "",
+            "fromCode": "",
+            "to": hotel.strip(" «»"),
+            "toCode": "",
+            "date": start_date,
+            "endDate": end_date,
+            "dep": start_time,
+            "arr": end_time,
+            "flightNo": room,
+            "dir": "out",
+        }], hotel.strip(" «»"), room
+    return [], hotel.strip(" «»"), room
+
+
+def _transfer_segments(text: str) -> list[dict]:
+    blocks = re.findall(
+        r"\+?\d[\d -]{8,}\s*\n(?P<route>.*?)\nСтоимость\s*\n(?P<details>.*?)(?=\nУсловия изменения|\nПассажиры|\nИтого)",
+        text,
+        flags=re.DOTALL,
+    )
+    segments = []
+    for index, (route_block, details) in enumerate(blocks[:2]):
+        route_lines = []
+        for line in route_block.splitlines():
+            value = line.strip().rstrip("–— ").strip()
+            if value and (not route_lines or value != route_lines[-1]):
+                route_lines.append(value)
+        if len(route_lines) < 2:
+            continue
+        dates = re.findall(r"\b(\d{1,2}[./]\d{1,2}[./]\d{4})\b", details)
+        times = list(dict.fromkeys(re.findall(r"(?m)^(\d{1,2}:\d{2})\s*$", details)))
+        segments.append({
+            "from": route_lines[0],
+            "fromCode": "",
+            "to": route_lines[-1],
+            "toCode": "",
+            "date": _normalize_date(dates[0] if dates else ""),
+            "dep": times[0] if times else "",
+            "arr": "",
+            "flightNo": "",
+            "dir": "out" if index == 0 else "back",
+        })
+    return segments
+
+
+def _structured_receipt_fields(text: str, *, service_kind: str) -> dict:
+    passenger = _extract_passenger(text, service_kind=service_kind)
+    reference = _extract_reference(text, service_kind=service_kind)
+    ticket = _extract_ticket_number(text, service_kind=service_kind)
+    document_number = _first_match(text, [
+        r"(?:Документ\s*\n/Document|Документ/Document|Номер документа|ПАСПОРТ РФ|ПСП)"
+        r"\s*[:\-]?\s*([A-ZА-Я]{0,3}\s*\d{6,14})",
+        r"\b(ПСП\d{6,14})\b",
+    ])
+    dob = _first_match(text, [
+        r"(?:дата рождения|dob|date of birth)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+        r"(?:ПН[^\n]*[/\s])(\d{1,2}[./-]\d{1,2}[./-]\d{4})",
+        r"(?:ПАСПОРТ РФ[^\n]*\n)(\d{1,2}[./-]\d{1,2}[./-]\d{4})",
+    ])
+    issue_date = _normalize_date(_first_match(text, [
+        r"(?:Date of issue|Дата выдачи|Дата оформления|ДАТА)\s*[:\-]?\s*(\d{1,2}(?:[./-]\d{1,2}[./-]\d{2,4}|[А-ЯЁ]{3}\d{2,4}))",
+        r"(?:Продажа|Забронировано)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+    ]))
+    if not issue_date:
+        issue_candidate = _first_labeled_value(
+            text,
+            [r"^Дата выдачи$", r"^Date of issue$"],
+            lookahead_lines=4,
+            reject=r"^Date of issue$",
+        )
+        if re.search(r"\d", issue_candidate):
+            issue_date = _normalize_date(issue_candidate)
+    booking_class = _first_match(text, [
+        r"(?:Класс/Class|Class|Класс обслуживания)\s*[:\-]?\s*([A-ZА-Я0-9]{1,8})",
+        r"(?m)^\s*([A-Z])\s*\n\s*ВРЕМЯ ПРИБ",
+    ])
+    if service_kind == "rail":
+        booking_class = _first_match(text, [r"(?m)^([123][A-ZА-Я])$"]) or booking_class
+    fare_basis = _first_match(text, [
+        r"(?:Вид тарифа/Fare basis|Fare basis|Тарифный код)\s*[:\-]?\s*([A-ZА-Я0-9-]{2,32})",
+        r"(?m)^ТАРИФ\s*\n((?!СБОР|БАГАЖ|СТАТУС)[A-ZА-Я0-9-]{3,32})$",
+    ])
+    baggage = _first_match(text, [
+        r"(?:Багаж\s*\n/Baggage allow:|Baggage allow|Baggage|Багаж)\s*[:\-]?\s*([^\n]+)",
+        r"(?m)^БАГ\s*\n([0-9]+\s*(?:PC|KG|КМ))$",
+        r"(?m)^([0-9]+\s*(?:PC|KG|КМ))$",
+    ])
+    hand_baggage = _first_match(text, [r"Ручная кладь\s*[:\-]?\s*([^\n.]+)"])
+    if service_kind == "avia":
+        standalone_baggage = _first_match(text, [r"(?m)^([0-9]+\s*(?:PC|KG|КМ))$"])
+        baggage = standalone_baggage or baggage
+    else:
+        baggage = ""
+        hand_baggage = ""
+
+    issuer = _first_match(text, [
+        r"(?:Выдан от/Issued by)\s*[:\-]?\s*([^\n]+)",
+        r"(?m)^(?:Carrier|Перевозчик)(?:\s*\([^)]*\))?\s*:\s*([^\n]+)",
+        r"Рейс под брендом авиакомпании\s+([^\n]+)",
+    ])
+    if not issuer and service_kind == "avia":
+        issuer = _first_labeled_value(text, [r"^ВЫДАН ОТ$"], lookahead_lines=8, reject=r"номер|обмен|первон")
+    if not issuer and service_kind == "rail":
+        issuer = _first_labeled_value(
+            text,
+            [r"^Перевозчик(?:\s*\([^)]*\))?\s*:?$"],
+            lookahead_lines=5,
+            reject=r"^[CС]arrier",
+        )
+    if service_kind == "avia":
+        fare_codes = re.findall(r"\b[A-Z0-9]{2}-\d{2,5}\s+[A-Z]{3}\s*[-–—]\s*[A-Z]{3}\s*\(([A-Z0-9-]+)\)", text)
+        if fare_codes:
+            fare_basis = " / ".join(dict.fromkeys(fare_codes))
+        if not booking_class:
+            booking_class = _first_match(text, [r"(?m)^(ECONOMY|BUSINESS|ЭКОНОМ|БИЗНЕС)$"])
+
+    if service_kind == "hotel":
+        segments, hotel, _room = _hotel_segment(text)
+        issuer = hotel or issuer
+    elif service_kind == "transfer":
+        segments = _transfer_segments(text)
+    elif service_kind == "rail":
+        segments = _rail_segments(text)
+    else:
+        segments = _avia_segments(text)
+
+    total_labels = [
+        r"ВСЕГО К ОПЛАТЕ",
+        r"\bИтого\b",
+        r"\bTotal\b",
+        r"\bСТОИМОСТЬ\s*:",
+        r"(?:Цена|Price),?\s*(?:Руб|RUB)",
+    ]
+    total, total_currency = _money_near_label(text, total_labels, prefer_max=True)
+    fare, fare_currency = _money_near_label(
+        text,
+        [r"\bТариф/Fare\b", r"\bFare\b", r"Тариф\s*\(билет", r"Тариф билета", r"\bТАРИФ\b"],
+        window=500,
+    )
+    taxes, tax_currency = _money_near_label(text, [r"СБОР/TAX", r"\bTaxes\b", r"\bТаксы\b"], window=400)
+    fee_breakdown = _fee_breakdown(text)
+    included_fee_layout = re.search(
+        r"СТОИМОСТЬ:.*?СБОР АСБ:.*?СБОР СА:(?P<body>.{0,1000})",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if included_fee_layout:
+        amounts = re.findall(
+            r"(?m)^(\d[\d ]*(?:[,.]\d{1,2})?)\s*РУБ",
+            included_fee_layout.group("body"),
+            flags=re.IGNORECASE,
+        )
+        if len(amounts) >= 3:
+            fee_breakdown = [
+                {"code": "ASB", "label": "Сбор АСБ", "amount": str(Decimal(amounts[1].replace(" ", "").replace(",", "."))), "currency": "RUB"},
+                {"code": "SA", "label": "Сбор СА", "amount": str(Decimal(amounts[2].replace(" ", "").replace(",", "."))), "currency": "RUB"},
+            ]
+    fees = sum((Decimal(row["amount"]) for row in fee_breakdown), Decimal("0")) if fee_breakdown else None
+    currency = total_currency or fare_currency or tax_currency or _first_currency(text)
+
+    calculation_layout = re.search(
+        r"РАСЧЕТ ТАРИФА:.*?ТАРИФ.*?СБОР/TAX.*?ВСЕГО К ОПЛАТЕ(?P<body>.{0,1000})",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if calculation_layout:
+        amounts = re.findall(r":\s*RUB\s*(\d[\d ]*(?:[,.]\d{1,2})?)", calculation_layout.group("body"))
+        if len(amounts) >= 3:
+            fare, taxes, total = [Decimal(value.replace(" ", "").replace(",", ".")) for value in amounts[:3]]
+            currency = "RUB"
+
+    if service_kind in {"rail", "transfer"} and total is not None:
+        fare, taxes, fees = total, Decimal("0"), Decimal("0")
+    elif included_fee_layout and total is not None:
+        fare = max(total - (fees or Decimal("0")), Decimal("0"))
+        taxes = taxes or Decimal("0")
+    elif total is not None and fare is None:
+        included = (taxes or Decimal("0")) + (fees or Decimal("0"))
+        fare = max(total - included, Decimal("0"))
+
+    return {
+        "issuer": issuer,
+        "passenger_name": passenger,
+        "fare": fare,
+        "taxes": taxes,
+        "fees": fees,
+        "total": total,
+        "currency": currency,
+        "segments": segments,
+        "reference": reference,
+        "ticket_number": ticket,
+        "document_number": document_number,
+        "date_of_birth": dob,
+        "issue_date": issue_date,
+        "booking_class": booking_class,
+        "fare_basis": fare_basis,
+        "baggage": baggage,
+        "hand_baggage": hand_baggage,
+        "fee_breakdown": fee_breakdown,
+    }
 
 
 def _guess_trip_type(segments: list[dict], service_kind: str) -> str:
@@ -530,6 +1202,25 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
     baggage = _first_match(text, [r"(?:baggage|багаж)\s*[:\-]\s*([^\n\r]+)"])
     hand_baggage = _first_match(text, [r"(?:hand baggage|ручная кладь|cabin baggage)\s*[:\-]\s*([^\n\r]+)"])
     segments = _extract_segments(text, service_kind=service_kind)
+    structured = _structured_receipt_fields(text, service_kind=service_kind)
+    issuer = structured["issuer"] if service_kind != "other" else (structured["issuer"] or issuer)
+    passenger = structured["passenger_name"] if service_kind != "other" else (structured["passenger_name"] or passenger)
+    fare = structured["fare"] if structured["fare"] is not None else fare
+    taxes = structured["taxes"] if structured["taxes"] is not None else taxes
+    fees = structured["fees"] if structured["fees"] is not None else fees
+    total = structured["total"] if structured["total"] is not None else total
+    currency = structured["currency"] or currency
+    segments = structured["segments"] if service_kind != "other" else (structured["segments"] or segments)
+    reference = structured["reference"] if service_kind != "other" else (structured["reference"] or reference)
+    ticket = structured["ticket_number"] if service_kind != "other" else (structured["ticket_number"] or ticket)
+    document_number = structured["document_number"] if service_kind != "other" else (structured["document_number"] or document_number)
+    dob = structured["date_of_birth"] if service_kind != "other" else (structured["date_of_birth"] or dob)
+    issue_date = structured["issue_date"] if service_kind != "other" else (structured["issue_date"] or issue_date)
+    booking_class = structured["booking_class"] if service_kind != "other" else (structured["booking_class"] or booking_class)
+    fare_basis = structured["fare_basis"] if service_kind != "other" else (structured["fare_basis"] or fare_basis)
+    baggage = structured["baggage"] if service_kind != "other" else (structured["baggage"] or baggage)
+    hand_baggage = structured["hand_baggage"] if service_kind != "other" else (structured["hand_baggage"] or hand_baggage)
+    fee_breakdown = structured["fee_breakdown"] or fee_breakdown
     trip_type = _guess_trip_type(segments, service_kind)
 
     fields = {
@@ -556,14 +1247,27 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
         "service_kind": service_kind,
         "service_type": SERVICE_KIND_LABELS[service_kind],
     }
-    filled = sum(1 for key in ("passenger_name", "fare", "taxes", "total", "currency") if fields.get(key))
     warnings = []
     if not passenger:
-        warnings.append("Пассажир не найден в текстовом слое.")
-    if fare is None and total is None:
-        warnings.append("Суммы не найдены в текстовом слое.")
-    status = "parsed" if filled >= 3 and not warnings else "manual_review"
-    confidence = Decimal("0.850") if status == "parsed" else Decimal("0.350")
+        warnings.append("Пассажир или гость не найден в текстовом слое.")
+    if not segments:
+        warnings.append("Маршрут или размещение не найдены в текстовом слое.")
+    if service_kind != "hotel" and total is None:
+        warnings.append("Итоговая сумма не найдена в текстовом слое.")
+    if service_kind == "hotel" and total is None:
+        warnings.append("В исходном ваучере стоимость не указана.")
+
+    has_route_date = bool(
+        segments
+        and any(segment.get("date") or segment.get("dep") or segment.get("arr") for segment in segments)
+        and any(segment.get("from") or segment.get("to") for segment in segments)
+    )
+    financial_ok = total is not None or service_kind == "hotel"
+    status = "parsed" if passenger and has_route_date and financial_ok and service_kind != "other" else "manual_review"
+    required_found = sum((bool(passenger), has_route_date, financial_ok, bool(reference or ticket)))
+    confidence = Decimal("0.920") if required_found == 4 and status == "parsed" else (
+        Decimal("0.820") if status == "parsed" else Decimal("0.350")
+    )
     return {
         "status": status,
         "confidence": confidence,
