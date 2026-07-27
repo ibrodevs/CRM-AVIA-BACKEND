@@ -153,3 +153,6 @@ def test_every_client_pdf_is_recognized_on_receipt_import_api(
     assert body["draft"]["segments"][0]["from"] == route_from
     assert body["draft"]["segments"][0]["to"] == route_to
     assert body["draft"]["segments"][0]["date"] == date
+    if name.startswith("Aleksandr_Zaliubin"):
+        assert body["draft"]["fare"] == "53545.00"
+        assert body["draft"]["taxes"] == "1098.00"

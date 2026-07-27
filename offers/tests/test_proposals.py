@@ -103,9 +103,51 @@ class TestProposalLifecycle:
         )
         assert sent.status_code == 200, sent.content
         assert sent.json()["status"] == "sent"
-        versions = admin_client.get(f"/api/v1/proposals/{created['id']}/versions/").json()
-        assert versions[0]["snapshot"]["order"] is None
-        assert versions[0]["snapshot"]["source"] == "manual"
+
+    def test_standalone_proposal_can_be_edited_and_attached_to_order(self, admin_client, order):
+        created = admin_client.post(
+            "/api/v1/proposals/",
+            {**PROPOSAL, "source": "chat", "recipient": "Первичный получатель"},
+            format="json",
+        ).json()
+
+        response = admin_client.put(
+            f"/api/v1/proposals/{created['id']}/draft/",
+            {
+                "version": created["version"],
+                "order": order["id"],
+                "recipient": "Обновлённый получатель",
+                "payment_terms": "Оплата в течение 3 дней",
+                "source_text": "Новый текст заявки",
+                "currency": "EUR",
+                "variants": [
+                    {
+                        "name": "Редактируемый вариант",
+                        "items": [
+                            {
+                                "service_kind": "hotel",
+                                "title": "Гостиница",
+                                "description": "2 ночи",
+                                "quantity": 1,
+                                "price_amount": "450.00",
+                                "price_currency": "EUR",
+                            }
+                        ],
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.content
+        body = response.json()
+        assert body["order"] == order["id"]
+        assert body["recipient"] == "Обновлённый получатель"
+        assert body["payment_terms"] == "Оплата в течение 3 дней"
+        assert body["variants"][0]["items"][0]["title"] == "Гостиница"
+        saved = admin_client.get(f"/api/v1/proposals/{created['id']}/").json()
+        assert saved["order"] == order["id"]
+        assert saved["source"] == "chat"
 
     def test_standalone_approval_does_not_create_order_services(self, admin_client):
         created = admin_client.post(

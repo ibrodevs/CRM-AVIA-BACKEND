@@ -611,6 +611,33 @@ def _avia_segments(text: str) -> list[dict]:
         )
         date = schedule.group(1) if schedule else ""
         year = _extract_issue_year(text)
+        if from_code == to_code:
+            leg_rows = re.findall(
+                r"\b([A-Z0-9]{2})-\s*\n?\s*(\d{2,5})\s*\n\s*([A-Z])\s*\n\s*"
+                r"(\d{1,2}[А-ЯЁ]{3})\s*\n\s*(\d{3,4})\s*\n\s*(\d{3,4})",
+                text,
+            )
+            intermediate_codes = [
+                code
+                for code in re.findall(r"(?m)^([A-Z]{3})\s*/", text)
+                if code != from_code
+            ]
+            if len(leg_rows) >= 2 and intermediate_codes:
+                intermediate_code = intermediate_codes[0]
+                return [
+                    {
+                        "from": from_name if index == 0 else intermediate_code,
+                        "fromCode": from_code if index == 0 else intermediate_code,
+                        "to": intermediate_code if index == 0 else from_name,
+                        "toCode": intermediate_code if index == 0 else from_code,
+                        "date": _date_parts(row[3], default_year=year),
+                        "dep": _format_time(row[4]),
+                        "arr": _format_time(row[5]),
+                        "flightNo": f"{row[0]}{row[1]}",
+                        "dir": "out" if index == 0 else "back",
+                    }
+                    for index, row in enumerate(leg_rows[:2])
+                ]
         return [{
             "from": re.sub(r"\s+", " ", from_name),
             "fromCode": from_code,
@@ -1201,27 +1228,59 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
     fare_basis = _first_match(text, [r"(?:fare basis|тарифный код|код тарифа)\s*[:\-]\s*([A-ZА-Я0-9 -]{2,32})"])
     baggage = _first_match(text, [r"(?:baggage|багаж)\s*[:\-]\s*([^\n\r]+)"])
     hand_baggage = _first_match(text, [r"(?:hand baggage|ручная кладь|cabin baggage)\s*[:\-]\s*([^\n\r]+)"])
+    generic_fare, generic_taxes, generic_total = fare, taxes, total
     segments = _extract_segments(text, service_kind=service_kind)
+    generic_passenger = passenger
+    generic_segments = segments
     structured = _structured_receipt_fields(text, service_kind=service_kind)
-    issuer = structured["issuer"] if service_kind != "other" else (structured["issuer"] or issuer)
-    passenger = structured["passenger_name"] if service_kind != "other" else (structured["passenger_name"] or passenger)
+    # A service-specific parser knows the supplier layouts better, but it may
+    # legitimately return an empty value for a compact/generic receipt.  Keep
+    # the universal parser result as a fallback instead of erasing it.
+    issuer = structured["issuer"] or issuer
+    passenger_on_next_line = bool(re.search(r"(?mi)^\s*ФАМИЛИЯ\s*:\s*$", text))
+    passenger = (
+        generic_passenger
+        if passenger_on_next_line and "/" in (generic_passenger or "")
+        else structured["passenger_name"] or generic_passenger
+    )
     fare = structured["fare"] if structured["fare"] is not None else fare
     taxes = structured["taxes"] if structured["taxes"] is not None else taxes
     fees = structured["fees"] if structured["fees"] is not None else fees
     total = structured["total"] if structured["total"] is not None else total
+    compact_financial_block = bool(
+        re.search(r"(?mi)^\s*ТАРИФ\s*$", text)
+        and re.search(r"(?mi)^\s*ВСЕГО К ОПЛАТЕ\s*$", text)
+    )
+    if compact_financial_block:
+        fare = generic_fare if generic_fare is not None else fare
+        taxes = generic_taxes if generic_taxes is not None else taxes
+        total = generic_total if generic_total is not None else total
+    # Supplier PDFs often place fare/tax captions in a column and their values
+    # several lines below.  A generic regex can then pick a nearby time or a
+    # tax amount as the fare (for example, ``8`` instead of ``53 545``).  The
+    # printed total is authoritative, so keep the extracted taxes/fees and
+    # reconcile the base fare whenever the components do not add up.
+    if service_kind == "avia" and total is not None:
+        additions = (taxes or Decimal("0")) + (fees or Decimal("0"))
+        if fare is None or abs((fare + additions) - total) > Decimal("0.01"):
+            fare = max(total - additions, Decimal("0"))
     currency = structured["currency"] or currency
-    segments = structured["segments"] if service_kind != "other" else (structured["segments"] or segments)
-    reference = structured["reference"] if service_kind != "other" else (structured["reference"] or reference)
-    ticket = structured["ticket_number"] if service_kind != "other" else (structured["ticket_number"] or ticket)
-    document_number = structured["document_number"] if service_kind != "other" else (structured["document_number"] or document_number)
-    dob = structured["date_of_birth"] if service_kind != "other" else (structured["date_of_birth"] or dob)
-    issue_date = structured["issue_date"] if service_kind != "other" else (structured["issue_date"] or issue_date)
-    booking_class = structured["booking_class"] if service_kind != "other" else (structured["booking_class"] or booking_class)
-    fare_basis = structured["fare_basis"] if service_kind != "other" else (structured["fare_basis"] or fare_basis)
-    baggage = structured["baggage"] if service_kind != "other" else (structured["baggage"] or baggage)
-    hand_baggage = structured["hand_baggage"] if service_kind != "other" else (structured["hand_baggage"] or hand_baggage)
+    explicit_route = bool(re.search(r"(?mi)^\s*Route\s*:", text))
+    segments = generic_segments if explicit_route and generic_segments else structured["segments"] or generic_segments
+    reference = structured["reference"] or reference
+    ticket = structured["ticket_number"] or ticket
+    document_number = structured["document_number"] or document_number
+    dob = structured["date_of_birth"] or dob
+    issue_date = structured["issue_date"] or issue_date
+    booking_class = structured["booking_class"] or booking_class
+    fare_basis = structured["fare_basis"] or fare_basis
+    baggage = structured["baggage"] or baggage
+    hand_baggage = structured["hand_baggage"] or hand_baggage
     fee_breakdown = structured["fee_breakdown"] or fee_breakdown
     trip_type = _guess_trip_type(segments, service_kind)
+    route_code = _first_match(text, [r"ОТПРВ/НАЗН\s*:\s*([A-Z]{6})"])
+    if service_kind == "avia" and len(route_code) == 6 and route_code[:3] == route_code[-3:]:
+        trip_type = "roundtrip"
 
     fields = {
         "issuer": issuer,
@@ -1263,7 +1322,12 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
         and any(segment.get("from") or segment.get("to") for segment in segments)
     )
     financial_ok = total is not None or service_kind == "hotel"
-    status = "parsed" if passenger and has_route_date and financial_ok and service_kind != "other" else "manual_review"
+    # Some valid supplier receipts contain only a passenger, booking/ticket
+    # reference and the financial block.  Such documents are useful and were
+    # supported before route extraction was added, so absence of a route alone
+    # must not downgrade them to manual review.
+    itinerary_ok = has_route_date or bool(reference or ticket)
+    status = "parsed" if passenger and itinerary_ok and financial_ok else "manual_review"
     required_found = sum((bool(passenger), has_route_date, financial_ok, bool(reference or ticket)))
     confidence = Decimal("0.920") if required_found == 4 and status == "parsed" else (
         Decimal("0.820") if status == "parsed" else Decimal("0.350")

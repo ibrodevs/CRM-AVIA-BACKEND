@@ -11,8 +11,8 @@ from rest_framework.views import APIView
 from accounts.permissions import require
 from common.audit import audit
 from common.errors import ApiError
-from common.jobs import enqueue
 from common.pagination import DefaultPagination
+from suppliers.job_handlers import verify_supplier_credentials
 from suppliers.models import Supplier, SupplierCredential, SupplierMarkupRule, SupplierSearchPriority
 
 
@@ -194,8 +194,16 @@ class SupplierCheckConnectionView(APIView):
 
     def post(self, request, supplier_id):
         supplier = _get_supplier(request, supplier_id)
-        job = enqueue("suppliers.check_connection", {"supplier_id": str(supplier.id)}, request=request)
-        return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
+        result = verify_supplier_credentials(supplier)
+        audit(
+            "suppliers.connection_checked",
+            actor=request.user,
+            resource=supplier,
+            request=request,
+            after={"status": result["status"]},
+        )
+        response_status = http.HTTP_200_OK if result["status"] == "connected" else http.HTTP_409_CONFLICT
+        return Response(result, status=response_status)
 
 
 class SupplierMarkupRulesView(APIView):
