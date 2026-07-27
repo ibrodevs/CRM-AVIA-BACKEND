@@ -1,5 +1,9 @@
 from django.urls import path
 
+from documents.receipt_parser_patch import install_receipt_parser_patch
+
+install_receipt_parser_patch()
+
 from documents import views as v
 
 urlpatterns = [
