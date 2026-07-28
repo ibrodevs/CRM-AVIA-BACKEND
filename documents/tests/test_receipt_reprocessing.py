@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from documents.receipt_parser_patch_safe import _hotel_details, _rail
+from documents.receipt_parser_patch_safe import _hotel_details, _rail, _transfer_details
 
 
 def test_rzd_page_parses_when_pdf_joins_time_and_date():
@@ -138,3 +138,35 @@ def test_bilingual_hotel_voucher_populates_editor_specific_fields():
     assert details["rooms"][0]["meal"] == "Завтрак"
     assert details["nights"] == 1
     assert details["hotelTerms"]["cancellation"]
+
+
+def test_sparse_transfer_does_not_receive_terms_missing_from_source():
+    fields = {
+        "passenger_name": "KIM ALEX",
+        "reference": "TRF456",
+        "segments": [
+            {
+                "from": "IST AIRPORT",
+                "to": "HOTEL",
+                "date": "",
+                "dep": "",
+                "flightNo": "",
+                "dir": "out",
+            }
+        ],
+    }
+
+    details = _transfer_details(
+        "TRANSFER VOUCHER TRF456 KIM ALEX IST AIRPORT HOTEL 45 USD",
+        fields,
+    )
+
+    assert details["segments"] == fields["segments"]
+    assert details["vehicle"] == {
+        "className": "",
+        "category": "",
+        "passengers": "",
+        "luggage": "",
+        "requirements": "",
+    }
+    assert all(not value for value in details["transferTerms"].values())

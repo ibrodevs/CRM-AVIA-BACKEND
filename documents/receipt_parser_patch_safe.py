@@ -320,7 +320,7 @@ def _transfer_details(text, fields):
     vehicle_class = _match_value(flat, [r"\b(Комфорт)\s+Комфорт\s+(\d+)\s+пассажир"])
     passenger_count = _match_value(flat, [r"\bКомфорт\s+Комфорт\s+(\d+)\s+пассажир"])
     segments = [dict(segment) for segment in fields.get("segments") or []]
-    if segments:
+    if segments and address:
         segments[0].update(
             {
                 "fromAddress": segments[0].get("from") or "",
@@ -340,13 +340,27 @@ def _transfer_details(text, fields):
     cancellation_deadlines = _unique(
         re.findall(r"до\s+(\d{1,2}:\d{2}\s+\d{2}\.\d{2}\.\d{4})", flat, re.I)
     )
-    cancellation = "Бесплатная отмена не позднее чем за 5 часов до каждой поездки."
-    if cancellation_deadlines:
-        cancellation += f" Крайние сроки: {', '.join(cancellation_deadlines)}."
+    cancellation = ""
+    if re.search(r"Условия\s+изменения\s+и\s+отмены.+?бесплатно\s+за\s+5\s+часов", flat, re.I):
+        cancellation = "Бесплатная отмена не позднее чем за 5 часов до каждой поездки."
+        if cancellation_deadlines:
+            cancellation += f" Крайние сроки: {', '.join(cancellation_deadlines)}."
     support = _match_value(
         flat,
         [r"Телефоны\s+круглосуточной\s+службы\s+поддержки\s+(\d{8,})"],
     )
+    has_waiting = bool(
+        re.search(
+            r"(?:Время\s+бесплатного\s+ожидания|при\s+подаче\s+по\s+адресу.+?20\s+минут)",
+            flat,
+            re.I,
+        )
+    )
+    has_meet = bool(re.search(r"персональн\w+\s+табличк", flat, re.I))
+    has_baggage_help = bool(re.search(r"помощь\s+с\s+багажом", flat, re.I))
+    has_requirements = bool(re.search(r"(?:\bдети\b|крупногабаритн\w+\s+багаж)", flat, re.I))
+    has_driver_notice = bool(re.search(r"номер\w*\s+телефон\w*\s+водителя", flat, re.I))
+    has_phone_notice = bool(re.search(r"Включите\s+телефон", flat, re.I))
     return {
         "issueDate": issue_date,
         "supplierOrderNo": _clean(fields.get("reference")),
@@ -366,28 +380,44 @@ def _transfer_details(text, fields):
             "category": "",
             "passengers": passenger_count,
             "luggage": "",
-            "requirements": "Заранее сообщить о детях или крупногабаритном багаже.",
+            "requirements": (
+                "Заранее сообщить о детях или крупногабаритном багаже."
+                if has_requirements
+                else ""
+            ),
         },
         "transferTerms": {
             "cancellation": cancellation,
             "freeWaiting": (
                 "20 минут при подаче по адресу или к отелю; 1 час после внутреннего "
                 "или международного авиарейса; 20 минут после прибытия поезда."
+                if has_waiting
+                else ""
             ),
             "meetAndGreet": (
                 "Водитель встретит пассажира с персональной табличкой в терминале "
                 "аэропорта, на перроне вокзала или в холле гостиницы."
+                if has_meet
+                else ""
             ),
-            "baggageHelp": "Водитель поможет с багажом по пути к автомобилю.",
+            "baggageHelp": (
+                "Водитель поможет с багажом по пути к автомобилю."
+                if has_baggage_help
+                else ""
+            ),
             "supportContacts": support,
             "supplierComment": (
                 "Телефон водителя будет отправлен за 1 час до поездки. "
                 "При задержке рейса или поезда дополнительная плата не взимается."
+                if has_driver_notice
+                else ""
             ),
             "driverComment": "",
             "passengerComment": (
                 "Включите телефон после посадки. Если не можете найти водителя, "
                 "позвоните в службу поддержки."
+                if has_phone_notice
+                else ""
             ),
         },
     }
