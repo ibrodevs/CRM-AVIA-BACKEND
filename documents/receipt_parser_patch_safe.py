@@ -5,15 +5,18 @@ from io import BytesIO
 
 
 def _pages(content):
+    pages = []
     try:
         from pypdf import PdfReader
 
-        return [
-            re.sub(r"[ \t]+", " ", (page.extract_text() or "").replace("\r", "\n"))
-            for page in PdfReader(BytesIO(content), strict=False).pages
-        ]
+        for page in PdfReader(BytesIO(content), strict=False).pages:
+            try:
+                pages.append(re.sub(r"[ \t]+", " ", (page.extract_text() or "").replace("\r", "\n")))
+            except Exception:
+                continue
     except Exception:
-        return []
+        pass
+    return [page for page in pages if page.strip()]
 
 
 def _decimal(value):
@@ -36,6 +39,21 @@ def _json_safe(value):
 
 def _unique(values):
     return list(dict.fromkeys(value for value in values if value))
+
+
+def _rail_segments_need_replacement(segments):
+    if not segments:
+        return True
+    invalid_labels = re.compile(
+        r"часов(?:ой|ые)\s+пояс|поездом|контрольн(?:ый|ого)\s+купон|"
+        r"правил[аы]\s+проезд|номер\s+поезд|вагон|место",
+        re.IGNORECASE,
+    )
+    for segment in segments:
+        route_values = [str(segment.get("from") or ""), str(segment.get("to") or "")]
+        if any(len(value) > 100 or invalid_labels.search(value) for value in route_values):
+            return True
+    return False
 
 
 def _clean(value):
@@ -522,6 +540,8 @@ def _rail(text):
         if len(fare_parts) >= 2
         else (_decimal(totals[-1]) if totals else None)
     )
+    ticket_cost = _decimal(fare_parts[0]) if fare_parts else total
+    reserved_seat_cost = _decimal(fare_parts[1]) if len(fare_parts) > 1 else Decimal("0")
     train = journey.group("train")
     coach = journey.group("coach")
     seat = journey.group("seat")
@@ -550,6 +570,10 @@ def _rail(text):
         "taxes": Decimal("0") if total is not None else None,
         "fees": Decimal("0") if total is not None else None,
         "total": total,
+        "ticketCost": ticket_cost,
+        "reservedSeatCost": reserved_seat_cost,
+        "agencyServiceFee": Decimal("0"),
+        "additionalFees": Decimal("0"),
         "currency": "RUB",
         "service_kind": "rail",
         "service_type": "ЖД",
@@ -608,10 +632,15 @@ def install_receipt_parser_patch():
             result["raw"].update(_json_safe(details))
             return result
 
-        if result_fields.get("service_kind") == "rail" and not result_fields.get("segments"):
+        if result_fields.get("service_kind") == "rail":
             receipts = [receipt for receipt in (_rail(page) for page in pages) if receipt]
             if receipts:
                 total = sum((receipt["total"] or Decimal("0") for receipt in receipts), Decimal("0"))
+                ticket_cost = sum((receipt["ticketCost"] or Decimal("0") for receipt in receipts), Decimal("0"))
+                reserved_seat_cost = sum(
+                    (receipt["reservedSeatCost"] or Decimal("0") for receipt in receipts),
+                    Decimal("0"),
+                )
                 passengers = _unique(receipt["passenger_name"] for receipt in receipts)
                 tickets = _unique(receipt["ticket_number"] for receipt in receipts)
                 segments = []
@@ -633,6 +662,11 @@ def install_receipt_parser_patch():
                     and segments[0]["from"] == segments[-1]["to"]
                     and segments[0]["to"] == segments[-1]["from"]
                 )
+                preferred_segments = (
+                    segments
+                    if _rail_segments_need_replacement(result_fields.get("segments") or [])
+                    else result_fields["segments"]
+                )
                 fields = dict(receipts[0])
                 fields.update(
                     {
@@ -642,8 +676,16 @@ def install_receipt_parser_patch():
                         "fare": total,
                         "taxes": Decimal("0"),
                         "fees": Decimal("0"),
-                        "segments": segments,
-                        "trip_type": "roundtrip" if roundtrip else "oneway",
+                        "ticketCost": ticket_cost,
+                        "reservedSeatCost": reserved_seat_cost,
+                        "agencyServiceFee": Decimal("0"),
+                        "additionalFees": Decimal("0"),
+                        "segments": preferred_segments,
+                        "trip_type": (
+                            "roundtrip"
+                            if roundtrip and preferred_segments is segments
+                            else result_fields.get("trip_type") or "oneway"
+                        ),
                         "receipt_count": len(receipts),
                         "receipts": receipts,
                     }

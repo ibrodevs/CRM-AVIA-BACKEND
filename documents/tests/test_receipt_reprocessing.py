@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from documents.receipt_parser_patch_safe import _hotel_details, _rail, _transfer_details
+from documents.services import _s7_compact_fields
 
 
 def test_rzd_page_parses_when_pdf_joins_time_and_date():
@@ -30,6 +31,8 @@ def test_rzd_page_parses_when_pdf_joins_time_and_date():
     assert fields is not None
     assert fields["passenger_name"] == "НАГОРНЫЙ КОНСТАНТИН ДМИТРИЕВИЧ"
     assert fields["total"] == Decimal("11587.80")
+    assert fields["ticketCost"] == Decimal("1436.30")
+    assert fields["reservedSeatCost"] == Decimal("10151.50")
     assert fields["issuer"] == "ДОСС РЖД / ДОСС"
     assert fields["booking_class"] == "1С"
     assert fields["segments"][0] == {
@@ -75,11 +78,87 @@ def test_rzd_page_parses_arbitrary_route_from_control_line():
     assert fields["passenger_name"] == "БОРИСЕНКОВ АЛЕКСАНДР ВЛАДИМИРОВИЧ"
     assert fields["issuer"] == "ФПК ЗАП-СИБИРСКИЙ / ФПК"
     assert fields["total"] == Decimal("2188.70")
+    assert fields["ticketCost"] == Decimal("1172.50")
+    assert fields["reservedSeatCost"] == Decimal("1016.20")
     assert fields["booking_class"] == "2Ш"
     assert fields["segments"][0]["from"] == "ПЕНЗА 1"
     assert fields["segments"][0]["to"] == "САМАРА"
     assert fields["segments"][0]["date"] == "30.01.2026"
     assert fields["segments"][0]["flightNo"] == "124ВА"
+
+
+def test_rzd_control_coupon_wins_over_timezone_labels_and_splits_costs():
+    text = """
+    ЭЛЕКТРОННЫЙ БИЛЕТ. КОНТРОЛЬНЫЙ КУПОН
+    ПОЕЗД ВАГОН МЕСТО 721 721 04 04 016 016
+    № 77 506 905 747 822
+    Часовой пояс Поездом 722722
+    06:35 06:35 27.10.2025
+    10:12 10:12 27.10.2025
+    ПАСПОРТ РФ 4510123456 01.02.1980 RUS М
+    СУЛЕЙМАНОВ РЕНАТ РАШИДОВИЧ
+    Посадка в поезд осуществляется
+    721АА 27.10.2025 06:35 04С 016 МОСКВА ВОСТОЧНАЯ - НИЖНИЙ НОВГОРОД МОСКОВСКИЙ
+    ПН4510123456 СУЛЕЙМАНОВ-РР 010280
+    Заказ: 77506905747822
+    Перевозчик: ФПК МОСКОВСКИЙ / ФПК ИНН 7708709686
+    2С 2С
+    Оплата наличными Билет Плацкарта НДС 0% НДС 22%
+    1 500,00 ₽ 1 377,70 ₽ 0,00 ₽ 100,00 ₽
+    Итого Вкл. НДС 2 877,70 ₽
+    """
+
+    fields = _rail(text)
+
+    assert fields is not None
+    assert fields["passenger_name"] == "СУЛЕЙМАНОВ РЕНАТ РАШИДОВИЧ"
+    assert fields["reference"] == "77506905747822"
+    assert fields["ticket_number"] == "77506905747822"
+    assert fields["segments"][0]["from"] == "МОСКВА ВОСТОЧНАЯ"
+    assert fields["segments"][0]["to"] == "НИЖНИЙ НОВГОРОД МОСКОВСКИЙ"
+    assert fields["ticketCost"] == Decimal("1500.00")
+    assert fields["reservedSeatCost"] == Decimal("1377.70")
+    assert fields["total"] == Decimal("2877.70")
+
+
+def test_compact_s7_layout_recognizes_passenger_document_route_and_finances():
+    text = (
+        "ЭЛЕКТРОННЫЙ БИЛЕТ(маршрут-квитанция для пассажира)Заказ No6482422"
+        "код бронирования: O48TFQ ПассажирДата рожденияНомер документаНомер билета"
+        "Бонусная картаПродажаKOROTKOV ALEKSEI MIKHAILOVICH11.10.1961"
+        "ПС 2206878390421 213535626118.06.2026Рейс под брендом авиакомпании S7 Airlines"
+        "DMEМосква, ДомодедовоOMSОмскПеревозчикРейсТарифБагажРучнаякладьСтатус"
+        "23:30Вс, 28 Июня 202605:50Пн, 29 Июня 2026S7 Airlines"
+        "S7-2565ECONOMYXSTOW1PC10KGOKРАСЧЕТ ТАРИФА:"
+        "ТАРИФ: RUB17790СБОР/TAX: RUB2765RI490RUB YQ75RUB YR2200RUB"
+        "ВСЕГО К ОПЛАТЕ: RUB20555КВИТАНЦИЯ РАЗНЫХ СБОРОВ"
+        "СБОР АСБ160,00 РУБ.СБОР СА0,00 РУБ.ИТОГО К ОПЛАТЕ160,00 РУБ."
+    )
+
+    fields = _s7_compact_fields(text)
+
+    assert fields["passenger_name"] == "KOROTKOV ALEKSEI MIKHAILOVICH"
+    assert fields["document_number"] == "ПС 2206878390"
+    assert fields["ticket_number"] == "421 2135356261"
+    assert fields["reference"] == "O48TFQ"
+    assert fields["supplier_order_number"] == "6482422"
+    assert fields["segments"] == [
+        {
+            "from": "Москва, Домодедово",
+            "fromCode": "DME",
+            "to": "Омск",
+            "toCode": "OMS",
+            "date": "28.06.2026",
+            "dep": "23:30",
+            "arr": "05:50",
+            "flightNo": "S7-2565",
+            "dir": "out",
+        }
+    ]
+    assert fields["fare"] == Decimal("17790")
+    assert fields["taxes"] == Decimal("2765")
+    assert fields["fees"] == Decimal("160.00")
+    assert fields["total"] == Decimal("20715.00")
 
 
 def test_bilingual_hotel_voucher_populates_editor_specific_fields():
