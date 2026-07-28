@@ -33,6 +33,10 @@ def _json_safe(value):
     return value
 
 
+def _unique(values):
+    return list(dict.fromkeys(value for value in values if value))
+
+
 def _hotel(text):
     flat = re.sub(r"\s+", " ", text)
     stay = re.search(
@@ -99,32 +103,63 @@ def _rail(text):
         r"([А-ЯЁ][А-ЯЁ\-]+(?:\s+[А-ЯЁ][А-ЯЁ\-]+){1,3})(?=\s+Посадка)",
         flat,
     )
-    route = re.search(
-        r"(?P<dep>\d{1,2}:\d{2})\s*(?P<date>\d{2}\.\d{2}\.\d{4}).*?"
-        r"Санкт-Петербург-Главн\..*?"
-        r"(?P<arr>\d{1,2}:\d{2})\s*(?P<arr_date>\d{2}\.\d{2}\.\d{4}).*?"
-        r"Москва Октябрьская",
+    journey = re.search(
+        r"\b(?P<train>\d{3,4}[А-ЯЁA-Z]{1,2})\s+"
+        r"(?P<date>\d{2}\.\d{2}\.\d{4})\s+"
+        r"(?P<dep>\d{1,2}:\d{2})\s+"
+        r"(?P<coach>\d{2})[А-ЯЁA-Z]\s+"
+        r"(?P<seat>\d{3})\s+"
+        r"(?P<from>.+?)\s+-\s+(?P<to>.+?)\s+ПН\d{10}\b",
         flat,
-        re.S,
     )
     train_data = re.search(
         r"ПОЕЗД ВАГОН МЕСТО\s*(\d{3})\s+(?:\d{3}\s*)?(\d{2})\s+(?:\d{2}\s*)?(\d{3})",
         flat,
     )
+    fare_block = re.search(
+        r"Оплата наличными\s+Билет\s+Плацкарта\s+НДС 0%\s+НДС 22%\s+"
+        r"(?P<body>.+?)\s+Итого",
+        flat,
+        re.I,
+    )
+    fare_parts = (
+        re.findall(r"(\d[\d ]*[,.]\d{2})\s*₽", fare_block.group("body"))
+        if fare_block
+        else []
+    )
     totals = re.findall(r"Вкл\. НДС\s+([\d ]+[,.]\d{2})\s*₽", flat, re.I)
-    if not (ticket and passenger and route):
+    if not (passenger and journey):
         return None
-    total = _decimal(totals[-1]) if totals else None
-    train, coach, seat = train_data.groups() if train_data else ("", "", "")
     order = re.search(r"Заказ:\s*(\d{10,20})", flat)
+    total = (
+        sum((_decimal(value) or Decimal("0") for value in fare_parts[:2]), Decimal("0"))
+        if len(fare_parts) >= 2
+        else (_decimal(totals[-1]) if totals else None)
+    )
+    train = journey.group("train")
+    coach = journey.group("coach")
+    seat = journey.group("seat")
+    if train_data:
+        train_number, header_coach, header_seat = train_data.groups()
+        train = train or train_number
+        coach = coach or header_coach
+        seat = seat or header_seat
+    leading = flat[: passport.start()] if passport else flat
+    times = _unique(re.findall(r"\b(\d{1,2}:\d{2})\b", leading))
+    dates = _unique(re.findall(r"\b(\d{2}\.\d{2}\.\d{4})\b", leading))
+    carrier = re.search(r"Перевозчик:\s*(.+?)\s+ИНН\b", flat, re.I)
+    booking_class = re.search(r"\b([123][А-ЯЁA-Z])\s+\1\b", flat)
+    ticket_number = re.sub(r"\s+", "", ticket.group(1)) if ticket else ""
+    if not ticket_number and order:
+        ticket_number = order.group(1)
     return {
-        "issuer": "ОАО РЖД",
+        "issuer": carrier.group(1).strip() if carrier else "ОАО РЖД",
         "passenger_name": passenger.group(1).strip(),
         "reference": order.group(1) if order else "",
-        "ticket_number": re.sub(r"\s+", "", ticket.group(1)),
+        "ticket_number": ticket_number,
         "document_number": passport.group(1) if passport else "",
         "date_of_birth": passport.group(2) if passport else "",
-        "booking_class": "1С" if re.search(r"БИЗНЕС КЛАСС\s*1С", flat) else "",
+        "booking_class": booking_class.group(1) if booking_class else "",
         "fare": total,
         "taxes": Decimal("0") if total is not None else None,
         "fees": Decimal("0") if total is not None else None,
@@ -135,14 +170,14 @@ def _rail(text):
         "trip_type": "oneway",
         "segments": [
             {
-                "from": "Санкт-Петербург-Главн.",
+                "from": journey.group("from").strip(),
                 "fromCode": "",
-                "to": "Москва Октябрьская",
+                "to": journey.group("to").strip(),
                 "toCode": "",
-                "date": route.group("date"),
-                "dep": route.group("dep"),
-                "arr": route.group("arr"),
-                "endDate": route.group("arr_date"),
+                "date": journey.group("date"),
+                "dep": journey.group("dep"),
+                "arr": times[1] if len(times) > 1 else "",
+                "endDate": dates[1] if len(dates) > 1 else journey.group("date"),
                 "flightNo": train,
                 "coach": coach,
                 "seat": seat,
@@ -178,20 +213,43 @@ def install_receipt_parser_patch():
                 result["warnings"] = ["Стоимость в исходном ваучере не указана; остальные поля распознаны."]
             return result
 
-        if "ЭЛЕКТРОННЫЙ БИЛЕТ. КОНТРОЛЬНЫЙ КУПОН" in joined:
+        result_fields = result.get("fields") or {}
+        if result_fields.get("service_kind") == "rail" and not result_fields.get("segments"):
             receipts = [receipt for receipt in (_rail(page) for page in pages) if receipt]
             if receipts:
                 total = sum((receipt["total"] or Decimal("0") for receipt in receipts), Decimal("0"))
+                passengers = _unique(receipt["passenger_name"] for receipt in receipts)
+                tickets = _unique(receipt["ticket_number"] for receipt in receipts)
+                segments = []
+                segment_keys = set()
+                for receipt in receipts:
+                    segment = receipt["segments"][0]
+                    key = (
+                        segment["from"],
+                        segment["to"],
+                        segment["date"],
+                        segment["dep"],
+                        segment["flightNo"],
+                    )
+                    if key not in segment_keys:
+                        segment_keys.add(key)
+                        segments.append(segment)
+                roundtrip = bool(
+                    len(segments) > 1
+                    and segments[0]["from"] == segments[-1]["to"]
+                    and segments[0]["to"] == segments[-1]["from"]
+                )
                 fields = dict(receipts[0])
                 fields.update(
                     {
-                        "passenger_name": ", ".join(receipt["passenger_name"] for receipt in receipts),
-                        "ticket_number": ", ".join(receipt["ticket_number"] for receipt in receipts),
+                        "passenger_name": ", ".join(passengers),
+                        "ticket_number": ", ".join(tickets),
                         "total": total,
                         "fare": total,
                         "taxes": Decimal("0"),
                         "fees": Decimal("0"),
-                        "segments": [receipt["segments"][0] for receipt in receipts],
+                        "segments": segments,
+                        "trip_type": "roundtrip" if roundtrip else "oneway",
                         "receipt_count": len(receipts),
                         "receipts": receipts,
                     }
