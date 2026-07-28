@@ -17,6 +17,7 @@ from documents.models import (
     ReceiptDraft,
     ReceiptImportJob,
 )
+from documents.receipt_metadata import json_safe, receipt_document_metadata, receipt_verified_data
 from documents.selectors import documents_visible_to, get_document_or_404
 from documents.serializers import DocumentSerializer, DocumentVersionSerializer
 from documents.services import add_document_version, extract_receipt_fields, validate_upload
@@ -333,6 +334,15 @@ class ReceiptImportCreateView(APIView):
                 segments=fields.get("segments") or [],
                 trip_type=fields.get("trip_type") or "",
             )
+            document.metadata = receipt_document_metadata(
+                document.metadata,
+                import_id=import_job.id,
+                extraction=extraction,
+                file_name=file.name,
+                mime=file.content_type,
+                size=file.size,
+            )
+            document.save(update_fields=["metadata"])
         return Response({"id": str(import_job.id)}, status=http.HTTP_201_CREATED)
 
 
@@ -344,6 +354,31 @@ class ReceiptImportResultView(APIView):
         if import_job is None:
             raise ApiError(code="NOT_FOUND", message="Импорт не найден", status_code=404)
         draft = getattr(import_job, "draft", None)
+        raw_extraction = import_job.raw_extraction or {}
+        verified_source = {
+            **raw_extraction,
+            **(
+                {
+                    "issuer": draft.issuer,
+                    "passenger_name": draft.passenger_name,
+                    "fare": draft.fare,
+                    "taxes": draft.taxes,
+                    "fees": draft.fees,
+                    "tax_breakdown": draft.tax_breakdown,
+                    "fee_breakdown": draft.fee_breakdown,
+                    "total": draft.total,
+                    "currency": draft.currency,
+                    "segments": draft.segments,
+                    "trip_type": draft.trip_type,
+                }
+                if draft
+                else {}
+            ),
+        }
+        verified_data = receipt_verified_data(
+            verified_source,
+            parser_status=import_job.parser_status,
+        )
         return Response(
             {
                 "id": str(import_job.id),
@@ -351,6 +386,7 @@ class ReceiptImportResultView(APIView):
                 "confidence": str(import_job.confidence) if import_job.confidence else None,
                 "warnings": import_job.warnings,
                 "extracted": {
+                    **raw_extraction,
                     "reference": (import_job.raw_extraction or {}).get("reference", ""),
                     "ticket_number": (import_job.raw_extraction or {}).get("ticket_number", ""),
                     "document_number": (import_job.raw_extraction or {}).get("document_number", ""),
@@ -367,6 +403,7 @@ class ReceiptImportResultView(APIView):
                     "service_kind": (import_job.raw_extraction or {}).get("service_kind", import_job.guessed_type),
                     "service_type": (import_job.raw_extraction or {}).get("service_type", ""),
                 },
+                "verified_data": verified_data,
                 "draft": {
                     "issuer": draft.issuer,
                     "entity": draft.entity,
@@ -442,11 +479,24 @@ class ReceiptImportConfirmView(APIView):
             document.currency = currency
             document.metadata = {
                 **(document.metadata or {}),
+                "supplier_original": {
+                    **((document.metadata or {}).get("supplier_original") or {}),
+                    **json_safe(data.get("supplier_original") or {}),
+                },
                 "receipt_import": {
+                    **((document.metadata or {}).get("receipt_import") or {}),
                     "stage": "confirmed",
                     "import_id": str(import_job.id),
                     "parser_status": import_job.parser_status,
                     "warnings": import_job.warnings,
+                    "service_kind": (import_job.raw_extraction or {}).get(
+                        "service_kind", import_job.guessed_type
+                    ),
+                    "service_type": (import_job.raw_extraction or {}).get("service_type", ""),
+                    "original_total": str(data.get("original_total", draft.total or 0)),
+                    "client_total": str(data.get("client_total", total)),
+                    "markup": str(data.get("markup", 0)),
+                    "commission": str(data.get("commission", 0)),
                     "corrected_fields": {
                         "issuer": draft.issuer,
                         "passenger_name": draft.passenger_name,
@@ -462,6 +512,23 @@ class ReceiptImportConfirmView(APIView):
                     },
                 },
             }
+            submitted_verified = (
+                (data.get("supplier_original") or {}).get("verified_data")
+                if isinstance(data.get("supplier_original"), dict)
+                else None
+            )
+            verified_data = receipt_verified_data(
+                submitted_verified
+                or {
+                    **(import_job.raw_extraction or {}),
+                    **document.metadata["receipt_import"]["corrected_fields"],
+                },
+                parser_status=import_job.parser_status,
+            )
+            verified_data["recognitionPending"] = False
+            verified_data["manualCompletion"] = import_job.parser_status != "parsed"
+            document.metadata["supplier_original"]["verified_data"] = json_safe(verified_data)
+            document.metadata["receipt_import"]["verified_data"] = json_safe(verified_data)
             if order is not None and data.get("create_services", True):
                 from services.models import OrderService
 

@@ -133,6 +133,9 @@ class TestDocuments:
         assert body["draft"]["taxes"] == "120.00"
         assert body["draft"]["total"] == "25448.00"
         assert body["draft"]["currency"] == "RUB"
+        assert body["verified_data"]["passenger"] == "TELEGIN IVAN KONSTANTINOVICH"
+        assert body["verified_data"]["carrier"] == "Smartavia"
+        assert body["verified_data"]["recognitionPending"] is False
 
         from documents.models import ReceiptImportJob
 
@@ -142,6 +145,10 @@ class TestDocuments:
         assert source_document.current_version == 1
         assert import_job.file_version.version == 1
         assert import_job.file_version.original_name == "receipt.txt"
+        assert source_document.metadata["receipt_import"]["parser_status"] == "parsed"
+        assert source_document.metadata["supplier_original"]["verified_data"]["passenger"] == (
+            "TELEGIN IVAN KONSTANTINOVICH"
+        )
 
         confirm = admin_client.post(
             f"/api/v1/receipt-imports/{response.json()['id']}/confirm/",
@@ -164,6 +171,8 @@ class TestDocuments:
         assert source_document.versions.order_by("version").first().original_name == "receipt.txt"
         assert source_document.versions.order_by("version").last().origin == "generated"
         assert source_document.metadata["receipt_import"]["corrected_fields"]["fees"] == "500"
+        assert source_document.metadata["receipt_import"]["verified_data"]["recognitionPending"] is False
+        assert source_document.metadata["supplier_original"]["verified_data"]["fees"] == "500"
 
     def test_receipt_import_without_text_requires_manual_review(self, admin_client):
         response = admin_client.post(
@@ -179,6 +188,43 @@ class TestDocuments:
         assert body["parser_status"] == "manual_review"
         assert body["draft"]["passenger_name"] == ""
         assert body["draft"]["fare"] is None
+
+    def test_reprocess_receipts_restores_failed_unconfirmed_import(self, admin_client):
+        from django.core.management import call_command
+
+        from documents.models import ReceiptImportJob
+
+        receipt = upload_file(
+            "transfer.txt",
+            (
+                "Service: Transfer\n"
+                "Passenger: SOROKINA OLGA\n"
+                "Route: Airport - Hotel\n"
+                "Departure date: 22.05.2025\n"
+                "Currency: RUB\n"
+                "Total: 4200\n"
+            ).encode(),
+        )
+        response = admin_client.post("/api/v1/receipt-imports/", {"file": receipt}, format="multipart")
+        assert response.status_code == 201, response.content
+        job = ReceiptImportJob.objects.get(pk=response.json()["id"])
+        job.parser_status = "manual_review"
+        job.raw_extraction = {}
+        job.save(update_fields=["parser_status", "raw_extraction"])
+        job.draft.passenger_name = ""
+        job.draft.total = None
+        job.draft.save(update_fields=["passenger_name", "total"])
+
+        call_command("reprocess_receipts")
+
+        job.refresh_from_db()
+        job.draft.refresh_from_db()
+        job.file_version.document.refresh_from_db()
+        assert job.parser_status == "parsed"
+        assert job.guessed_type == "transfer"
+        assert job.draft.passenger_name == "SOROKINA OLGA"
+        assert job.draft.total == job.draft.total.__class__("4200.00")
+        assert job.file_version.document.metadata["receipt_import"]["service_kind"] == "transfer"
 
     def test_receipt_import_pdf_garbage_is_not_used_as_text(self, admin_client):
         response = admin_client.post(
