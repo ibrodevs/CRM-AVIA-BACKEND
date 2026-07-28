@@ -1,9 +1,10 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from documents import services
 from documents.models import ReceiptImportJob
 from documents.receipt_metadata import receipt_document_metadata
-from documents.services import extract_receipt_fields
+from documents.receipt_parser_patch_safe import install_receipt_parser_patch
 
 
 class Command(BaseCommand):
@@ -14,6 +15,11 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="Не сохранять изменения.")
 
     def handle(self, *args, **options):
+        # Management commands do not necessarily load ``documents.urls``, where
+        # the supplier-layout parser is installed for HTTP requests.  Install it
+        # here as well and resolve the function from the module at call time so
+        # reprocessing uses exactly the same parser as a fresh upload.
+        install_receipt_parser_patch()
         jobs = (
             ReceiptImportJob.objects.select_related("file_version__document", "draft")
             .filter(file_version__isnull=False, draft__confirmed_at__isnull=True)
@@ -28,7 +34,7 @@ class Command(BaseCommand):
             try:
                 with version.file.open("rb") as source:
                     content = source.read()
-                extraction = extract_receipt_fields(
+                extraction = services.extract_receipt_fields(
                     content,
                     mime=version.mime_type,
                     name=version.original_name or version.file.name.rsplit("/", 1)[-1],
