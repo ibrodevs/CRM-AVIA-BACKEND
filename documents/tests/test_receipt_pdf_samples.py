@@ -156,3 +156,62 @@ def test_every_client_pdf_is_recognized_on_receipt_import_api(
     if name.startswith("Aleksandr_Zaliubin"):
         assert body["draft"]["fare"] == "53545.00"
         assert body["draft"]["taxes"] == "1098.00"
+    if name == "gel'man_mixail_vladimirovich_2025-06-02.pdf":
+        verified = body["verified_data"]
+        assert verified["hotel"] == {
+            "name": "Скай Порт",
+            "category": "",
+            "country": "Россия",
+            "city": "Обь",
+            "address": (
+                "Россия, 633104, Новосибирская область, Обь, Толмачево, "
+                "пр-т. Мозжерина, д. 8"
+            ),
+            "phone": "",
+            "email": "",
+            "map": "",
+        }
+        assert verified["rooms"][0]["meal"] == "Завтрак"
+        assert verified["rooms"][0]["earlyCheckIn"] == "09:30"
+        assert verified["rooms"][0]["lateCheckOut"] == "18:30"
+        assert verified["nights"] == 3
+        assert "Без штрафа до 31.05.2025" in verified["hotelTerms"]["cancellation"]
+    if name == "voucher-ru-328343646.pdf":
+        verified = body["verified_data"]
+        assert verified["issueDate"] == "26.05.2025"
+        assert verified["supplierOrderNo"] == "328343646"
+        assert verified["hotel"]["address"] == "119048, 10-letiya Oktyabrya street 11, Москва"
+        assert verified["hotel"]["phone"] == "+74951815101"
+        assert verified["hotel"]["map"] == "55.725307 37.56367"
+        assert verified["rooms"][0]["bedType"] == "Двуспальная кровать"
+        assert verified["rooms"][0]["meal"] == "Без питания"
+        assert verified["nights"] == 3
+        assert verified["hotelTerms"]["cityTax"]
+        assert verified["hotelTerms"]["registrationFee"]
+    if name == "voucher-ru-945135381.pdf":
+        verified = body["verified_data"]
+        assert [guest["name"] for guest in verified["passengers"]] == [
+            "Koloskov Evgenii",
+            "Koloskova Iuliia",
+        ]
+        assert verified["hotel"]["address"] == "100020, No.9 Dongdaqiao Road, Пекин"
+        assert verified["hotel"]["phone"] == "861085612888"
+        assert verified["hotel"]["map"] == "39.917427 116.44342"
+        assert verified["rooms"][0]["adults"] == 2
+        assert verified["rooms"][0]["meal"] == "Завтрак"
+        assert verified["rooms"][0]["guestIds"] == ["Koloskov Evgenii", "Koloskova Iuliia"]
+        assert verified["hotelTerms"]["deposit"] == "1500 CNY с номера за весь период проживания"
+    if name == "Ваучер трансфера.pdf":
+        verified = body["verified_data"]
+        assert verified["issueDate"] == "21.05.2025"
+        assert verified["supplierOrderNo"] == "C-0151866"
+        assert verified["passengers"][0]["phone"] == "+7 910 792-59-61"
+        assert verified["legs"][0]["flightNo"] == "SU-105"
+        assert verified["legs"][0]["toAddress"].startswith("Mercure Kaliningrad")
+        assert verified["legs"][1]["fromAddress"].startswith("Mercure Kaliningrad")
+        assert verified["vehicle"]["className"] == "Комфорт"
+        assert verified["vehicle"]["passengers"] == "1"
+        assert "5 часов" in verified["transferTerms"]["cancellation"]
+        assert verified["transferTerms"]["supportContacts"] == "88007751454"
+        assert verified["transferTerms"]["meetAndGreet"]
+        assert verified["transferTerms"]["baggageHelp"]

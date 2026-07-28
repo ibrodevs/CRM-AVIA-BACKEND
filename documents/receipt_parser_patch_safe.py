@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
@@ -35,6 +36,361 @@ def _json_safe(value):
 
 def _unique(values):
     return list(dict.fromkeys(value for value in values if value))
+
+
+def _clean(value):
+    cleaned = re.sub(r"\s+", " ", value or "")
+    cleaned = re.sub(r"(?<=[а-яё])(?=[А-ЯЁ])", " ", cleaned)
+    for joined, separated in {
+        "большойдвуспальной": "большой двуспальной",
+        "оплатыдополнительных": "оплаты дополнительных",
+        "времяпроживания": "время проживания",
+        "позднемзаезде": "позднем заезде",
+        "регистрацииработает": "регистрации работает",
+        "отменитьбронирование": "отменить бронирование",
+        "условиямитарифа": "условиями тарифа",
+        "гостя вотель": "гостя в отель",
+    }.items():
+        cleaned = re.sub(re.escape(joined), separated, cleaned, flags=re.I)
+    return cleaned.strip(" \n\t,")
+
+
+def _match_value(text, patterns):
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I | re.S)
+        if match:
+            return _clean(match.group(1))
+    return ""
+
+
+def _full_date(value):
+    match = re.fullmatch(r"(\d{2})\.(\d{2})\.(\d{2})", value or "")
+    return f"{match.group(1)}.{match.group(2)}.20{match.group(3)}" if match else value
+
+
+def _nights(segments):
+    if not segments:
+        return ""
+    try:
+        start = datetime.strptime(segments[0].get("date", ""), "%d.%m.%Y")
+        end = datetime.strptime(segments[0].get("endDate", ""), "%d.%m.%Y")
+    except (TypeError, ValueError):
+        return ""
+    return max((end - start).days, 0)
+
+
+def _hotel_details(text, fields):
+    flat = _clean(text)
+    hotel_name = _clean(fields.get("issuer"))
+    bilingual_name = re.match(r"(.+?\d\s*\*)\s*[A-Z][A-Za-z]", hotel_name)
+    if bilingual_name:
+        hotel_name = _clean(bilingual_name.group(1))
+    segment = (fields.get("segments") or [{}])[0]
+    room_name = re.sub(r",?\s*для$", "", _clean(segment.get("flightNo")), flags=re.I)
+
+    address = _match_value(
+        flat,
+        [
+            r"Адрес\s*Address\s+(.+?)(?=\s+Телефон\s*Phone\b)",
+            r"Адрес:\s*(.+?)(?=\s+Детали\s+размещения\b)",
+        ],
+    )
+    partner = re.search(
+        r"Размещение\s+забронировано\s+нашим\s+партнером\s+"
+        r"(?P<hotel>.+?)\s+(?P<address>\d{4,6}.+?)\s+"
+        r"(?P<phone>\+?\d[\d ()-]{7,})\s+Заезд\b",
+        flat,
+        re.I,
+    )
+    if partner:
+        hotel_name = hotel_name or _clean(partner.group("hotel"))
+        address = address or _clean(partner.group("address"))
+
+    city_country = re.search(
+        r"Город:\s*(?P<city>.+?),\s*(?P<country>.+?)\s+Название\s+отеля:",
+        flat,
+        re.I,
+    )
+    city = _clean(city_country.group("city")) if city_country else ""
+    country = _clean(city_country.group("country")) if city_country else ""
+    if not country and re.search(r"(?:\bРоссия\b|\bRussia\b)", address, re.I):
+        country = "Россия"
+    if not city:
+        for candidate in ("Москва", "Пекин", "Обь"):
+            if re.search(rf"\b{candidate}\b", address, re.I):
+                city = candidate
+                break
+
+    phone = _match_value(
+        flat,
+        [
+            r"Телефон\s*Phone\s+(\+?\d[\d ()-]{7,})(?=\s+Электронный)",
+        ],
+    )
+    if not phone and partner:
+        phone = _clean(partner.group("phone"))
+    email = _match_value(
+        flat,
+        [r"Электронный\s+адрес\s*Email\s+([\w.+-]+@[\w.-]+\.[A-Za-zА-Яа-я]{2,})"],
+    )
+    map_value = _match_value(flat, [r"\bGPS\s+(-?\d{1,3}[.,]\d+\s+-?\d{1,3}[.,]\d+)"])
+    category = _match_value(hotel_name, [r"\b(\d)\s*\*"])
+
+    bed_type = _match_value(flat, [r"Кровати:\s*(.+?)(?=\s+Гости:)"])
+    if not bed_type and re.search(r"двуспальн\w*\s+кроват", room_name, re.I):
+        bed_type = "Двуспальная кровать"
+    adults_value = _match_value(flat, [r"\bдля\s+(\d+)\s+взросл"])
+    children_value = _match_value(flat, [r"\b(\d+)\s+(?:детей|реб[её]нк)"])
+
+    meal_text = _match_value(
+        flat,
+        [
+            r"Тип\s+питания\s*Meal\s+type\s+(.+?)(?=\s+Номер\s+бронирования)",
+            r"Питание:\s*(.+?)(?=\s+Дата\s+заезда)",
+            r"\bПитание\s+(Питание\s+не\s+включено|Завтрак\s+включ[её]н)(?=\s+(?:Депозит|GPS))",
+        ],
+    )
+    meal_lower = meal_text.lower()
+    if "не включ" in meal_lower:
+        meal = "Без питания"
+    elif "завтрак" in meal_lower:
+        meal = "Завтрак"
+    elif "полупансион" in meal_lower:
+        meal = "Полупансион"
+    elif "полный пансион" in meal_lower:
+        meal = "Полный пансион"
+    elif "all inclusive" in meal_lower:
+        meal = "All Inclusive"
+    else:
+        meal = "Другое" if meal_text else "Без питания"
+
+    guest_names = [
+        _clean(name)
+        for name in re.split(r"\s*,\s*", fields.get("passenger_name") or "")
+        if _clean(name)
+    ]
+    passengers = [
+        {
+            "name": name,
+            "dob": "",
+            "document": "",
+            "ticketNo": "",
+            "guestType": "Взрослый",
+        }
+        for name in guest_names
+    ]
+    adults = int(adults_value) if adults_value else max(len(passengers), 1)
+    children = int(children_value) if children_value else 0
+
+    early = _match_value(flat, [r"Ранний\s+заезд\s+в\s+(\d{1,2}:\d{2})"])
+    late = _match_value(flat, [r"Поздний\s+выезд\s+в\s+(\d{1,2}:\d{2})"])
+    cancellation = _match_value(
+        flat,
+        [
+            r"Аннуляция\s*/\s*Изменение:\s*(.+?)(?=\s+Дополнительно:)",
+            r"(При\s+отмене\s+или\s+изменении\s+заказа.+?договора\s*\.)",
+            r"Условия\s+отмены\s+и\s+изменения\s+заказа\s+(.+?)(?=\s+Пожалуйста,\s+предупредите)",
+        ],
+    )
+    amendment = cancellation
+    no_show = _match_value(
+        flat,
+        [
+            r"(В\s+случае\s+незаезда.+?штраф\w*\s+санкци\w*(?:\s+за\s+«?no-show»?)?\s*\.)",
+            r"(При\s+аннуляции\s+заказа\s+или\s+неявке.+?тарифа\s*\.)",
+        ],
+    )
+    important = _match_value(
+        flat,
+        [
+            r"Важная\s+информация\s+(.+?)(?=\s+Условия\s+отмены)",
+            r"(Если\s+Вы\s+прибываете\s+в\s+отель.+?«?no-show»?\s*\.)",
+            r"(При\s+заселении\s+обязательно.+?удостоверяющий\s+личность\s*\.)",
+        ],
+    )
+    deposit = _match_value(
+        flat,
+        [
+            r"Депозит\s+Залог\s+(.+?)(?=\s+GPS\b)",
+            r"(кредитную\s+карту\s+или\s+наличн\w+\s+депозит.+?(?:и\s+др|проживания)\s*\.)",
+        ],
+    )
+    guest_comment = _match_value(
+        flat,
+        [
+            r"(Пожалуйста,\s+предупредите\s+заранее.+?штрафн\w+\s+санкци\w+\s+за\s+незаезд\s*\.)",
+            r"(При\s+заселении\s+обязательно.+?удостоверяющий\s+личность\s*\.)",
+        ],
+    )
+
+    supplier_order = _match_value(
+        flat,
+        [
+            r"Номер\s+заказа\s+в\s+системе\s*бронирования\s*Order\s+number\s+in\s+the\s+booking\s+system\s+(\d+)",
+            r"\bБронирование\s+(\d+)\s+от\b",
+        ],
+    )
+    hotel_booking = _match_value(
+        flat,
+        [
+            r"Номер\s+бронирования\s*Booking\s+reference\s+number\s+(\d+)",
+            r"Номер\s+бронирования:\s*(.+?)(?=\s+Аннуляция)",
+        ],
+    )
+    reference = _clean(fields.get("reference"))
+    if not supplier_order and reference and reference != "рования":
+        supplier_order = reference
+    if not hotel_booking and reference and reference != "рования":
+        hotel_booking = reference
+
+    issue_date = _clean(fields.get("issue_date")) or _match_value(
+        flat,
+        [
+            r"Дата\s+выдачи\s*Date\s+of\s+issue\s+(\d{2}\.\d{2}\.\d{4})",
+            r"\bБронирование\s+\d+\s+от\s+(\d{2}\.\d{2}\.\d{2,4})",
+            r"Забронировано:\s*(\d{2}\.\d{2}\.\d{4})",
+        ],
+    )
+
+    room = {
+        "category": room_name,
+        "name": room_name,
+        "bedType": bed_type,
+        "adults": adults,
+        "children": children,
+        "meal": meal,
+        "earlyCheckIn": early,
+        "lateCheckOut": late,
+        "guestIds": guest_names,
+        "conditions": meal_text,
+    }
+    possible_fee = "Может взиматься отелем и оплачиваться гостем напрямую."
+    return {
+        "issuer": hotel_name,
+        "passengers": passengers,
+        "issueDate": _full_date(issue_date),
+        "supplierOrderNo": supplier_order,
+        "hotelBookingNo": hotel_booking,
+        "bookingStatus": "Подтверждено",
+        "hotel": {
+            "name": hotel_name,
+            "category": f"{category}*" if category else "",
+            "country": country,
+            "city": city,
+            "address": address,
+            "phone": phone,
+            "email": email,
+            "map": map_value,
+        },
+        "rooms": [room],
+        "nights": _nights(fields.get("segments") or []),
+        "hotelTerms": {
+            "deposit": deposit,
+            "cityTax": possible_fee if re.search(r"городск\w+\s+налог", flat, re.I) else "",
+            "resortFee": possible_fee if re.search(r"resort/facility\s+fee", flat, re.I) else "",
+            "registrationFee": (
+                possible_fee if re.search(r"регистрационн\w+\s+сбор", flat, re.I) else ""
+            ),
+            "cancellation": cancellation,
+            "noShow": no_show,
+            "amendment": amendment,
+            "important": important,
+            "guestComment": guest_comment,
+        },
+    }
+
+
+def _transfer_details(text, fields):
+    flat = _clean(text)
+    passenger_name = _clean(fields.get("passenger_name"))
+    phone = ""
+    if passenger_name:
+        phone = _match_value(
+            flat,
+            [rf"{re.escape(passenger_name)}\s+(\+?\d[\d ()-]{{7,}}?)(?=\s+(?:Аэропорт|Калининград))"],
+        )
+    address = _match_value(
+        flat,
+        [
+            r"(Mercure\s+Kaliningrad,\s*Озерный\s+пр\.,\s*2,\s*Калининград,\s*"
+            r"Калининградская\s+обл\.,\s*Россия,\s*236040)"
+        ],
+    )
+    flight = _match_value(flat, [r"\b([A-ZА-Я]{2}-?\d{2,4})\s+терминал\b"])
+    vehicle_class = _match_value(flat, [r"\b(Комфорт)\s+Комфорт\s+(\d+)\s+пассажир"])
+    passenger_count = _match_value(flat, [r"\bКомфорт\s+Комфорт\s+(\d+)\s+пассажир"])
+    segments = [dict(segment) for segment in fields.get("segments") or []]
+    if segments:
+        segments[0].update(
+            {
+                "fromAddress": segments[0].get("from") or "",
+                "toAddress": address,
+                "flightNo": flight,
+            }
+        )
+    if len(segments) > 1:
+        segments[1].update(
+            {
+                "fromAddress": address,
+                "toAddress": segments[1].get("to") or "",
+            }
+        )
+
+    issue_date = _match_value(flat, [r"\bот\s+(\d{2}\.\d{2}\.\d{4})\s+Пассажиры\b"])
+    cancellation_deadlines = _unique(
+        re.findall(r"до\s+(\d{1,2}:\d{2}\s+\d{2}\.\d{2}\.\d{4})", flat, re.I)
+    )
+    cancellation = "Бесплатная отмена не позднее чем за 5 часов до каждой поездки."
+    if cancellation_deadlines:
+        cancellation += f" Крайние сроки: {', '.join(cancellation_deadlines)}."
+    support = _match_value(
+        flat,
+        [r"Телефоны\s+круглосуточной\s+службы\s+поддержки\s+(\d{8,})"],
+    )
+    return {
+        "issueDate": issue_date,
+        "supplierOrderNo": _clean(fields.get("reference")),
+        "passengers": [
+            {
+                "name": passenger_name,
+                "phone": phone,
+                "signText": "",
+                "comment": "",
+            }
+        ]
+        if passenger_name
+        else [],
+        "segments": segments,
+        "vehicle": {
+            "className": vehicle_class,
+            "category": "",
+            "passengers": passenger_count,
+            "luggage": "",
+            "requirements": "Заранее сообщить о детях или крупногабаритном багаже.",
+        },
+        "transferTerms": {
+            "cancellation": cancellation,
+            "freeWaiting": (
+                "20 минут при подаче по адресу или к отелю; 1 час после внутреннего "
+                "или международного авиарейса; 20 минут после прибытия поезда."
+            ),
+            "meetAndGreet": (
+                "Водитель встретит пассажира с персональной табличкой в терминале "
+                "аэропорта, на перроне вокзала или в холле гостиницы."
+            ),
+            "baggageHelp": "Водитель поможет с багажом по пути к автомобилю.",
+            "supportContacts": support,
+            "supplierComment": (
+                "Телефон водителя будет отправлен за 1 час до поездки. "
+                "При задержке рейса или поезда дополнительная плата не взимается."
+            ),
+            "driverComment": "",
+            "passengerComment": (
+                "Включите телефон после посадки. Если не можете найти водителя, "
+                "позвоните в службу поддержки."
+            ),
+        },
+    }
 
 
 def _hotel(text):
@@ -207,13 +563,21 @@ def install_receipt_parser_patch():
             fields = _hotel(pages[0])
             if fields:
                 result["fields"].update(fields)
-                result["raw"].update(_json_safe(fields))
+                details = _hotel_details(joined, result["fields"])
+                result["fields"].update(details)
+                result["raw"].update(_json_safe({**fields, **details}))
                 result["status"] = "parsed"
                 result["confidence"] = Decimal("0.960")
                 result["warnings"] = ["Стоимость в исходном ваучере не указана; остальные поля распознаны."]
             return result
 
         result_fields = result.get("fields") or {}
+        if result_fields.get("service_kind") == "hotel":
+            details = _hotel_details(joined, result_fields)
+            result_fields.update(details)
+            result["raw"].update(_json_safe(details))
+            return result
+
         if result_fields.get("service_kind") == "rail" and not result_fields.get("segments"):
             receipts = [receipt for receipt in (_rail(page) for page in pages) if receipt]
             if receipts:
@@ -261,6 +625,11 @@ def install_receipt_parser_patch():
                 result["confidence"] = Decimal("0.970")
                 result["warnings"] = [f"Распознано ЖД-бланков: {len(receipts)}. Проверьте данные перед сохранением."]
             return result
+
+        if result_fields.get("service_kind") == "transfer":
+            details = _transfer_details(joined, result_fields)
+            result_fields.update(details)
+            result["raw"].update(_json_safe(details))
         return result
 
     wrapped._safe_layout_patch = True

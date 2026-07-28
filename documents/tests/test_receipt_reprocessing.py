@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from documents.receipt_parser_patch_safe import _rail
+from documents.receipt_parser_patch_safe import _hotel_details, _rail
 
 
 def test_rzd_page_parses_when_pdf_joins_time_and_date():
@@ -80,3 +80,61 @@ def test_rzd_page_parses_arbitrary_route_from_control_line():
     assert fields["segments"][0]["to"] == "САМАРА"
     assert fields["segments"][0]["date"] == "30.01.2026"
     assert fields["segments"][0]["flightNo"] == "124ВА"
+
+
+def test_bilingual_hotel_voucher_populates_editor_specific_fields():
+    text = """
+    Ваучер отеля Hotel voucher
+    Номер заказа в системе бронирования Order number in the booking system 1989071
+    Дата выдачи Date of issue 27.01.2026
+    Лесная Сафмар (бывший Холидей Инн Москва Лесная) 4*
+    Lesnaya Safmar (ex.Holiday Inn Moscow Lesnaya) 4*
+    28.01.2026 14:00 29.01.2026 12:00 Ночей: 1
+    АдресAddress 125047, Россия, Москва, ул Лесная, д 15
+    ТелефонPhone +74957836500
+    Электронный адресEmail reservations@hi-mole.ru
+    ФИ гостяGuest name MR АЛЕКСАНДР ЧИЧЕВ
+    Тип номераRoom type Представительский номер с большойдвуспальной кроватью
+    Тип питанияMeal type Завтрак (Шведский стол)
+    Номер бронированияBooking reference number 13527804
+    При отмене или изменении заказа, а так же в случае незаезда гостя в отель
+    применяются штрафные санкции в соответствии с условиями тарифа и договора.
+    """
+    fields = {
+        "issuer": (
+            "Лесная Сафмар (бывший Холидей Инн Москва Лесная) 4*"
+            "Lesnaya Safmar (ex.Holiday Inn Moscow Lesnaya) 4*"
+        ),
+        "passenger_name": "АЛЕКСАНДР ЧИЧЕВ",
+        "reference": "13527804",
+        "issue_date": "27.01.2026",
+        "segments": [
+            {
+                "date": "28.01.2026",
+                "endDate": "29.01.2026",
+                "flightNo": "Представительский номер с большойдвуспальной кроватью",
+            }
+        ],
+    }
+
+    details = _hotel_details(text, fields)
+
+    assert details["supplierOrderNo"] == "1989071"
+    assert details["hotelBookingNo"] == "13527804"
+    assert details["hotel"] == {
+        "name": "Лесная Сафмар (бывший Холидей Инн Москва Лесная) 4*",
+        "category": "4*",
+        "country": "Россия",
+        "city": "Москва",
+        "address": "125047, Россия, Москва, ул Лесная, д 15",
+        "phone": "+74957836500",
+        "email": "reservations@hi-mole.ru",
+        "map": "",
+    }
+    assert details["rooms"][0]["name"] == (
+        "Представительский номер с большой двуспальной кроватью"
+    )
+    assert details["rooms"][0]["bedType"] == "Двуспальная кровать"
+    assert details["rooms"][0]["meal"] == "Завтрак"
+    assert details["nights"] == 1
+    assert details["hotelTerms"]["cancellation"]
