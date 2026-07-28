@@ -53,6 +53,20 @@ class TestSearchFlow:
         assert first["price"]["currency"] == "USD"
         assert first["itinerary"]["segments"][0]["origin"] == "FRU"
 
+        technical_segments = [
+            segment
+            for offer in offers["results"]
+            for segment in offer["itinerary"]["segments"]
+            if segment.get("technical_stops")
+        ]
+        assert len(technical_segments) == 1
+        technical_stop = technical_segments[0]["technical_stops"][0]
+        assert technical_stop["airport_code"] == "TAS"
+        assert technical_stop["reason"] == "refueling"
+        assert technical_stop["duration_minutes"] == 45
+        assert technical_stop["passengers_disembark"] is False
+        assert technical_stop["aircraft_change"] is False
+
         prices = [Decimal(o["price"]["amount"]) for o in offers["results"]]
         assert prices == sorted(prices)
 

@@ -175,18 +175,35 @@ class MockAdapter(ProviderAdapter):
             "expires_at": (datetime.now().astimezone() + timedelta(minutes=30)).isoformat(),
         }
         if kind == "avia":
-            offer["itinerary"] = {
-                "segments": [
+            flight_departure = departure + timedelta(hours=8 + index * 3)
+            flight_arrival = departure + timedelta(hours=13 + index * 3)
+            segment = {
+                "origin": criteria.get("origin", "FRU"),
+                "destination": criteria.get("destination", "IST"),
+                "departure": flight_departure.isoformat(),
+                "arrival": flight_arrival.isoformat(),
+                "airline": ["TK", "PC", "J2"][index % 3],
+                "flight_number": f"{100 + index}",
+                "cabin": criteria.get("cabin", "economy"),
+            }
+            if index == 1:
+                segment["technical_stops"] = [
                     {
-                        "origin": criteria.get("origin", "FRU"),
-                        "destination": criteria.get("destination", "IST"),
-                        "departure": (departure + timedelta(hours=8 + index * 3)).isoformat(),
-                        "arrival": (departure + timedelta(hours=13 + index * 3)).isoformat(),
-                        "airline": ["TK", "PC", "J2"][index % 3],
-                        "flight_number": f"{100 + index}",
-                        "cabin": criteria.get("cabin", "economy"),
+                        "airport_code": "TAS",
+                        "airport_name": "Islam Karimov International Airport",
+                        "city": "Ташкент",
+                        "country": "Узбекистан",
+                        "arrival": (flight_departure + timedelta(hours=2)).isoformat(),
+                        "departure": (flight_departure + timedelta(hours=2, minutes=45)).isoformat(),
+                        "duration_minutes": 45,
+                        "reason": "refueling",
+                        "passengers_disembark": False,
+                        "aircraft_change": False,
+                        "note": "Самолёт продолжает полёт тем же рейсом после дозаправки.",
                     }
-                ],
+                ]
+            offer["itinerary"] = {
+                "segments": [segment],
             }
             offer["fare"] = {
                 "cabin": criteria.get("cabin", "economy"),
