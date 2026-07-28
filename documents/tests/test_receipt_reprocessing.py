@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from documents.receipt_parser_patch_safe import _hotel_details, _rail, _transfer_details
-from documents.services import _s7_compact_fields
+from documents.services import _rossiya_itinerary_fields, _s7_compact_fields
 
 
 def test_rzd_page_parses_when_pdf_joins_time_and_date():
@@ -159,6 +159,177 @@ def test_compact_s7_layout_recognizes_passenger_document_route_and_finances():
     assert fields["taxes"] == Decimal("2765")
     assert fields["fees"] == Decimal("160.00")
     assert fields["total"] == Decimal("20715.00")
+
+
+def test_multiline_s7_layout_reassembles_split_amounts_and_route():
+    text = """
+    ЭЛЕКТРОННЫЙ БИЛЕТ (маршрут-квитанция для пассажира)
+    Заказ No 5994230
+    код бронирования: NLZF1I
+    Пассажир
+    Дата рождения
+    Номер документа
+    Номер билета
+    Бонусная карта
+    Продажа
+    GRABCHUK MIKHAIL PETROVICH
+    ПС 4621263964
+    421 2129571864
+    01.11.2025
+    Рейс под брендом авиакомпании S7 Airlines
+    Новосибирск, OVB
+    Москва, DME
+    Перевозчик
+    Рейс
+    Тариф
+    Багаж
+    Ручная кладь
+    Статус
+    11:55
+    Сб, 1 Ноября 2025
+    12:35
+    Сб, 1 Ноября 2025
+    S7 Airlines
+    S7-2508
+    ECONOMY
+    VSTOW
+    1PC
+    10 кг
+    OK
+    РАСЧЕТ ТАРИФА:
+    ТАРИФ
+    : RUB26
+    85
+    5
+    ЭКВИВ.
+    СБОР/TAX
+    : RUB2298RI490RUB
+    ВСЕГО К ОПЛАТЕ
+    : RUB2
+    915
+    3
+    В Т.Ч.
+    """
+
+    fields = _s7_compact_fields(text)
+
+    assert fields["passenger_name"] == "GRABCHUK MIKHAIL PETROVICH"
+    assert fields["document_number"] == "ПС 4621263964"
+    assert fields["ticket_number"] == "421 2129571864"
+    assert fields["reference"] == "NLZF1I"
+    assert fields["supplier_order_number"] == "5994230"
+    assert fields["fare"] == Decimal("26855")
+    assert fields["taxes"] == Decimal("2298")
+    assert fields["total"] == Decimal("29153")
+    assert fields["segments"][0] == {
+        "from": "Новосибирск",
+        "fromCode": "OVB",
+        "to": "Москва",
+        "toCode": "DME",
+        "date": "01.11.2025",
+        "dep": "11:55",
+        "arr": "12:35",
+        "flightNo": "S7-2508",
+        "dir": "out",
+    }
+
+
+def test_rossiya_multi_ticket_receipt_keeps_all_passengers_and_sums_total():
+    text = """
+    27 октября 2025
+    Маршрутная квитанция электронного билета
+    KISELEVA MARGARITA SEMENOVNA
+    Документ:
+    2202559501
+    No эл.билета:
+    5556171217873
+    Код бронирования*
+    6RZ483
+    Москва
+    Благовещенск
+    Рейс: SU 6255
+    08 дек. 2025
+    18:40 SVO B
+    Шереметьево, B
+    09 дек. 2025
+    Перевозчик: Россия*
+    BQS 07:50
+    Аэропорт Игнатьево
+    Класс: Эконом / P
+    Вид тарифа: PCDSOC
+    Статус: Оформлен
+    Провоз багажа: 1 место до 23 кг
+    Тариф
+    RUB 6400.00
+    P2202559501/DOB02JUN57/NDSA/C0.00
+    Итого по тарифу/сборам
+    6400.00 RUB
+    27 октября 2025
+    Маршрутная квитанция электронного билета
+    DUBROVSKAIA IRINA ILINICHNA
+    Документ:
+    2201903735
+    No эл.билета:
+    5556171217874
+    Код бронирования*
+    6RZ483
+    Москва
+    Благовещенск
+    Рейс: SU 6255
+    08 дек. 2025
+    18:40 SVO B
+    Шереметьево, B
+    09 дек. 2025
+    Перевозчик: Россия*
+    BQS 07:50
+    Аэропорт Игнатьево
+    Класс: Эконом / P
+    Вид тарифа: PCDSOC
+    Статус: Оформлен
+    Провоз багажа: 1 место до 23 кг
+    Тариф
+    RUB 6400.00
+    P2201903735/DOB16JUN52/NDSA/C0.00
+    Итого по тарифу/сборам
+    6400.00 RUB
+    """
+
+    fields = _rossiya_itinerary_fields(text)
+
+    assert fields["passenger_name"] == (
+        "KISELEVA MARGARITA SEMENOVNA, DUBROVSKAIA IRINA ILINICHNA"
+    )
+    assert fields["passengers"] == [
+        {
+            "name": "KISELEVA MARGARITA SEMENOVNA",
+            "dob": "02.06.1957",
+            "document": "2202559501",
+            "ticketNo": "5556171217873",
+        },
+        {
+            "name": "DUBROVSKAIA IRINA ILINICHNA",
+            "dob": "16.06.1952",
+            "document": "2201903735",
+            "ticketNo": "5556171217874",
+        },
+    ]
+    assert fields["ticket_number"] == "5556171217873, 5556171217874"
+    assert fields["reference"] == "6RZ483"
+    assert fields["fare"] == Decimal("12800.00")
+    assert fields["total"] == Decimal("12800.00")
+    assert fields["segments"] == [
+        {
+            "from": "Москва",
+            "fromCode": "SVO",
+            "to": "Благовещенск",
+            "toCode": "BQS",
+            "date": "08.12.2025",
+            "dep": "18:40",
+            "arr": "07:50",
+            "flightNo": "SU6255",
+            "dir": "out",
+        }
+    ]
 
 
 def test_bilingual_hotel_voucher_populates_editor_specific_fields():
