@@ -1956,6 +1956,14 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
     fare_breakdown = structured.get("fare_breakdown") or fare_breakdown
     tax_breakdown = structured.get("tax_breakdown") or tax_breakdown
     fee_breakdown = structured["fee_breakdown"] or fee_breakdown
+    if service_kind == "avia" and tax_breakdown:
+        tax_currencies = {row.get("currency") for row in tax_breakdown if row.get("currency")}
+        if not currency or not tax_currencies or tax_currencies == {currency}:
+            taxes = sum((Decimal(str(row.get("amount") or 0)) for row in tax_breakdown), Decimal("0"))
+            if total is not None:
+                additions = taxes + (fees or Decimal("0"))
+                if fare is None or abs((fare + additions) - total) > Decimal("0.01"):
+                    fare = max(total - additions, Decimal("0"))
     supplier_order_number = structured.get("supplier_order_number") or ""
     trip_type = _guess_trip_type(segments, service_kind)
     route_code = _first_match(text, [r"ОТПРВ/НАЗН\s*:\s*([A-Z]{6})"])

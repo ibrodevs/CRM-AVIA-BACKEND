@@ -8,6 +8,7 @@ from documents.services import (
     _rossiya_itinerary_fields,
     _s7_compact_fields,
     _tax_breakdown,
+    extract_receipt_fields,
 )
 
 
@@ -55,6 +56,32 @@ def test_fare_and_rate_values_do_not_leak_into_tax_breakdown():
     """
 
     assert [row["code"] for row in _tax_breakdown(text)] == ["ZZ", "KC", "AM", "SA", "XQ"]
+
+
+def test_fare_calculation_and_all_tax_components_reconcile_ticket_total():
+    text = """
+    Маршрутная квитанция пассажира
+    Пассажир: SARGSIAN SIRANUSH B
+    PNR: 02K4NC
+    Маршрут: EVN → GOJ
+    Дата отправления: 24.09.2024
+    Рейс WZ1348
+    Расчет тарифа/Fare calculation EVN WZ GOJ131.11NUC131.11END ROE0.915261
+    Тариф/Fare 12060РУБ
+    Сбор/Tax/fee/charge ZZ185РУБ KC2714РУБ AM2400РУБ SA250РУБ XQ1090РУБ
+    Итого/Total 18699РУБ
+    """
+
+    fields = extract_receipt_fields(
+        text.encode(),
+        mime="text/plain",
+        name="wz-receipt.txt",
+    )["fields"]
+
+    assert fields["fare"] == Decimal("12060")
+    assert fields["taxes"] == Decimal("6639")
+    assert fields["total"] == Decimal("18699")
+    assert [row["code"] for row in fields["fare_breakdown"]] == ["WZ", "ROE"]
 
 
 def test_rzd_page_parses_when_pdf_joins_time_and_date():
