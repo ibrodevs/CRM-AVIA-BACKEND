@@ -161,6 +161,47 @@ def test_rzd_page_parses_when_pdf_joins_time_and_date():
     }
 
 
+def test_rzd_card_payment_layout_deduplicates_name_and_splits_full_cost():
+    text = """
+    ЭЛЕКТРОННЫЙ БИЛЕТ. КОНТРОЛЬНЫЙ КУПОН
+    ПОЕЗД ВАГОН МЕСТО 021 021 11 11 032 032
+    № 71 853 989 048 044
+    01:05 01:05 15.03.2025
+    09:37 09:37 15.03.2025
+    ПАСПОРТ РФ 4023479540 12.05.2003 RUS М
+    КЛЮШНИЧЕНКО АЛЕКСАНДР КЛЮШНИЧЕНКО АЛЕКСАНДР ЮРЬЕВИЧ ЮРЬЕВИЧ
+    Посадка в поезд осуществляется
+    021АА 15.03.2025 01:05 11К 032 САНКТ-ПЕТЕРБУРГ-ГЛАВНЫЙ - МОСКВА ОКТЯБРЬСКАЯ
+    ПН4023479540 КЛЮШНИЧЕНКО-АЮ 120503
+    Заказ: 71853989048011
+    Перевозчик: ТВЕРСКОЙ ЭКСПР / ТВЕРСК ИНН 7705506536
+    2Ф 2Ф Тариф: Полный
+    Оплата банковской картой ****1314
+    Билет Плацкарта НДС 0% НДС 20%
+    1 796,40 ₽ 2 068,50 ₽ 0,00 ₽ 141,67 ₽
+    Итого Вкл. НДС 3 864,90 ₽
+    """
+
+    fields = _rail(text)
+
+    assert fields is not None
+    assert fields["passenger_name"] == "КЛЮШНИЧЕНКО АЛЕКСАНДР ЮРЬЕВИЧ"
+    assert fields["ticket_number"] == "71853989048044"
+    assert fields["ticketCost"] == Decimal("1796.40")
+    assert fields["reservedSeatCost"] == Decimal("2068.50")
+    assert fields["total"] == Decimal("3864.90")
+    assert fields["costBreakdown"] == [
+        {"code": "TICKET", "label": "Билет", "amount": "1796.40", "currency": "RUB"},
+        {"code": "RESERVED_SEAT", "label": "Плацкарта", "amount": "2068.50", "currency": "RUB"},
+    ]
+    assert fields["includedTaxBreakdown"] == [
+        {"code": "VAT0", "label": "НДС 0% (включён)", "amount": "0.00", "currency": "RUB"},
+        {"code": "VAT", "label": "НДС (включён)", "amount": "141.67", "currency": "RUB"},
+    ]
+    assert fields["segments"][0]["coach"] == "11"
+    assert fields["segments"][0]["seat"] == "032"
+
+
 def test_rzd_pages_override_incorrect_generic_avia_classification(monkeypatch):
     from documents import receipt_parser_patch_safe, services
 

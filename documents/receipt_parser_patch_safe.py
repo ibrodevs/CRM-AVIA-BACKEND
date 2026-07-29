@@ -41,6 +41,11 @@ def _unique(values):
     return list(dict.fromkeys(value for value in values if value))
 
 
+def _dedupe_repeated_words(value):
+    words = _clean(value).split()
+    return " ".join(dict.fromkeys(words))
+
+
 def _rail_segments_need_replacement(segments):
     if not segments:
         return True
@@ -504,11 +509,11 @@ def _hotel(text):
 
 def _rail(text):
     flat = re.sub(r"\s+", " ", text)
-    ticket = re.search(r"№\s*([\d ]{13,24})", flat)
+    ticket = re.search(r"№\s*((?:\d\s*){14})", flat)
     passport = re.search(r"ПАСПОРТ РФ\s*(\d{10})\s*(\d{2}\.\d{2}\.\d{4})", flat)
     passenger = re.search(
         r"ПАСПОРТ РФ\s*\d{10}\s*\d{2}\.\d{2}\.\d{4}\s*RUS\s*[МMЖF]\s*"
-        r"([А-ЯЁ][А-ЯЁ\-]+(?:\s+[А-ЯЁ][А-ЯЁ\-]+){1,3})(?=\s+Посадка)",
+        r"([А-ЯЁA-Z][А-ЯЁA-Z\-]+(?:\s+[А-ЯЁA-Z][А-ЯЁA-Z\-]+){1,7})(?=\s+Посадка)",
         flat,
     )
     journey = re.search(
@@ -525,7 +530,7 @@ def _rail(text):
         flat,
     )
     fare_block = re.search(
-        r"Оплата наличными\s+Билет\s+Плацкарта\s+"
+        r"Оплата\s+(?:наличными|банковской\s+картой)(?:\s+\*+\d+)?\s+Билет\s+Плацкарта\s+"
         r"НДС\s*\d+(?:[,.]\d+)?%\s+НДС\s*\d+(?:[,.]\d+)?%\s+"
         r"(?P<body>.+?)\s+Итого",
         flat,
@@ -547,6 +552,8 @@ def _rail(text):
     )
     ticket_cost = _decimal(fare_parts[0]) if fare_parts else total
     reserved_seat_cost = _decimal(fare_parts[1]) if len(fare_parts) > 1 else Decimal("0")
+    vat_zero = _decimal(fare_parts[2]) if len(fare_parts) > 2 else Decimal("0")
+    vat_standard = _decimal(fare_parts[3]) if len(fare_parts) > 3 else Decimal("0")
     train = journey.group("train")
     coach = journey.group("coach")
     seat = journey.group("seat")
@@ -565,7 +572,7 @@ def _rail(text):
         ticket_number = order.group(1)
     return {
         "issuer": carrier.group(1).strip() if carrier else "ОАО РЖД",
-        "passenger_name": passenger.group(1).strip(),
+        "passenger_name": _dedupe_repeated_words(passenger.group(1)),
         "reference": order.group(1) if order else "",
         "ticket_number": ticket_number,
         "document_number": passport.group(1) if passport else "",
@@ -577,6 +584,34 @@ def _rail(text):
         "total": total,
         "ticketCost": ticket_cost,
         "reservedSeatCost": reserved_seat_cost,
+        "costBreakdown": [
+            {
+                "code": "TICKET",
+                "label": "Билет",
+                "amount": str(ticket_cost),
+                "currency": "RUB",
+            },
+            {
+                "code": "RESERVED_SEAT",
+                "label": "Плацкарта",
+                "amount": str(reserved_seat_cost),
+                "currency": "RUB",
+            },
+        ],
+        "includedTaxBreakdown": [
+            {
+                "code": "VAT0",
+                "label": "НДС 0% (включён)",
+                "amount": str(vat_zero),
+                "currency": "RUB",
+            },
+            {
+                "code": "VAT",
+                "label": "НДС (включён)",
+                "amount": str(vat_standard),
+                "currency": "RUB",
+            },
+        ],
         "agencyServiceFee": Decimal("0"),
         "additionalFees": Decimal("0"),
         "currency": "RUB",
@@ -651,6 +686,22 @@ def install_receipt_parser_patch():
                     (receipt["reservedSeatCost"] or Decimal("0") for receipt in receipts),
                     Decimal("0"),
                 )
+                included_vat_zero = sum(
+                    (
+                        _decimal(receipt.get("includedTaxBreakdown", [{}, {}])[0].get("amount"))
+                        or Decimal("0")
+                        for receipt in receipts
+                    ),
+                    Decimal("0"),
+                )
+                included_vat = sum(
+                    (
+                        _decimal(receipt.get("includedTaxBreakdown", [{}, {}])[1].get("amount"))
+                        or Decimal("0")
+                        for receipt in receipts
+                    ),
+                    Decimal("0"),
+                )
                 passengers = _unique(receipt["passenger_name"] for receipt in receipts)
                 tickets = _unique(receipt["ticket_number"] for receipt in receipts)
                 segments = []
@@ -688,6 +739,34 @@ def install_receipt_parser_patch():
                         "fees": Decimal("0"),
                         "ticketCost": ticket_cost,
                         "reservedSeatCost": reserved_seat_cost,
+                        "fare_breakdown": [
+                            {
+                                "code": "TICKET",
+                                "label": "Билет",
+                                "amount": str(ticket_cost),
+                                "currency": "RUB",
+                            },
+                            {
+                                "code": "RESERVED_SEAT",
+                                "label": "Плацкарта",
+                                "amount": str(reserved_seat_cost),
+                                "currency": "RUB",
+                            },
+                        ],
+                        "includedTaxBreakdown": [
+                            {
+                                "code": "VAT0",
+                                "label": "НДС 0% (включён)",
+                                "amount": str(included_vat_zero),
+                                "currency": "RUB",
+                            },
+                            {
+                                "code": "VAT",
+                                "label": "НДС (включён)",
+                                "amount": str(included_vat),
+                                "currency": "RUB",
+                            },
+                        ],
                         "agencyServiceFee": Decimal("0"),
                         "additionalFees": Decimal("0"),
                         "segments": preferred_segments,
