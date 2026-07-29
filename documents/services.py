@@ -331,6 +331,73 @@ def _tax_breakdown(text: str) -> list[dict]:
     return components or rows
 
 
+def _fare_breakdown(text: str) -> list[dict]:
+    """Split an IATA fare-calculation line into itinerary fare components."""
+    match = re.search(
+        r"(?:Расч[её]т\s+тарифа(?:/Fare\s+calculation)?|Fare\s+calculation)"
+        r"\s*[:\-]?\s*(?P<value>[^\n\r]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return []
+    calculation = re.sub(r"\s+", " ", match.group("value")).strip()
+    if not calculation or re.fullmatch(r"Тариф(?:/Fare)?", calculation, flags=re.IGNORECASE):
+        return []
+
+    rows: list[dict] = []
+    current_origin = ""
+    component_pattern = re.compile(
+        r"(?:(?P<origin>[A-Z]{3})\s+)?"
+        r"(?P<carrier>[A-Z0-9]{2,3})\s+"
+        r"(?P<destination>[A-Z]{3})\s*"
+        r"(?P<amount>\d+(?:[,.]\d+)?)",
+    )
+    for component in component_pattern.finditer(calculation.upper()):
+        if component.group("carrier") in {"NUC", "END", "ROE"} or component.group("destination") in {"NUC", "END", "ROE"}:
+            continue
+        origin = component.group("origin") or current_origin
+        destination = component.group("destination")
+        if not origin:
+            continue
+        amount = Decimal(component.group("amount").replace(",", "."))
+        carrier = component.group("carrier")
+        rows.append(
+            {
+                "code": carrier,
+                "label": f"{origin} → {destination}",
+                "amount": str(amount),
+                "currency": "NUC",
+                "from": origin,
+                "to": destination,
+                "carrier": carrier,
+            }
+        )
+        current_origin = destination
+
+    nuc_total = re.search(r"\bNUC\s*(\d+(?:[,.]\d+)?)", calculation, flags=re.IGNORECASE)
+    if not rows and nuc_total:
+        rows.append(
+            {
+                "code": "NUC",
+                "label": "Итого расчёта тарифа",
+                "amount": str(Decimal(nuc_total.group(1).replace(",", "."))),
+                "currency": "NUC",
+            }
+        )
+    roe = re.search(r"\bROE\s*(\d+(?:[,.]\d+)?)", calculation, flags=re.IGNORECASE)
+    if roe:
+        rows.append(
+            {
+                "code": "ROE",
+                "label": "Курс пересчёта",
+                "amount": str(Decimal(roe.group(1).replace(",", "."))),
+                "currency": "",
+            }
+        )
+    return rows
+
+
 def _fee_breakdown(text: str) -> list[dict]:
     return _money_breakdown(
         text,
@@ -1609,6 +1676,7 @@ def _structured_receipt_fields(text: str, *, service_kind: str) -> dict:
         "fare_basis": fare_basis,
         "baggage": baggage,
         "hand_baggage": hand_baggage,
+        "fare_breakdown": _fare_breakdown(text),
         "tax_breakdown": [],
         "fee_breakdown": fee_breakdown,
     }
@@ -1768,6 +1836,7 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
     payable_total = _money(text, [r"(?:всего к оплате|grand total|amount due)\s*[:\-]?\s*([^\n\r]+)"])
     if payable_total is not None:
         total = payable_total
+    fare_breakdown = _fare_breakdown(text)
     tax_breakdown = _tax_breakdown(text)
     fee_breakdown = _fee_breakdown(text)
     fees = sum((Decimal(row["amount"]) for row in fee_breakdown), Decimal("0")) if fee_breakdown else None
@@ -1867,6 +1936,7 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
             fare_basis = " / ".join(dict.fromkeys(segment_fares))
         if segment_baggage:
             baggage = " / ".join(dict.fromkeys(segment_baggage))
+    fare_breakdown = structured.get("fare_breakdown") or fare_breakdown
     tax_breakdown = structured.get("tax_breakdown") or tax_breakdown
     fee_breakdown = structured["fee_breakdown"] or fee_breakdown
     supplier_order_number = structured.get("supplier_order_number") or ""
@@ -1886,6 +1956,7 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
         "currency": currency,
         "segments": segments,
         "trip_type": trip_type,
+        "fare_breakdown": fare_breakdown,
         "tax_breakdown": tax_breakdown,
         "fee_breakdown": fee_breakdown,
         "reference": reference,
@@ -1946,6 +2017,7 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
             "hand_baggage": hand_baggage,
             "supplier_order_number": supplier_order_number,
             "passengers": structured.get("passengers") or [],
+            "fare_breakdown": fare_breakdown,
             "tax_breakdown": tax_breakdown,
             "fee_breakdown": fee_breakdown,
             "service_kind": service_kind,

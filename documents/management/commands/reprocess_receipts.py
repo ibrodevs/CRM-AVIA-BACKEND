@@ -68,6 +68,7 @@ class Command(BaseCommand):
                     draft.fare = fields.get("fare")
                     draft.taxes = fields.get("taxes")
                     draft.fees = fields.get("fees")
+                    draft.fare_breakdown = fields.get("fare_breakdown") or []
                     draft.tax_breakdown = fields.get("tax_breakdown") or []
                     draft.fee_breakdown = fields.get("fee_breakdown") or []
                     draft.total = fields.get("total")

@@ -55,6 +55,7 @@ def receipt_verified_data(fields: dict, *, parser_status: str) -> dict:
         "tripType": source.get("tripType")
         or source.get("trip_type")
         or ("stay" if service_kind == "hotel" else "oneway"),
+        "fareBreakdown": source.get("fareBreakdown") or source.get("fare_breakdown") or [],
         "taxBreakdown": source.get("taxBreakdown") or source.get("tax_breakdown") or [],
         "feeBreakdown": source.get("feeBreakdown") or source.get("fee_breakdown") or [],
         "originalTotal": source.get("originalTotal", total or 0),

@@ -415,6 +415,7 @@ class ReceiptImportCreateView(APIView):
                 fare=fields.get("fare"),
                 taxes=fields.get("taxes"),
                 fees=fields.get("fees"),
+                fare_breakdown=fields.get("fare_breakdown") or [],
                 tax_breakdown=fields.get("tax_breakdown") or [],
                 fee_breakdown=fields.get("fee_breakdown") or [],
                 total=fields.get("total"),
@@ -452,6 +453,7 @@ class ReceiptImportResultView(APIView):
                     "fare": draft.fare,
                     "taxes": draft.taxes,
                     "fees": draft.fees,
+                    "fare_breakdown": draft.fare_breakdown,
                     "tax_breakdown": draft.tax_breakdown,
                     "fee_breakdown": draft.fee_breakdown,
                     "total": draft.total,
@@ -486,6 +488,7 @@ class ReceiptImportResultView(APIView):
                     "hand_baggage": (import_job.raw_extraction or {}).get("hand_baggage", ""),
                     "segments": (import_job.raw_extraction or {}).get("segments", []),
                     "trip_type": (import_job.raw_extraction or {}).get("trip_type", ""),
+                    "fare_breakdown": (import_job.raw_extraction or {}).get("fare_breakdown", []),
                     "tax_breakdown": (import_job.raw_extraction or {}).get("tax_breakdown", []),
                     "fee_breakdown": (import_job.raw_extraction or {}).get("fee_breakdown", []),
                     "service_kind": (import_job.raw_extraction or {}).get("service_kind", import_job.guessed_type),
@@ -501,6 +504,7 @@ class ReceiptImportResultView(APIView):
                     "fare": str(draft.fare) if draft.fare else None,
                     "taxes": str(draft.taxes) if draft.taxes else None,
                     "fees": str(draft.fees) if draft.fees else None,
+                    "fare_breakdown": draft.fare_breakdown,
                     "tax_breakdown": draft.tax_breakdown,
                     "fee_breakdown": draft.fee_breakdown,
                     "total": str(draft.total) if draft.total else None,
@@ -547,6 +551,7 @@ class ReceiptImportConfirmView(APIView):
             draft.segments = data.get("segments", [])
             draft.trip_type = str(data.get("trip_type", draft.trip_type or ""))
             draft.fare, draft.taxes, draft.fees = fare, taxes, fees
+            draft.fare_breakdown = data.get("fare_breakdown", draft.fare_breakdown or [])
             draft.tax_breakdown = data.get("tax_breakdown", draft.tax_breakdown or [])
             draft.fee_breakdown = data.get("fee_breakdown", draft.fee_breakdown or [])
             draft.total = total
@@ -593,6 +598,7 @@ class ReceiptImportConfirmView(APIView):
                         "fare": str(fare),
                         "taxes": str(taxes),
                         "fees": str(fees),
+                        "fare_breakdown": draft.fare_breakdown,
                         "tax_breakdown": draft.tax_breakdown,
                         "fee_breakdown": draft.fee_breakdown,
                         "total": str(total),

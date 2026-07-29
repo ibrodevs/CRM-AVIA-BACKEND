@@ -553,6 +553,7 @@ class TestDocuments:
             "OK",
             "МОСКВА, ШЕРЕМЕТЬЕВО",
             "SVO B",
+            "Расчет тарифа/Fare calculation SVO SU SVX100.00 SU SVO100.00NUC200.00END ROE1.0",
             "ТАРИФ",
             ": RUB20000",
             "СБОР/TAX",
@@ -599,6 +600,16 @@ class TestDocuments:
         assert body["draft"]["total"] == "21822.00"
         assert body["draft"]["currency"] == "RUB"
         assert body["draft"]["trip_type"] == "roundtrip"
+        assert body["draft"]["fare_breakdown"][0] == {
+            "code": "SU",
+            "label": "SVO → SVX",
+            "amount": "100.00",
+            "currency": "NUC",
+            "from": "SVO",
+            "to": "SVX",
+            "carrier": "SU",
+        }
+        assert body["draft"]["fare_breakdown"][-1]["code"] == "ROE"
         assert body["draft"]["tax_breakdown"] == [
             {"code": "RI", "label": "RI", "amount": "932", "currency": "RUB"},
             {"code": "YR", "label": "YR", "amount": "240", "currency": "RUB"},

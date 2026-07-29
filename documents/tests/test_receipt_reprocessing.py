@@ -3,10 +3,45 @@ from decimal import Decimal
 from documents.receipt_parser_patch_safe import _hotel_details, _rail, _transfer_details
 from documents.services import (
     _avia_segments,
+    _fare_breakdown,
     _fee_breakdown,
     _rossiya_itinerary_fields,
     _s7_compact_fields,
 )
+
+
+def test_fare_calculation_is_split_into_route_components_and_roe():
+    text = (
+        "Расчет тарифа/Fare calculation "
+        "EVN WZ GOJ131.11 NUC131.11END ROE0.915261"
+    )
+
+    assert _fare_breakdown(text) == [
+        {
+            "code": "WZ",
+            "label": "EVN → GOJ",
+            "amount": "131.11",
+            "currency": "NUC",
+            "from": "EVN",
+            "to": "GOJ",
+            "carrier": "WZ",
+        },
+        {
+            "code": "ROE",
+            "label": "Курс пересчёта",
+            "amount": "0.915261",
+            "currency": "",
+        },
+    ]
+
+
+def test_fare_calculation_uses_previous_destination_for_next_component():
+    text = "Fare calculation SVO SU LED100.00 SU MMK50.00NUC150.00END"
+
+    rows = _fare_breakdown(text)
+
+    assert [row["label"] for row in rows] == ["SVO → LED", "LED → MMK"]
+    assert [row["amount"] for row in rows] == ["100.00", "50.00"]
 
 
 def test_rzd_page_parses_when_pdf_joins_time_and_date():
