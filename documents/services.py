@@ -317,12 +317,29 @@ def _money_breakdown(text: str, labels: list[tuple[str, str]]) -> list[dict]:
 
 def _tax_breakdown(text: str) -> list[dict]:
     rows = _money_breakdown(text, [("TAX", r"\b(?:tax|такс|сбор/tax|аэропортовые сборы)\b")])
-    components = []
-    for code, amount, currency in re.findall(
-        r"\b([A-ZА-Я]{2,4})\s*(\d[\d\s]*(?:[,.]\d{1,2})?)\s*(USD|EUR|RUB|KGS|KZT|сом|руб\.?|₽|\$|€)\b",
+    blocks = []
+    for label in re.finditer(
+        r"(?:СБОР/TAX|Tax/fee/charge|Taxes|Таксы|Аэропортовые сборы)",
         text,
         flags=re.IGNORECASE,
     ):
+        block = text[label.start() : label.start() + 800]
+        stop = re.search(
+            r"(?mi)^\s*(?:ИТОГО|ВСЕГО|TOTAL|СБОР СА|СБОР АСБ|РАСЧ[ЕЁ]Т ТАРИФА)",
+            block[len(label.group(0)) :],
+        )
+        if stop:
+            block = block[: len(label.group(0)) + stop.start()]
+        blocks.append(block)
+    tax_text = "\n".join(blocks)
+    components = []
+    for code, amount, currency in re.findall(
+        r"\b([A-ZА-Я]{2,4})\s*(\d[\d\s]*(?:[,.]\d{1,2})?)\s*(USD|EUR|RUB|KGS|KZT|сом|руб\.?|₽|\$|€)\b",
+        tax_text,
+        flags=re.IGNORECASE,
+    ):
+        if code.upper() in {"RATE", "FARE", "NUC", "ROE", "END"}:
+            continue
         try:
             value = Decimal(amount.replace(" ", "").replace(",", "."))
         except (InvalidOperation, ValueError):

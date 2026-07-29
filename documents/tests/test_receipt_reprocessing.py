@@ -7,6 +7,7 @@ from documents.services import (
     _fee_breakdown,
     _rossiya_itinerary_fields,
     _s7_compact_fields,
+    _tax_breakdown,
 )
 
 
@@ -42,6 +43,18 @@ def test_fare_calculation_uses_previous_destination_for_next_component():
 
     assert [row["label"] for row in rows] == ["SVO → LED", "LED → MMK"]
     assert [row["amount"] for row in rows] == ["100.00", "50.00"]
+
+
+def test_fare_and_rate_values_do_not_leak_into_tax_breakdown():
+    text = """
+    Расчет тарифа/Fare calculation EVN WZ GOJ131.11NUC131.11END ROE0.915261
+    Тариф/Fare 12060РУБ
+    Эквив. тарифа/Equivalent fare paid
+    Сбор/Tax/fee/charge ZZ185РУБ KC2714РУБ AM2400РУБ SA250РУБ XQ1090РУБ
+    Итого/Total 18699РУБ
+    """
+
+    assert [row["code"] for row in _tax_breakdown(text)] == ["ZZ", "KC", "AM", "SA", "XQ"]
 
 
 def test_rzd_page_parses_when_pdf_joins_time_and_date():
