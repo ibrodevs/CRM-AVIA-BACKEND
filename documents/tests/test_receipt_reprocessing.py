@@ -1,7 +1,12 @@
 from decimal import Decimal
 
 from documents.receipt_parser_patch_safe import _hotel_details, _rail, _transfer_details
-from documents.services import _rossiya_itinerary_fields, _s7_compact_fields
+from documents.services import (
+    _avia_segments,
+    _fee_breakdown,
+    _rossiya_itinerary_fields,
+    _s7_compact_fields,
+)
 
 
 def test_rzd_page_parses_when_pdf_joins_time_and_date():
@@ -424,3 +429,80 @@ def test_sparse_transfer_does_not_receive_terms_missing_from_source():
         "requirements": "",
     }
     assert all(not value for value in details["transferTerms"].values())
+
+
+def test_compact_avia_table_preserves_connection_and_ignores_baggage_header():
+    text = """
+    ДАТА ОФОРМЛЕНИЯ: 12СЕН24
+    ОТПРВ/НАЗН : GOJMMK
+    МАРШРУТ/ПЕРЕВОЗЧИК
+    РЕЙС
+    КЛАСС
+    ДАТА
+    ВРЕМЯ ОТПР
+    ВРЕМЯ ПРИБ
+    СТАТУС
+    БАЗОВЫЙ ТАРИФ
+    БАГ
+    НИЖНИЙ НОВГОРОД, СТРИГИНО
+    GOJ / РОССИЯ
+    SU-6106
+    T
+    26СЕН
+    1400
+    1550
+    OK
+    TNOR
+    ECONOMY
+    0PC
+    САНКТ-ПЕТЕРБУРГ, ПУЛКОВО
+    LED 1 / РОССИЯ
+    SU-6345
+    T
+    26СЕН
+    1735
+    1930
+    OK
+    TNOR
+    ECONOMY
+    0PC
+    МУРМАНСК
+    MMK
+    ПЕРЕДАТ. НАДПИСИ/ОГРАНИЧ.:
+    СБОР СА
+    : RUB0
+    СБОР АСБ
+    :
+    RUB100
+    """
+
+    assert _avia_segments(text) == [
+        {
+            "from": "НИЖНИЙ НОВГОРОД, СТРИГИНО",
+            "fromCode": "GOJ",
+            "to": "САНКТ-ПЕТЕРБУРГ, ПУЛКОВО",
+            "toCode": "LED",
+            "date": "26.09.2024",
+            "dep": "14:00",
+            "arr": "15:50",
+            "flightNo": "SU6106",
+            "carrier": "РОССИЯ",
+            "dir": "out",
+        },
+        {
+            "from": "САНКТ-ПЕТЕРБУРГ, ПУЛКОВО",
+            "fromCode": "LED",
+            "to": "МУРМАНСК",
+            "toCode": "MMK",
+            "date": "26.09.2024",
+            "dep": "17:35",
+            "arr": "19:30",
+            "flightNo": "SU6345",
+            "carrier": "РОССИЯ",
+            "dir": "seg",
+        },
+    ]
+    assert _fee_breakdown(text) == [
+        {"code": "SA", "label": "СБОР СА", "amount": "0", "currency": "RUB"},
+        {"code": "ASB", "label": "СБОР АСБ", "amount": "100", "currency": "RUB"},
+    ]

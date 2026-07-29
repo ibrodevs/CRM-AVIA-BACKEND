@@ -304,7 +304,9 @@ def _money_breakdown(text: str, labels: list[tuple[str, str]]) -> list[dict]:
         for code, pattern in labels:
             if not re.search(pattern, line, flags=re.IGNORECASE):
                 continue
-            joined = " ".join(lines[index : index + 2])
+            # Some PDF generators split a label, colon and amount across three
+            # separate text lines (for example: "СБОР АСБ", ":", "RUB100").
+            joined = " ".join(lines[index : index + 3])
             parsed = _amount_and_currency(joined)
             if parsed:
                 currency, amount = parsed
@@ -982,7 +984,103 @@ def _rossiya_itinerary_fields(text: str) -> dict:
     }
 
 
+def _avia_compact_table_segments(text: str) -> list[dict]:
+    """Parse compact airline tables where every connection is a separate row."""
+    if "МАРШРУТ/ПЕРЕВОЗЧИК" not in text or "ОТПРВ/НАЗН" not in text:
+        return []
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    try:
+        start = next(index for index, line in enumerate(lines) if "МАРШРУТ/ПЕРЕВОЗЧИК" in line)
+    except StopIteration:
+        return []
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if re.search(r"ПЕРЕДАТ\.?\s+НАДПИСИ|РАСЧЕТ\s+ТАРИФА", lines[index], flags=re.IGNORECASE)
+        ),
+        len(lines),
+    )
+    table = lines[start + 1 : end]
+    origin_rows: list[tuple[int, str, str, str]] = []
+    for index, line in enumerate(table):
+        match = re.fullmatch(r"([A-Z]{3})(?:\s+[A-Z0-9])?\s*/\s*(.+)", line)
+        if not match or index == 0:
+            continue
+        city = table[index - 1].strip()
+        if re.fullmatch(
+            r"(?:РЕЙС|КЛАСС|ДАТА|ВРЕМЯ\s+(?:ОТПР|ПРИБ)|СТАТУС|БАЗОВЫЙ\s+ТАРИФ|БАГ)",
+            city,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        origin_rows.append((index, match.group(1), city, match.group(2).strip()))
+    if not origin_rows:
+        return []
+
+    last_origin_index = origin_rows[-1][0]
+    destination: tuple[str, str] | None = None
+    for index in range(last_origin_index + 1, len(table)):
+        match = re.fullmatch(r"([A-Z]{3})(?:\s+[A-Z0-9])?", table[index])
+        if match and index:
+            destination = (match.group(1), table[index - 1].strip())
+            break
+    if destination is None:
+        return []
+
+    stops = [(code, city) for _, code, city, _ in origin_rows] + [destination]
+    issue_year = _extract_issue_year(text)
+    segments: list[dict] = []
+    for leg_index, (row_index, from_code, from_city, carrier) in enumerate(origin_rows):
+        if leg_index + 1 >= len(stops):
+            break
+        next_row_index = origin_rows[leg_index + 1][0] - 1 if leg_index + 1 < len(origin_rows) else len(table)
+        block = table[row_index + 1 : next_row_index]
+        flight_index = next(
+            (
+                index
+                for index, value in enumerate(block)
+                if re.fullmatch(r"[A-Z0-9]{2}-?\d{2,5}", value)
+            ),
+            None,
+        )
+        if flight_index is None:
+            continue
+        flight = block[flight_index].replace("-", "")
+        schedule = block[flight_index + 1 :]
+        date = next(
+            (value for value in schedule if re.fullmatch(r"\d{1,2}[А-ЯЁA-Z]{3}(?:\d{2,4})?", value)),
+            "",
+        )
+        times = [value for value in schedule if re.fullmatch(r"\d{3,4}", value)]
+        to_code, to_city = stops[leg_index + 1]
+        segments.append(
+            {
+                "from": re.sub(r"\s+", " ", from_city),
+                "fromCode": from_code,
+                "to": re.sub(r"\s+", " ", to_city),
+                "toCode": to_code,
+                "date": _date_parts(date, default_year=issue_year),
+                "dep": _format_time(times[0]) if times else "",
+                "arr": _format_time(times[1]) if len(times) > 1 else "",
+                "flightNo": flight,
+                "carrier": carrier,
+                "dir": (
+                    "out"
+                    if leg_index == 0
+                    else ("back" if to_code == origin_rows[0][1] else "seg")
+                ),
+            }
+        )
+    return segments
+
+
 def _avia_segments(text: str) -> list[dict]:
+    compact_segments = _avia_compact_table_segments(text)
+    if compact_segments:
+        return compact_segments
+
     route_codes = _first_match(text, [r"ОТПРВ/НАЗН\s*:\s*([A-Z]{6})"])
     if route_codes:
         from_code, to_code = route_codes[:3], route_codes[3:]
