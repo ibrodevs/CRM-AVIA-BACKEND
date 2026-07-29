@@ -487,6 +487,11 @@ def test_compact_avia_table_preserves_connection_and_ignores_baggage_header():
             "arr": "15:50",
             "flightNo": "SU6106",
             "carrier": "РОССИЯ",
+            "cls": "T",
+            "status": "OK",
+            "fareBasis": "TNOR",
+            "cabin": "ECONOMY",
+            "baggage": "0PC",
             "dir": "out",
         },
         {
@@ -499,6 +504,11 @@ def test_compact_avia_table_preserves_connection_and_ignores_baggage_header():
             "arr": "19:30",
             "flightNo": "SU6345",
             "carrier": "РОССИЯ",
+            "cls": "T",
+            "status": "OK",
+            "fareBasis": "TNOR",
+            "cabin": "ECONOMY",
+            "baggage": "0PC",
             "dir": "seg",
         },
     ]

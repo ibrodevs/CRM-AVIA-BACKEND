@@ -1049,11 +1049,31 @@ def _avia_compact_table_segments(text: str) -> list[dict]:
             continue
         flight = block[flight_index].replace("-", "")
         schedule = block[flight_index + 1 :]
-        date = next(
-            (value for value in schedule if re.fullmatch(r"\d{1,2}[А-ЯЁA-Z]{3}(?:\d{2,4})?", value)),
+        date_index = next(
+            (
+                index
+                for index, value in enumerate(schedule)
+                if re.fullmatch(r"\d{1,2}[А-ЯЁA-Z]{3}(?:\d{2,4})?", value)
+            ),
+            None,
+        )
+        date = schedule[date_index] if date_index is not None else ""
+        cls = schedule[date_index - 1] if date_index and re.fullmatch(r"[A-ZА-Я0-9]{1,3}", schedule[date_index - 1]) else ""
+        time_indexes = [
+            index
+            for index, value in enumerate(schedule)
+            if date_index is not None and index > date_index and re.fullmatch(r"\d{3,4}", value)
+        ]
+        times = [schedule[index] for index in time_indexes[:2]]
+        details_start = time_indexes[1] + 1 if len(time_indexes) > 1 else len(schedule)
+        details = schedule[details_start:]
+        status = details[0] if details and re.fullmatch(r"[A-ZА-Я]{2,12}", details[0]) else ""
+        fare_basis = details[1] if len(details) > 1 and re.fullmatch(r"[A-ZА-Я0-9-]{2,32}", details[1]) else ""
+        cabin = details[2] if len(details) > 2 and re.fullmatch(r"[A-ZА-Я -]{3,24}", details[2]) else ""
+        baggage = next(
+            (value for value in details if re.fullmatch(r"\d+\s*(?:PC|KG|КМ)", value)),
             "",
         )
-        times = [value for value in schedule if re.fullmatch(r"\d{3,4}", value)]
         to_code, to_city = stops[leg_index + 1]
         segments.append(
             {
@@ -1066,6 +1086,11 @@ def _avia_compact_table_segments(text: str) -> list[dict]:
                 "arr": _format_time(times[1]) if len(times) > 1 else "",
                 "flightNo": flight,
                 "carrier": carrier,
+                "cls": cls,
+                "status": status,
+                "fareBasis": fare_basis,
+                "cabin": cabin,
+                "baggage": baggage,
                 "dir": (
                     "out"
                     if leg_index == 0
@@ -1776,6 +1801,16 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
     fare_basis = structured["fare_basis"] or fare_basis
     baggage = structured["baggage"] or baggage
     hand_baggage = structured["hand_baggage"] or hand_baggage
+    if service_kind == "avia" and segments:
+        segment_classes = [segment.get("cls") for segment in segments if segment.get("cls")]
+        segment_fares = [segment.get("fareBasis") for segment in segments if segment.get("fareBasis")]
+        segment_baggage = [segment.get("baggage") for segment in segments if segment.get("baggage")]
+        if segment_classes:
+            booking_class = " / ".join(dict.fromkeys(segment_classes))
+        if segment_fares:
+            fare_basis = " / ".join(dict.fromkeys(segment_fares))
+        if segment_baggage:
+            baggage = " / ".join(dict.fromkeys(segment_baggage))
     tax_breakdown = structured.get("tax_breakdown") or tax_breakdown
     fee_breakdown = structured["fee_breakdown"] or fee_breakdown
     supplier_order_number = structured.get("supplier_order_number") or ""
