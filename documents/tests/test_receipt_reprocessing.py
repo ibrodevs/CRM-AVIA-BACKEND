@@ -161,6 +161,64 @@ def test_rzd_page_parses_when_pdf_joins_time_and_date():
     }
 
 
+def test_rzd_pages_override_incorrect_generic_avia_classification(monkeypatch):
+    from documents import receipt_parser_patch_safe, services
+
+    first_page = """
+    ЭЛЕКТРОННЫЙ БИЛЕТ. КОНТРОЛЬНЫЙ КУПОН
+    ПОЕЗД ВАГОН МЕСТО 755 755 02 02 046 046
+    № 70 713 634 630 263
+    06:40 06:40 28.01.2026
+    10:51 10:51 28.01.2026
+    ПАСПОРТ РФ 4024774038 11.03.1979 RUS М
+    ЧИРКОВ ТАРАС АЛЕКСАНДРОВИЧ
+    Посадка в поезд осуществляется
+    755АА 28.01.2026 06:40 02С 046 САНКТ-ПЕТЕРБУРГ-ГЛАВН. - МОСКВА ОКТЯБРЬСКАЯ
+    ПН4024774038 ЧИРКОВ-ТА 110379
+    Заказ: 70713634630263
+    Перевозчик: ДОСС РЖД / ДОСС ИНН 7708503727
+    БИЗНЕС КЛАСС 1С 1С
+    Оплата наличными Билет Плацкарта НДС 0% НДС 22%
+    1 436,30 ₽ 9 521,90 ₽ 0,00 ₽ 581,72 ₽
+    Итого Вкл. НДС 10 958,20 ₽
+    """
+    second_page = (
+        first_page
+        .replace("046 046", "047 047")
+        .replace("630 263", "630 274")
+        .replace("4024774038", "4010265111")
+        .replace("11.03.1979", "28.03.1991")
+        .replace("ЧИРКОВ ТАРАС АЛЕКСАНДРОВИЧ", "ЧИЧЕВ АЛЕКСАНДР СЕРГЕЕВИЧ")
+        .replace("046 САНКТ", "047 САНКТ")
+        .replace("ЧИРКОВ-ТА 110379", "ЧИЧЕВ-АС 280391")
+    )
+
+    def incorrectly_classified(*_args, **_kwargs):
+        return {
+            "status": "manual_review",
+            "confidence": Decimal("0.200"),
+            "fields": {"service_kind": "avia", "service_type": "Авиа"},
+            "raw": {"service_kind": "avia", "service_type": "Авиа"},
+            "warnings": ["Тип требует проверки."],
+        }
+
+    monkeypatch.setattr(services, "extract_receipt_fields", incorrectly_classified)
+    monkeypatch.setattr(receipt_parser_patch_safe, "_pages", lambda _content: [first_page, second_page])
+    receipt_parser_patch_safe.install_receipt_parser_patch()
+
+    result = services.extract_receipt_fields(b"%PDF group", mime="application/pdf", name="group.pdf")
+
+    assert result["status"] == "parsed"
+    assert result["fields"]["service_kind"] == "rail"
+    assert result["fields"]["service_type"] == "ЖД"
+    assert result["fields"]["receipt_count"] == 2
+    assert len(result["fields"]["receipts"]) == 2
+    assert result["fields"]["passenger_name"] == (
+        "ЧИРКОВ ТАРАС АЛЕКСАНДРОВИЧ, ЧИЧЕВ АЛЕКСАНДР СЕРГЕЕВИЧ"
+    )
+    assert result["fields"]["total"] == Decimal("21916.40")
+
+
 def test_rzd_page_parses_arbitrary_route_from_control_line():
     text = """
     ЭЛЕКТРОННЫЙ БИЛЕТ. КОНТРОЛЬНЫЙ КУПОН

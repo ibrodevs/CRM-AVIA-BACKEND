@@ -637,8 +637,13 @@ def install_receipt_parser_patch():
             result["raw"].update(_json_safe(details))
             return result
 
-        if result_fields.get("service_kind") == "rail":
-            receipts = [receipt for receipt in (_rail(page) for page in pages) if receipt]
+        # A multi-ticket RZD PDF can be misclassified by the generic parser as
+        # aviation because both formats contain phrases such as "electronic
+        # ticket" and "carrier".  A successfully parsed RZD control coupon is
+        # stronger evidence than that generic classification, so parse the
+        # pages first and let them correct the service kind.
+        receipts = [receipt for receipt in (_rail(page) for page in pages) if receipt]
+        if result_fields.get("service_kind") == "rail" or receipts:
             if receipts:
                 total = sum((receipt["total"] or Decimal("0") for receipt in receipts), Decimal("0"))
                 ticket_cost = sum((receipt["ticketCost"] or Decimal("0") for receipt in receipts), Decimal("0"))
