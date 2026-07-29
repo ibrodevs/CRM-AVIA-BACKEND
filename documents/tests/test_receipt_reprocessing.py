@@ -90,21 +90,21 @@ def test_rzd_page_parses_arbitrary_route_from_control_line():
 def test_rzd_control_coupon_wins_over_timezone_labels_and_splits_costs():
     text = """
     ЭЛЕКТРОННЫЙ БИЛЕТ. КОНТРОЛЬНЫЙ КУПОН
-    ПОЕЗД ВАГОН МЕСТО 721 721 04 04 016 016
+    ПОЕЗД ВАГОН МЕСТО 721 721 07 07 096 096
     № 77 506 905 747 822
     Часовой пояс Поездом 722722
-    06:35 06:35 27.10.2025
-    10:12 10:12 27.10.2025
-    ПАСПОРТ РФ 4510123456 01.02.1980 RUS М
+    18:29 18:29 27.10.2025
+    22:33 22:33 27.10.2025
+    ПАСПОРТ РФ 2211755330 29.08.1986 RUS М
     СУЛЕЙМАНОВ РЕНАТ РАШИДОВИЧ
     Посадка в поезд осуществляется
-    721АА 27.10.2025 06:35 04С 016 МОСКВА ВОСТОЧНАЯ - НИЖНИЙ НОВГОРОД МОСКОВСКИЙ
-    ПН4510123456 СУЛЕЙМАНОВ-РР 010280
+    721ЩА 27.10.2025 18:29 07С 096 МОСКВА ВК ВОСТОЧНЫЙ - НИЖНИЙ НОВГОРОД МОСКОВ
+    ПН2211755330 СУЛЕЙМАНОВ-РР 290886
     Заказ: 77506905747822
     Перевозчик: ФПК МОСКОВСКИЙ / ФПК ИНН 7708709686
-    2С 2С
-    Оплата наличными Билет Плацкарта НДС 0% НДС 22%
-    1 500,00 ₽ 1 377,70 ₽ 0,00 ₽ 100,00 ₽
+    2Ю 2Ю
+    Оплата наличными Билет Плацкарта НДС 0% НДС 20%
+    1 861,60 ₽ 1 016,10 ₽ 0,00 ₽ 10,00 ₽
     Итого Вкл. НДС 2 877,70 ₽
     """
 
@@ -114,10 +114,14 @@ def test_rzd_control_coupon_wins_over_timezone_labels_and_splits_costs():
     assert fields["passenger_name"] == "СУЛЕЙМАНОВ РЕНАТ РАШИДОВИЧ"
     assert fields["reference"] == "77506905747822"
     assert fields["ticket_number"] == "77506905747822"
-    assert fields["segments"][0]["from"] == "МОСКВА ВОСТОЧНАЯ"
-    assert fields["segments"][0]["to"] == "НИЖНИЙ НОВГОРОД МОСКОВСКИЙ"
-    assert fields["ticketCost"] == Decimal("1500.00")
-    assert fields["reservedSeatCost"] == Decimal("1377.70")
+    assert fields["segments"][0]["from"] == "МОСКВА ВК ВОСТОЧНЫЙ"
+    assert fields["segments"][0]["to"] == "НИЖНИЙ НОВГОРОД МОСКОВ"
+    assert fields["segments"][0]["dep"] == "18:29"
+    assert fields["segments"][0]["arr"] == "22:33"
+    assert fields["segments"][0]["coach"] == "07"
+    assert fields["segments"][0]["seat"] == "096"
+    assert fields["ticketCost"] == Decimal("1861.60")
+    assert fields["reservedSeatCost"] == Decimal("1016.10")
     assert fields["total"] == Decimal("2877.70")
 
 
