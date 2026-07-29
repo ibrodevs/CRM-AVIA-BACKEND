@@ -325,9 +325,16 @@ def _transfer_details(text, fields):
     if passenger_name:
         phone = _match_value(
             flat,
-            [rf"{re.escape(passenger_name)}\s+(\+?\d[\d ()-]{{7,}}?)(?=\s+(?:Аэропорт|Калининград))"],
+            [rf"{re.escape(passenger_name)}\s+(\+?\d[\d ()-]{{7,}}?)(?=\s+\S)"],
         )
-    address = _match_value(
+    address = next(
+        (
+            segment.get("toAddress") or segment.get("fromAddress")
+            for segment in fields.get("segments") or []
+            if segment.get("toAddress") or segment.get("fromAddress")
+        ),
+        "",
+    ) or _match_value(
         flat,
         [
             r"(Mercure\s+Kaliningrad,\s*Озерный\s+пр\.,\s*2,\s*Калининград,\s*"
@@ -335,24 +342,21 @@ def _transfer_details(text, fields):
         ],
     )
     flight = _match_value(flat, [r"\b([A-ZА-Я]{2}-?\d{2,4})\s+терминал\b"])
-    vehicle_class = _match_value(flat, [r"\b(Комфорт)\s+Комфорт\s+(\d+)\s+пассажир"])
-    passenger_count = _match_value(flat, [r"\bКомфорт\s+Комфорт\s+(\d+)\s+пассажир"])
+    vehicle_class = _match_value(
+        flat,
+        [r"\b(Стандарт|Комфорт|Бизнес|Премиум)(?:\s+\1)?\s+\d+\s+пассажир"],
+    )
+    passenger_count = _match_value(
+        flat,
+        [r"\b(?:Стандарт|Комфорт|Бизнес|Премиум)(?:\s+(?:Стандарт|Комфорт|Бизнес|Премиум))?\s+(\d+)\s+пассажир"],
+    )
+    luggage = _match_value(flat, [r"\b(до\s+\d+\s+мест\s+багажа(?:\s+размером\s+\S+)?)"])
     segments = [dict(segment) for segment in fields.get("segments") or []]
     if segments and address:
-        segments[0].update(
-            {
-                "fromAddress": segments[0].get("from") or "",
-                "toAddress": address,
-                "flightNo": flight,
-            }
-        )
+        segments[0]["toAddress"] = segments[0].get("toAddress") or address
+        segments[0]["flightNo"] = segments[0].get("flightNo") or flight
     if len(segments) > 1:
-        segments[1].update(
-            {
-                "fromAddress": address,
-                "toAddress": segments[1].get("to") or "",
-            }
-        )
+        segments[1]["fromAddress"] = segments[1].get("fromAddress") or address
 
     issue_date = _match_value(flat, [r"\bот\s+(\d{2}\.\d{2}\.\d{4})\s+Пассажиры\b"])
     cancellation_deadlines = _unique(
@@ -397,7 +401,7 @@ def _transfer_details(text, fields):
             "className": vehicle_class,
             "category": "",
             "passengers": passenger_count,
-            "luggage": "",
+            "luggage": luggage,
             "requirements": (
                 "Заранее сообщить о детях или крупногабаритном багаже."
                 if has_requirements

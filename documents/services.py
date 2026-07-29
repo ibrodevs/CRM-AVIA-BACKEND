@@ -1510,6 +1510,55 @@ def _hotel_segment(text: str) -> tuple[list[dict], str, str]:
 
 
 def _transfer_segments(text: str) -> list[dict]:
+    iway_routes = re.finditer(
+        r"(?m)^\s*(?P<from>[^\n]{2,120}?)\s*(?:\n\s*)?[–—]\s*(?:\n\s*)?"
+        r"(?P<to>[^\n]{2,120}?)\s*\n\s*Стоимость\s*\n\s*"
+        r"(?P<amount>\d[\d ]*(?:[,.]\d{1,2})?)\s*RUB\s*\n"
+        r"(?P<details>.*?)(?=^\s*Условия изменения)",
+        text,
+        flags=re.DOTALL | re.IGNORECASE | re.MULTILINE,
+    )
+    iway_segments = []
+    for index, route in enumerate(iway_routes):
+        details = route.group("details")
+        dates = re.findall(r"\b(\d{1,2}[./]\d{1,2}[./]\d{4})\b", details)
+        times = list(dict.fromkeys(re.findall(r"(?m)^(\d{1,2}:\d{2})\s*$", details)))
+        flight = _first_match(details, [r"\b([A-ZА-Я][A-ZА-Я0-9]{1,2}-?\s*\d{2,5})\b"])
+        detail_lines = [line.strip() for line in details.splitlines() if line.strip()]
+        address = ""
+        for line_index, line in enumerate(detail_lines):
+            if not re.search(r"\b(?:Польша|Россия|Казахстан|Кыргызстан|Турция)\b", line, re.IGNORECASE):
+                continue
+            address_parts = [line]
+            for previous in reversed(detail_lines[max(0, line_index - 3) : line_index]):
+                if re.fullmatch(
+                    r"\d{1,2}:\d{2}|\d{1,2}[./]\d{1,2}[./]\d{4}|"
+                    r"[A-ZА-Я0-9]{2,3}-?\s*\d{2,5}|терминал\s*\d+|"
+                    r"(?:Адрес|Время|Класс автомобиля|кол-во пассажиров|Авиарейс).+",
+                    previous,
+                    flags=re.IGNORECASE,
+                ):
+                    break
+                address_parts.insert(0, previous)
+            address = re.sub(r"\s+", " ", " ".join(address_parts)).strip()
+            break
+        segment = {
+            "from": route.group("from").strip(" \t–—"),
+            "fromCode": "",
+            "to": route.group("to").strip(" \t–—"),
+            "toCode": "",
+            "date": _normalize_date(dates[0] if dates else ""),
+            "dep": times[0] if times else "",
+            "arr": "",
+            "flightNo": re.sub(r"\s+", "", flight),
+            "dir": "out" if index == 0 else "back",
+        }
+        if address:
+            segment["toAddress" if index == 0 else "fromAddress"] = address
+        iway_segments.append(segment)
+    if iway_segments:
+        return iway_segments
+
     blocks = re.findall(
         r"\+?\d[\d -]{8,}\s*\n(?P<route>.*?)\nСтоимость\s*\n(?P<details>.*?)(?=\nУсловия изменения|\nПассажиры|\nИтого)",
         text,

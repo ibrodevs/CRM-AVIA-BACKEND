@@ -8,6 +8,7 @@ from documents.services import (
     _rossiya_itinerary_fields,
     _s7_compact_fields,
     _tax_breakdown,
+    _transfer_segments,
     extract_receipt_fields,
 )
 
@@ -604,6 +605,91 @@ def test_sparse_transfer_does_not_receive_terms_missing_from_source():
         "requirements": "",
     }
     assert all(not value for value in details["transferTerms"].values())
+
+
+def test_iway_transfer_uses_route_heading_instead_of_passenger_sign_text():
+    text = """
+    Маршрутная квитанция на трансфер
+    Заказ
+    C-0279135
+    от 22.07.2026
+    Пассажиры
+    Имя, фамилия
+    Мобильный телефон
+    Надпись на табличке
+    Примечания
+    Lavit Dmitrii
+    +7 986 169-31-03
+    Dmitrii Lavit
+    Аэропорт им. Ф. Шопена (Варшава) –
+    Варшава
+    Стоимость
+    3016 RUB
+    Авиарейс
+    Время прилета
+    Адрес назначения
+    Класс автомобиля, кол-во пассажиров и багажа
+    W6- 1442
+    терминал 2
+    11:35
+    12.09.2026
+    Luxury apartment piekna,
+    Piękna 24/lok. 17, 00-549
+    Warszawa, Польша
+    Стандарт
+    1
+    пассажир
+    до 3 мест багажа размером 64x42x24 см
+    Условия изменения и отмены: бесплатно за 25 часов
+    Пассажиры
+    Lavit Dmitrii
+    +7 986 169-31-03
+    Lavit Dmitrii
+    Варшава
+    –
+    Аэропорт им. Ф. Шопена (Варшава)
+    Стоимость
+    3016 RUB
+    Адрес отправления
+    Время подачи автомобиля
+    Время вылета
+    Класс автомобиля, кол-во пассажиров и багажа
+    Luxury apartment piekna,
+    Piękna 24/lok. 17, 00-549
+    Warszawa, Польша
+    06:05
+    19.09.2026
+    10:05
+    19.09.2026
+    Стандарт
+    1
+    пассажир
+    до 3 мест багажа размером 64x42x24 см
+    Условия изменения и отмены: бесплатно за 25 часов
+    Итого 6032 RUB
+    """
+
+    segments = _transfer_segments(text)
+    details = _transfer_details(
+        text,
+        {
+            "passenger_name": "Lavit Dmitrii",
+            "reference": "C-0279135",
+            "segments": segments,
+        },
+    )
+
+    assert [(row["from"], row["to"]) for row in segments] == [
+        ("Аэропорт им. Ф. Шопена (Варшава)", "Варшава"),
+        ("Варшава", "Аэропорт им. Ф. Шопена (Варшава)"),
+    ]
+    assert segments[0]["flightNo"] == "W6-1442"
+    assert segments[0]["toAddress"].startswith("Luxury apartment piekna")
+    assert segments[1]["fromAddress"].startswith("Luxury apartment piekna")
+    assert details["passengers"][0]["phone"] == "+7 986 169-31-03"
+    assert details["vehicle"]["className"] == "Стандарт"
+    assert details["vehicle"]["passengers"] == "1"
+    assert details["vehicle"]["luggage"].startswith("до 3 мест багажа")
 
 
 def test_compact_avia_table_preserves_connection_and_ignores_baggage_header():
