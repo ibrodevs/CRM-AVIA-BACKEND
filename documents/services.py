@@ -1589,6 +1589,33 @@ def _transfer_segments(text: str) -> list[dict]:
     return segments
 
 
+def _rail_cost_components(text: str, total: Decimal | None) -> dict:
+    """Extract the ticket/reserved-seat split printed on rail coupons."""
+    fare_pair = re.search(
+        r"(?:Тариф\s*\(\s*билет\s*,\s*плацкарт[аы]?\s*\)"
+        r"|Fare\s*\(\s*ticket\s*,\s*reservation\s*\))"
+        r".{0,180}?"
+        r"(?P<ticket>\d[\d ]*[,.]\d{2})\s*/\s*"
+        r"(?P<reservation>\d[\d ]*[,.]\d{2})",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if fare_pair:
+        ticket_cost = Decimal(fare_pair.group("ticket").replace(" ", "").replace(",", "."))
+        reserved_seat_cost = Decimal(fare_pair.group("reservation").replace(" ", "").replace(",", "."))
+    else:
+        ticket_cost = total
+        reserved_seat_cost = Decimal("0") if total is not None else None
+
+    return {
+        "ticketCost": ticket_cost,
+        "reservedSeatCost": reserved_seat_cost,
+        "agencyServiceFee": Decimal("0") if total is not None else None,
+        "additionalFees": Decimal("0") if total is not None else None,
+    }
+
+
 def _structured_receipt_fields(text: str, *, service_kind: str) -> dict:
     passenger = _extract_passenger(text, service_kind=service_kind)
     reference = _extract_reference(text, service_kind=service_kind)
@@ -1746,6 +1773,8 @@ def _structured_receipt_fields(text: str, *, service_kind: str) -> dict:
         "tax_breakdown": [],
         "fee_breakdown": fee_breakdown,
     }
+    if service_kind == "rail":
+        fields.update(_rail_cost_components(text, total))
     if service_kind == "avia":
         compact_s7 = _s7_compact_fields(text)
         if compact_s7 and compact_s7.get("passenger_name") and compact_s7.get("segments"):
@@ -2046,6 +2075,18 @@ def extract_receipt_fields(content: bytes, *, mime: str = "", name: str = "") ->
         "service_kind": service_kind,
         "service_type": SERVICE_KIND_LABELS[service_kind],
     }
+    if service_kind == "rail":
+        fields.update(
+            {
+                key: structured.get(key)
+                for key in (
+                    "ticketCost",
+                    "reservedSeatCost",
+                    "agencyServiceFee",
+                    "additionalFees",
+                )
+            }
+        )
     warnings = []
     if not passenger:
         warnings.append("Пассажир или гость не найден в текстовом слое.")

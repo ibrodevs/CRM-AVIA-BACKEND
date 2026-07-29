@@ -5,12 +5,41 @@ from documents.services import (
     _avia_segments,
     _fare_breakdown,
     _fee_breakdown,
+    _rail_cost_components,
     _rossiya_itinerary_fields,
     _s7_compact_fields,
     _tax_breakdown,
     _transfer_segments,
     extract_receipt_fields,
 )
+
+
+def test_central_ppk_coupon_splits_ticket_and_reserved_seat_costs():
+    text = """
+    Тариф (билет,плацкарта), Руб
+    Fare(ticket,reservation), RUB
+    875.00/0.00
+    Цена, Руб
+    875.00
+    Итого, Руб
+    875.00
+    """
+
+    assert _rail_cost_components(text, Decimal("875.00")) == {
+        "ticketCost": Decimal("875.00"),
+        "reservedSeatCost": Decimal("0.00"),
+        "agencyServiceFee": Decimal("0"),
+        "additionalFees": Decimal("0"),
+    }
+
+
+def test_rail_cost_components_fall_back_to_total_when_coupon_has_no_split():
+    assert _rail_cost_components("Итого, Руб 1175.00", Decimal("1175.00")) == {
+        "ticketCost": Decimal("1175.00"),
+        "reservedSeatCost": Decimal("0"),
+        "agencyServiceFee": Decimal("0"),
+        "additionalFees": Decimal("0"),
+    }
 
 
 def test_fare_calculation_is_split_into_route_components_and_roe():
