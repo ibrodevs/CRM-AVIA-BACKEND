@@ -161,6 +161,12 @@ def test_compact_s7_layout_recognizes_passenger_document_route_and_finances():
             "dep": "23:30",
             "arr": "05:50",
             "flightNo": "S7-2565",
+            "carrier": "S7 Airlines",
+            "cls": "ECONOMY",
+            "status": "OK",
+            "fareBasis": "XSTOW",
+            "cabin": "ECONOMY",
+            "baggage": "1PC",
             "dir": "out",
         }
     ]
@@ -239,8 +245,102 @@ def test_multiline_s7_layout_reassembles_split_amounts_and_route():
         "dep": "11:55",
         "arr": "12:35",
         "flightNo": "S7-2508",
+        "carrier": "S7 Airlines",
+        "cls": "ECONOMY",
+        "status": "OK",
+        "fareBasis": "VSTOW",
+        "cabin": "ECONOMY",
+        "baggage": "1PC",
         "dir": "out",
     }
+
+
+def test_s7_two_routes_on_single_lines_do_not_turn_headers_into_receipt_data():
+    text = """
+    ИП Хмель Марина Валерьевна 8(831) 246-02-04 mkhmel@list.ru
+    ЭЛЕКТРОННЫЙ БИЛЕТ
+    (маршрут-квитанция для пассажира)
+    Заказ No6046978
+    код бронирования: NO65R7
+    Пассажир Номер документа Номер билета Бонусная карта Продажа
+    POROSHIN DENIS PAVLOVICH 6513748739 421 2130342785 24.11.2025
+    Рейс под брендом авиакомпании S7 Airlines
+    Екатеринбург, Кольцово, SVX Новосибирск, Толмачево, OVB Авиакомпания-
+    перевозчик Рейс Тариф Багаж Статус
+    07:15
+    Вт, 02 Декабря 2025
+    11:30
+    Вт, 02 Декабря 2025 S7 Airlines S7-5018 ECONOMY
+    LSTRT 1PC OK
+    Новосибирск, Толмачево, OVB Екатеринбург, Кольцово, SVX Авиакомпания-
+    перевозчик Рейс Тариф Багаж Статус
+    20:15
+    Чт, 04 Декабря 2025
+    20:40
+    Чт, 04 Декабря 2025 S7 Airlines S7-5019 ECONOMY
+    VSTRT 1PC OK
+    РАСЧЕТ ТАРИФА:
+    ТАРИФ : RUB31335 ЭКВИВ. В ВАЛ. ПЛ: RUB31335
+    СБОР/TAX : RUB3924 RI824RUB YQ100RUB YR3000RUB
+    ВСЕГО К ОПЛАТЕ : RUB35259 В Т.Ч. НДС 20% : RUB0
+    Передат. надписи/огранич.:
+    S7-5018 SVX - OVB (LSTRT)
+    S7-5019 OVB - SVX (VSTRT)
+    Тариф Эконом Стандарт
+    Ручная кладь 10 кг. Габариты 55x40x23 см.
+    Багаж 1 место по 23 кг.
+    """
+
+    fields = _s7_compact_fields(text)
+
+    assert fields["passenger_name"] == "POROSHIN DENIS PAVLOVICH"
+    assert fields["document_number"] == "6513748739"
+    assert fields["ticket_number"] == "421 2130342785"
+    assert fields["issue_date"] == "24.11.2025"
+    assert fields["supplier_order_number"] == "6046978"
+    assert fields["reference"] == "NO65R7"
+    assert fields["fare"] == Decimal("31335")
+    assert fields["taxes"] == Decimal("3924")
+    assert fields["total"] == Decimal("35259")
+    assert fields["booking_class"] == "ECONOMY"
+    assert fields["fare_basis"] == "LSTRT / VSTRT"
+    assert fields["baggage"] == "1PC"
+    assert fields["segments"] == [
+        {
+            "from": "Екатеринбург, Кольцово",
+            "fromCode": "SVX",
+            "to": "Новосибирск, Толмачево",
+            "toCode": "OVB",
+            "date": "02.12.2025",
+            "dep": "07:15",
+            "arr": "11:30",
+            "flightNo": "S7-5018",
+            "carrier": "S7 Airlines",
+            "cls": "ECONOMY",
+            "status": "OK",
+            "fareBasis": "LSTRT",
+            "cabin": "ECONOMY",
+            "baggage": "1PC",
+            "dir": "out",
+        },
+        {
+            "from": "Новосибирск, Толмачево",
+            "fromCode": "OVB",
+            "to": "Екатеринбург, Кольцово",
+            "toCode": "SVX",
+            "date": "04.12.2025",
+            "dep": "20:15",
+            "arr": "20:40",
+            "flightNo": "S7-5019",
+            "carrier": "S7 Airlines",
+            "cls": "ECONOMY",
+            "status": "OK",
+            "fareBasis": "VSTRT",
+            "cabin": "ECONOMY",
+            "baggage": "1PC",
+            "dir": "back",
+        },
+    ]
 
 
 def test_rossiya_multi_ticket_receipt_keeps_all_passengers_and_sums_total():

@@ -635,11 +635,16 @@ def _s7_line_segments(text: str) -> tuple[list[dict], str, str, str, list[str]]:
     booking_class = ""
     baggage = ""
     fare_bases = []
-    for offset, start_index in enumerate(starts):
-        end_index = starts[offset + 1] if offset + 1 < len(starts) else len(lines)
-        from_match = city_pattern.match(lines[start_index])
-        to_match = city_pattern.match(lines[start_index + 1])
-        body = "\n".join(lines[start_index + 2 : end_index])
+
+    def append_segment(
+        *,
+        from_name: str,
+        from_code: str,
+        to_name: str,
+        to_code: str,
+        body: str,
+    ) -> None:
+        nonlocal booking_class, baggage
         times = re.findall(r"\d{1,2}:\d{2}", body)
         dates = re.findall(
             r"(?:Пн|Вт|Ср|Чт|Пт|Сб|Вс),?\s*(\d{1,2}\s+[А-ЯЁа-яё]+\s+20\d{2})",
@@ -647,43 +652,83 @@ def _s7_line_segments(text: str) -> tuple[list[dict], str, str, str, list[str]]:
             flags=re.IGNORECASE,
         )
         flight = _first_match(body, [r"(S7-\d{2,5})"])
-        if not from_match or not to_match or not flight or len(times) < 2 or not dates:
-            continue
+        if not flight or len(times) < 2 or not dates:
+            return
+        detail_match = re.search(
+            rf"{re.escape(flight)}\s*(?P<cabin>ECONOMY|BUSINESS|ЭКОНОМ|БИЗНЕС)"
+            r"\s*(?P<fare>[A-Z0-9-]{2,32})\s*(?P<baggage>\d+\s*(?:PC|KG))"
+            r"(?:\s*\d+\s*(?:KG|КГ))?\s*(?P<status>[A-ZА-Я]{2,12})",
+            re.sub(r"\s+", " ", body),
+            flags=re.IGNORECASE,
+        )
+        cabin = detail_match.group("cabin").upper() if detail_match else _first_match(
+            body, [r"\b(ECONOMY|BUSINESS|ЭКОНОМ|БИЗНЕС)\b"]
+        )
+        fare_basis = detail_match.group("fare").upper() if detail_match else ""
+        segment_baggage = detail_match.group("baggage").upper().replace(" ", "") if detail_match else _first_match(
+            body, [r"\b(\d+\s*PC)\b"]
+        )
+        status = detail_match.group("status").upper() if detail_match else _first_match(body, [r"\b(OK)\b"])
         segment = {
-            "from": from_match.group("name").strip(" ,"),
-            "fromCode": from_match.group("code"),
-            "to": to_match.group("name").strip(" ,"),
-            "toCode": to_match.group("code"),
+            "from": from_name.strip(" ,"),
+            "fromCode": from_code,
+            "to": to_name.strip(" ,"),
+            "toCode": to_code,
             "date": _normalize_date(dates[0]),
             "dep": times[0],
             "arr": times[1],
             "flightNo": flight,
+            "carrier": "S7 Airlines",
+            "cls": cabin,
+            "status": status,
+            "fareBasis": fare_basis,
+            "cabin": cabin,
+            "baggage": segment_baggage,
             "dir": "out",
         }
         if segments:
             segment["dir"] = "back" if segment["toCode"] == segments[0]["fromCode"] else "seg"
         segments.append(segment)
-        body_lines = [line.strip() for line in body.splitlines() if line.strip()]
-        booking_class = booking_class or next(
-            (line for line in body_lines if line in {"ECONOMY", "BUSINESS", "ЭКОНОМ", "БИЗНЕС"}),
-            "",
+        booking_class = booking_class or cabin
+        baggage = baggage or segment_baggage
+        if fare_basis:
+            fare_bases.append(fare_basis)
+
+    for offset, start_index in enumerate(starts):
+        end_index = starts[offset + 1] if offset + 1 < len(starts) else len(lines)
+        from_match = city_pattern.match(lines[start_index])
+        to_match = city_pattern.match(lines[start_index + 1])
+        body = "\n".join(lines[start_index + 2 : end_index])
+        if not from_match or not to_match:
+            continue
+        append_segment(
+            from_name=from_match.group("name"),
+            from_code=from_match.group("code"),
+            to_name=to_match.group("name"),
+            to_code=to_match.group("code"),
+            body=body,
         )
-        flight_index = body_lines.index(flight) if flight in body_lines else -1
-        if flight_index >= 0:
-            tail = body_lines[flight_index + 1 :]
-            fare_basis = next(
-                (
-                    line
-                    for line in tail
-                    if re.fullmatch(r"[A-Z0-9-]{2,32}", line)
-                    and line not in {"ECONOMY", "BUSINESS", "OK"}
-                    and not re.fullmatch(r"\d+(?:PC|KG)", line)
-                ),
-                "",
+
+    if not segments:
+        merged_city_pattern = re.compile(
+            r"^(?P<from>.+?),\s*(?P<fromCode>[A-Z]{3})\s+"
+            r"(?P<to>.+?),\s*(?P<toCode>[A-Z]{3})\s+Авиакомпания-$"
+        )
+        merged_starts = [
+            index for index, line in enumerate(lines) if merged_city_pattern.match(line)
+        ]
+        for offset, start_index in enumerate(merged_starts):
+            end_index = merged_starts[offset + 1] if offset + 1 < len(merged_starts) else len(lines)
+            route = merged_city_pattern.match(lines[start_index])
+            if not route:
+                continue
+            append_segment(
+                from_name=route.group("from"),
+                from_code=route.group("fromCode"),
+                to_name=route.group("to"),
+                to_code=route.group("toCode"),
+                body="\n".join(lines[start_index + 1 : end_index]),
             )
-            if fare_basis:
-                fare_bases.append(fare_basis)
-        baggage = baggage or next((line for line in body_lines if re.fullmatch(r"\d+\s*PC", line)), "")
     hand_baggage = _first_match(text, [r"Ручная кладь\s*(\d+\s*кг)"])
     return segments, booking_class, baggage, hand_baggage, fare_bases
 
@@ -759,6 +804,12 @@ def _s7_compact_fields(text: str) -> dict:
             "dep": times[0],
             "arr": times[1],
             "flightNo": flight,
+            "carrier": "S7 Airlines",
+            "cls": "",
+            "status": "",
+            "fareBasis": "",
+            "cabin": "",
+            "baggage": "",
             "dir": "out",
         }
         if segments:
@@ -774,8 +825,13 @@ def _s7_compact_fields(text: str) -> dict:
         )
         if fare_basis:
             fare_bases.append(fare_basis)
+            segment["fareBasis"] = fare_basis
         baggage = baggage or _first_match(body, [r"(\d+\s*PC)"])
         hand_baggage = hand_baggage or _first_match(body, [r"(\d+\s*KG)"])
+        segment["cls"] = booking_class
+        segment["cabin"] = booking_class
+        segment["baggage"] = _first_match(body, [r"(\d+\s*PC)"])
+        segment["status"] = _first_match(body, [r"(OK)"])
 
     fare = _s7_rub_amount(text, r"РАСЧЕТ ТАРИФА:\s*ТАРИФ", r"ЭКВИВ\.|СБОР/TAX")
     taxes = _s7_rub_amount(text, r"СБОР/TAX", r"ВСЕГО К ОПЛАТЕ", stop_at_tax_code=True)
