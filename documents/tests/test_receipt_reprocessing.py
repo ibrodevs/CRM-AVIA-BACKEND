@@ -380,6 +380,36 @@ def test_compact_s7_layout_recognizes_passenger_document_route_and_finances():
     assert fields["total"] == Decimal("20715.00")
 
 
+def test_avia_standalone_ps_passport_line_is_recognized():
+    text = """
+    Электронный билет (маршрут/квитанция для пассажира)
+    ДАТА : 12СЕН24
+    ФАМИЛИЯ : ZAVGORODNII/ALEKSANDR VALEREVICH MR
+    ПС4713420143
+    ОТПРВ/НАЗН : GOJMMK
+    ВЫДАН ОТ : АЭРОФЛОТ
+    КОД БРОНИРОВАНИЯ : 01W5F6
+    НОМЕР БИЛЕТА : 555 2337332744
+    Маршрут: GOJ -> MMK
+    Дата отправления: 26.09.2024
+    Рейс SU-6106
+    ТАРИФ : RUB10800
+    СБОР/TAX : RUB608
+    ВСЕГО К ОПЛАТЕ : RUB11508
+    """
+
+    fields = extract_receipt_fields(
+        text.encode(),
+        mime="text/plain",
+        name="zavgorodnii-receipt.txt",
+    )["fields"]
+
+    assert fields["service_kind"] == "avia"
+    assert fields["passenger_name"] == "ZAVGORODNII ALEKSANDR VALEREVICH"
+    assert fields["document_number"] == "ПС4713420143"
+    assert fields["ticket_number"] == "555 2337332744"
+
+
 def test_multiline_s7_layout_reassembles_split_amounts_and_route():
     text = """
     ЭЛЕКТРОННЫЙ БИЛЕТ (маршрут-квитанция для пассажира)

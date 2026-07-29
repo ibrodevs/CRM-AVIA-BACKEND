@@ -1624,6 +1624,7 @@ def _structured_receipt_fields(text: str, *, service_kind: str) -> dict:
         r"(?:Документ\s*\n/Document|Документ/Document|Номер документа|ПАСПОРТ РФ|ПСП)"
         r"\s*[:\-]?\s*([A-ZА-Я]{0,3}\s*\d{6,14})",
         r"\b(ПСП\d{6,14})\b",
+        r"(?m)^\s*(ПС\s*\d{6,14})\s*$",
     ])
     dob = _first_match(text, [
         r"(?:дата рождения|dob|date of birth)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
