@@ -270,8 +270,12 @@ class DocumentReceiptUpdateView(APIView):
             else:
                 document.person = None
 
-        verified = receipt_verified_data(verified_input, parser_status="parsed")
-        verified["recognitionPending"] = False
+        save_as_draft = bool(request.data.get("draft"))
+        verified = receipt_verified_data(
+            verified_input,
+            parser_status="manual_review" if save_as_draft else "parsed",
+        )
+        verified["recognitionPending"] = save_as_draft
         output_settings = request.data.get("output_settings")
         audit_log = request.data.get("audit_log")
         current = document.metadata or {}
@@ -285,7 +289,7 @@ class DocumentReceiptUpdateView(APIView):
             supplier_original["audit_log"] = json_safe(audit_log)
         receipt_import = {
             **(current.get("receipt_import") or {}),
-            "stage": "confirmed",
+            "stage": "draft" if save_as_draft else "confirmed",
             "verified_data": json_safe(verified),
         }
         document.metadata = {
@@ -307,7 +311,12 @@ class DocumentReceiptUpdateView(APIView):
         document.currency = str(verified.get("currency") or document.currency or "")
         document.source = "corrected"
         document.save(update_fields=["order", "person", "amount", "currency", "source", "metadata"])
-        audit("documents.receipt_updated", actor=request.user, resource=document, request=request)
+        audit(
+            "documents.receipt_draft_saved" if save_as_draft else "documents.receipt_updated",
+            actor=request.user,
+            resource=document,
+            request=request,
+        )
         return Response(DocumentSerializer(document).data)
 
 

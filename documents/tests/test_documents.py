@@ -395,6 +395,53 @@ class TestDocuments:
         )
         assert document.metadata["receipt_import"]["stage"] == "confirmed"
 
+    def test_receipt_editor_close_saves_unconfirmed_draft(self, admin_client):
+        from documents.models import ReceiptImportJob
+
+        receipt = upload_file(
+            "hotel_voucher.txt",
+            (
+                "Услуга: hotel\n"
+                "Гость: НАГОРНЫЙ КОНСТАНТИН\n"
+                "Отель: Лесная Сафмар\n"
+                "Итого: 15000 RUB\n"
+            ).encode(),
+        )
+        imported = admin_client.post(
+            "/api/v1/receipt-imports/",
+            {"file": receipt},
+            format="multipart",
+        )
+        assert imported.status_code == 201, imported.content
+        job = ReceiptImportJob.objects.get(pk=imported.json()["id"])
+        document = job.file_version.document
+
+        response = admin_client.post(
+            f"/api/v1/documents/{document.id}/receipt/",
+            {
+                "draft": True,
+                "verified_data": {
+                    "service_kind": "hotel",
+                    "service_type": "Гостиница",
+                    "passenger": "НАГОРНЫЙ КОНСТАНТИН",
+                    "hotel": {
+                        "name": "Лесная Сафмар",
+                        "address": "Москва, ул. Лесная, д. 15",
+                    },
+                    "total": "15000",
+                    "currency": "RUB",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.content
+        document.refresh_from_db()
+        verified = document.metadata["supplier_original"]["verified_data"]
+        assert verified["hotel"]["address"] == "Москва, ул. Лесная, д. 15"
+        assert verified["recognitionPending"] is True
+        assert document.metadata["receipt_import"]["stage"] == "draft"
+
     def test_receipt_import_extracts_russian_fields(self, admin_client):
         receipt = upload_file(
             "russian_receipt.txt",
