@@ -4,7 +4,7 @@ from documents.receipt_parser_patch_safe import install_receipt_parser_patch
 
 install_receipt_parser_patch()
 
-from documents import views as v
+from documents import views as v  # noqa: E402 - install parser patch before view import
 
 urlpatterns = [
     path("documents/", v.DocumentListCreateView.as_view(), name="document-list"),
@@ -19,6 +19,11 @@ urlpatterns = [
     path("documents/<uuid:document_id>/send/", v.DocumentSendView.as_view(), name="document-send"),
     path(
         "documents/<uuid:document_id>/download/", v.DocumentDownloadView.as_view(), name="document-download"
+    ),
+    path(
+        "documents/<uuid:document_id>/receipt/",
+        v.DocumentReceiptUpdateView.as_view(),
+        name="document-receipt-update",
     ),
     path("document-templates/", v.DocumentTemplatesView.as_view(), name="document-templates"),
     path("receipt-imports/", v.ReceiptImportCreateView.as_view(), name="receipt-imports"),

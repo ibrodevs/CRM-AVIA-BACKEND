@@ -315,6 +315,86 @@ class TestDocuments:
         assert service.client_total == service.client_total.__class__("320.00")
         assert original_document.metadata["receipt_import"]["created_service"] == str(service.id)
 
+    def test_receipt_editor_update_persists_binding_finances_and_output_settings(
+        self,
+        admin_client,
+        order,
+    ):
+        from documents.models import ReceiptImportJob
+
+        receipt = upload_file(
+            "rail_receipt.txt",
+            (
+                "Пассажир: СУЛЕЙМАНОВ РЕНАТ РАШИДОВИЧ\n"
+                "Услуга: rail\n"
+                "Маршрут: МОСКВА → НИЖНИЙ НОВГОРОД\n"
+                "Дата отправления: 27.10.2025\n"
+                "Поезд: 721АА\n"
+                "Номер заказа: 77506905747822\n"
+                "Валюта: RUB\n"
+                "Итого: 2877.70\n"
+            ).encode(),
+        )
+        imported = admin_client.post(
+            "/api/v1/receipt-imports/",
+            {"file": receipt},
+            format="multipart",
+        )
+        assert imported.status_code == 201, imported.content
+        job = ReceiptImportJob.objects.get(pk=imported.json()["id"])
+        document = job.file_version.document
+
+        response = admin_client.post(
+            f"/api/v1/documents/{document.id}/receipt/",
+            {
+                "order": order["id"],
+                "verified_data": {
+                    "service_kind": "rail",
+                    "service_type": "ЖД",
+                    "passenger": "СУЛЕЙМАНОВ РЕНАТ РАШИДОВИЧ",
+                    "supplierOrderNo": "77506905747822",
+                    "crmOrderNo": order["number"],
+                    "ticketCost": "1500.00",
+                    "reservedSeatCost": "1377.70",
+                    "agencyServiceFee": "100.00",
+                    "additionalFees": "0",
+                    "fare": "2877.70",
+                    "fees": "100.00",
+                    "total": "2977.70",
+                    "currency": "RUB",
+                    "legs": [
+                        {
+                            "from": "МОСКВА",
+                            "to": "НИЖНИЙ НОВГОРОД",
+                            "date": "27.10.2025",
+                            "flightNo": "721АА",
+                        }
+                    ],
+                },
+                "output_settings": {
+                    "mode": "agency",
+                    "template": "Основной фирменный",
+                    "priceMode": "total",
+                },
+                "audit_log": [{"label": "Стоимость плацкарты", "after": "1377.70"}],
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.content
+        document.refresh_from_db()
+        assert str(document.order_id) == order["id"]
+        assert document.amount == document.amount.__class__("2977.70")
+        verified = document.metadata["supplier_original"]["verified_data"]
+        assert verified["supplierOrderNo"] == "77506905747822"
+        assert verified["ticketCost"] == "1500.00"
+        assert verified["reservedSeatCost"] == "1377.70"
+        assert document.metadata["supplier_original"]["output_settings"]["mode"] == "agency"
+        assert document.metadata["supplier_original"]["audit_log"][0]["label"] == (
+            "Стоимость плацкарты"
+        )
+        assert document.metadata["receipt_import"]["stage"] == "confirmed"
+
     def test_receipt_import_extracts_russian_fields(self, admin_client):
         receipt = upload_file(
             "russian_receipt.txt",

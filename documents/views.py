@@ -223,6 +223,94 @@ class DocumentDownloadView(APIView):
         return response
 
 
+class DocumentReceiptUpdateView(APIView):
+    """Сохраняет проверенные данные редактора, не изменяя оригинал поставщика."""
+
+    permission_classes = [require("documents.upload")]
+
+    def post(self, request, document_id):
+        from decimal import Decimal, InvalidOperation
+
+        document = get_document_or_404(request.user, document_id)
+        verified_input = request.data.get("verified_data")
+        if not isinstance(verified_input, dict):
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="verified_data должен быть объектом",
+                status_code=400,
+            )
+
+        if "order" in request.data:
+            order_id = request.data.get("order")
+            if order_id:
+                from orders.models import Order
+
+                order = Order.objects.filter(
+                    pk=order_id,
+                    tenant_id=request.user.tenant_id,
+                ).first()
+                if order is None:
+                    raise ApiError(code="NOT_FOUND", message="Заказ не найден", status_code=404)
+                document.order = order
+            else:
+                document.order = None
+
+        if "person" in request.data:
+            person_id = request.data.get("person")
+            if person_id:
+                from crm.models import Person
+
+                person = Person.objects.filter(
+                    pk=person_id,
+                    tenant_id=request.user.tenant_id,
+                ).first()
+                if person is None:
+                    raise ApiError(code="NOT_FOUND", message="Физлицо не найдено", status_code=404)
+                document.person = person
+            else:
+                document.person = None
+
+        verified = receipt_verified_data(verified_input, parser_status="parsed")
+        verified["recognitionPending"] = False
+        output_settings = request.data.get("output_settings")
+        audit_log = request.data.get("audit_log")
+        current = document.metadata or {}
+        supplier_original = {
+            **(current.get("supplier_original") or {}),
+            "verified_data": json_safe(verified),
+        }
+        if isinstance(output_settings, dict):
+            supplier_original["output_settings"] = json_safe(output_settings)
+        if isinstance(audit_log, list):
+            supplier_original["audit_log"] = json_safe(audit_log)
+        receipt_import = {
+            **(current.get("receipt_import") or {}),
+            "stage": "confirmed",
+            "verified_data": json_safe(verified),
+        }
+        document.metadata = {
+            **current,
+            "supplier_original": supplier_original,
+            "receipt_import": receipt_import,
+        }
+
+        total = verified.get("total")
+        if total not in (None, ""):
+            try:
+                document.amount = Decimal(str(total))
+            except (InvalidOperation, TypeError, ValueError):
+                raise ApiError(
+                    code="VALIDATION_ERROR",
+                    message="Некорректная итоговая сумма",
+                    status_code=400,
+                ) from None
+        document.currency = str(verified.get("currency") or document.currency or "")
+        document.source = "corrected"
+        document.save(update_fields=["order", "person", "amount", "currency", "source", "metadata"])
+        audit("documents.receipt_updated", actor=request.user, resource=document, request=request)
+        return Response(DocumentSerializer(document).data)
+
+
 class DocumentTemplatesView(APIView):
     permission_classes = [require("documents.view")]
 
