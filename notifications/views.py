@@ -14,6 +14,11 @@ from notifications.models import Notification, NotificationRule
 
 
 class NotificationSerializer(serializers.ModelSerializer):
+    responsible_name = serializers.SerializerMethodField()
+
+    def get_responsible_name(self, obj):
+        return obj.user.get_full_name() or obj.user.email
+
     class Meta:
         model = Notification
         fields = [
@@ -30,6 +35,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "pinned_at",
             "dismissed_at",
             "created_at",
+            "responsible_name",
         ]
 
 
@@ -41,7 +47,7 @@ class NotificationListView(GenericAPIView):
     pagination_class = DefaultPagination
 
     def get(self, request):
-        qs = _my_notifications(request).filter(dismissed_at__isnull=True)
+        qs = _my_notifications(request).filter(dismissed_at__isnull=True).select_related("user")
         params = request.query_params
         if params.get("unread") in ("true", "1"):
             qs = qs.filter(read_at__isnull=True)
