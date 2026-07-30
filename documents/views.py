@@ -441,7 +441,13 @@ class ReceiptImportCreateView(APIView):
                 size=file.size,
             )
             document.save(update_fields=["metadata"])
-        return Response({"id": str(import_job.id)}, status=http.HTTP_201_CREATED)
+        return Response(
+            {
+                "id": str(import_job.id),
+                "document_id": str(original_version.document_id),
+            },
+            status=http.HTTP_201_CREATED,
+        )
 
 
 class ReceiptImportResultView(APIView):
@@ -481,6 +487,11 @@ class ReceiptImportResultView(APIView):
         return Response(
             {
                 "id": str(import_job.id),
+                "source_document_id": (
+                    str(import_job.file_version.document_id)
+                    if import_job.file_version_id
+                    else None
+                ),
                 "parser_status": import_job.parser_status,
                 "confidence": str(import_job.confidence) if import_job.confidence else None,
                 "warnings": import_job.warnings,

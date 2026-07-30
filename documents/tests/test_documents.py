@@ -141,6 +141,8 @@ class TestDocuments:
 
         import_job = ReceiptImportJob.objects.get(pk=response.json()["id"])
         source_document = import_job.file_version.document
+        assert response.json()["document_id"] == str(source_document.id)
+        assert body["source_document_id"] == str(source_document.id)
         assert source_document.source == "supplier"
         assert source_document.current_version == 1
         assert import_job.file_version.version == 1
