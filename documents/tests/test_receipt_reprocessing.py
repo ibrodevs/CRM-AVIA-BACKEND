@@ -202,6 +202,50 @@ def test_rzd_card_payment_layout_deduplicates_name_and_splits_full_cost():
     assert fields["segments"][0]["seat"] == "032"
 
 
+def test_rzd_group_coupon_control_line_with_star_marker_is_parsed():
+    text = """
+    ЭЛЕКТРОННЫЙ БИЛЕТ. КОНТРОЛЬНЫЙ КУПОН
+    ПОЕЗД ВАГОН МЕСТО 098 098 04 04 025 025
+    № 78 706 152 276 981
+    06:44 06:44 14.12.2025
+    16:42 16:42 14.12.2025
+    ПАСПОРТ РФ 5626790603 26.03.2004 RUS М
+    ШВАНГИРАДЗЕ ДАВИД ЗАЗОВИЧ ШВАНГИРАДЗЕ ДАВИД ЗАЗОВИЧ
+    Посадка в поезд осуществляется
+    098*СА 14.12.2025 06:44 04К 025 КУРГАН - ОМСК-ПАССАЖИРСКИЙ
+    ПН5626790603 ШВАНГИРАДЗЕ-ДЗ 260304
+    Заказ: 78706152276981
+    Перевозчик: ФПК ДАЛЬНЕВОСТОЧНЫЙ / ФПК ИНН 7708709686
+    2А 2А Тариф: Полный
+    Оплата банковской картой ****9574
+    Билет Плацкарта НДС 0% НДС 20%
+    2 627,60 ₽ 1 806,60 ₽ 0,00 ₽ 77,50 ₽
+    Итого Вкл. НДС 4 434,20 ₽
+    """
+
+    fields = _rail(text)
+
+    assert fields is not None
+    assert fields["passenger_name"] == "ШВАНГИРАДЗЕ ДАВИД ЗАЗОВИЧ"
+    assert fields["total"] == Decimal("4434.20")
+    assert fields["ticketCost"] == Decimal("2627.60")
+    assert fields["reservedSeatCost"] == Decimal("1806.60")
+    assert fields["segments"][0] == {
+        "from": "КУРГАН",
+        "fromCode": "",
+        "to": "ОМСК-ПАССАЖИРСКИЙ",
+        "toCode": "",
+        "date": "14.12.2025",
+        "dep": "06:44",
+        "arr": "16:42",
+        "endDate": "14.12.2025",
+        "flightNo": "098",
+        "coach": "04",
+        "seat": "025",
+        "dir": "out",
+    }
+
+
 def test_rzd_pages_override_incorrect_generic_avia_classification(monkeypatch):
     from documents import receipt_parser_patch_safe, services
 

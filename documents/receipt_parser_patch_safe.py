@@ -517,7 +517,7 @@ def _rail(text):
         flat,
     )
     journey = re.search(
-        r"\b(?P<train>\d{3,4}[А-ЯЁA-Z]{1,2})\s+"
+        r"\b(?P<train>\d{3,4}(?:\*?[А-ЯЁA-Z]{1,3})?)\s+"
         r"(?P<date>\d{2}\.\d{2}\.\d{4})\s+"
         r"(?P<dep>\d{1,2}:\d{2})\s+"
         r"(?P<coach>\d{2})[А-ЯЁA-Z]\s+"
@@ -559,7 +559,12 @@ def _rail(text):
     seat = journey.group("seat")
     if train_data:
         train_number, header_coach, header_seat = train_data.groups()
-        train = train or train_number
+        # The graphical RZD coupon can append an internal marker such as
+        # ``098*СА`` in its machine-readable control line.  The visible header
+        # is the passenger-facing train/coach/seat value and is therefore the
+        # preferred source for that marked representation.  Normal control-line
+        # suffixes (for example ``755АА``) remain part of the public train number.
+        train = train_number if "*" in train else (train or train_number)
         coach = coach or header_coach
         seat = seat or header_seat
     leading = flat[: passport.start()] if passport else flat
