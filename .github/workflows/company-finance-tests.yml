@@ -5,14 +5,18 @@ on:
     branches: [main]
     paths:
       - "crm/company_finance_views.py"
+      - "crm/company_finance_safe_view.py"
       - "crm/urls.py"
       - "crm/tests/test_company_financial_conditions.py"
+      - "crm/tests/test_company_financial_conditions_empty_profile.py"
       - ".github/workflows/company-finance-tests.yml"
   pull_request:
     paths:
       - "crm/company_finance_views.py"
+      - "crm/company_finance_safe_view.py"
       - "crm/urls.py"
       - "crm/tests/test_company_financial_conditions.py"
+      - "crm/tests/test_company_financial_conditions_empty_profile.py"
 
 jobs:
   test:
@@ -47,4 +51,4 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
       - name: Run company finance tests
-        run: uv run pytest crm/tests/test_company_financial_conditions.py
+        run: uv run pytest crm/tests/test_company_financial_conditions.py crm/tests/test_company_financial_conditions_empty_profile.py
