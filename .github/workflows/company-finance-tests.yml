@@ -1,0 +1,50 @@
+name: Company finance tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crm/company_finance_views.py"
+      - "crm/urls.py"
+      - "crm/tests/test_company_financial_conditions.py"
+      - ".github/workflows/company-finance-tests.yml"
+  pull_request:
+    paths:
+      - "crm/company_finance_views.py"
+      - "crm/urls.py"
+      - "crm/tests/test_company_financial_conditions.py"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: travelhub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d travelhub_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/travelhub_test
+      DJANGO_SECRET_KEY: ci-secret-key-for-tests-only
+      FIELD_ENCRYPTION_KEY: 3jJ0deI6M0y5d3G7Zbb8xxL4wXO2ldeYmyIQXjmdKF0=
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install dependencies
+        run: uv sync --dev
+      - name: Run company finance tests
+        run: uv run pytest crm/tests/test_company_financial_conditions.py
