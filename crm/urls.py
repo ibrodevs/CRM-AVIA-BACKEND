@@ -1,6 +1,7 @@
 from django.urls import path
 
 from crm import views as v
+from crm.company_finance_views import CompanyFinancialConditionsView
 
 urlpatterns = [
     path("persons/", v.PersonListCreateView.as_view(), name="person-list"),
@@ -14,6 +15,11 @@ urlpatterns = [
     path("clients/", v.ClientListCreateView.as_view(), name="client-list"),
     path("companies/", v.CompanyListCreateView.as_view(), name="company-list"),
     path("companies/<uuid:company_id>/", v.CompanyDetailView.as_view(), name="company-detail"),
+    path(
+        "companies/<uuid:company_id>/financial-conditions/",
+        CompanyFinancialConditionsView.as_view(),
+        name="company-financial-conditions",
+    ),
     path(
         "companies/<uuid:company_id>/employees/", v.CompanyEmployeesView.as_view(), name="company-employees"
     ),
