@@ -5,18 +5,22 @@ on:
     branches: [main]
     paths:
       - "documents/receipt_multiform_patch.py"
+      - "documents/receipt_hotel_booking_guard.py"
       - "documents/receipt_parser_patch_safe.py"
       - "documents/receipt_metadata.py"
       - "documents/apps.py"
       - "documents/tests/test_receipt_multiform_patch.py"
+      - "documents/tests/test_receipt_hotel_booking_guard.py"
       - ".github/workflows/receipt-multiform-tests.yml"
   pull_request:
     paths:
       - "documents/receipt_multiform_patch.py"
+      - "documents/receipt_hotel_booking_guard.py"
       - "documents/receipt_parser_patch_safe.py"
       - "documents/receipt_metadata.py"
       - "documents/apps.py"
       - "documents/tests/test_receipt_multiform_patch.py"
+      - "documents/tests/test_receipt_hotel_booking_guard.py"
 
 jobs:
   test:
@@ -50,5 +54,5 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --dev
-      - name: Run multi-form receipt tests
-        run: uv run pytest documents/tests/test_receipt_multiform_patch.py
+      - name: Run receipt parser tests
+        run: uv run pytest documents/tests/test_receipt_multiform_patch.py documents/tests/test_receipt_hotel_booking_guard.py
