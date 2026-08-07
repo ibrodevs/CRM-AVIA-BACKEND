@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "documents/receipt_recognition_engine.py"
+      - "documents/receipt_ocr_fallback.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_preflight_patch.py"
       - "documents/receipt_problem_formats_patch.py"
@@ -17,6 +18,7 @@ on:
   pull_request:
     paths:
       - "documents/receipt_recognition_engine.py"
+      - "documents/receipt_ocr_fallback.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_preflight_patch.py"
       - "documents/receipt_problem_formats_patch.py"
