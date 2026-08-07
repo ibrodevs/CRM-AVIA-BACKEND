@@ -8,12 +8,14 @@ on:
       - "documents/receipt_hotel_booking_guard.py"
       - "documents/receipt_parser_patch_safe.py"
       - "documents/receipt_problem_formats_patch.py"
+      - "documents/receipt_preflight_patch.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_metadata.py"
       - "documents/apps.py"
       - "documents/tests/test_receipt_multiform_patch.py"
       - "documents/tests/test_receipt_hotel_booking_guard.py"
       - "documents/tests/test_receipt_problem_formats.py"
+      - "documents/tests/test_receipt_preflight_patch.py"
       - "documents/tests/test_receipt_quality_guard.py"
       - ".github/workflows/receipt-multiform-tests.yml"
   pull_request:
@@ -22,12 +24,14 @@ on:
       - "documents/receipt_hotel_booking_guard.py"
       - "documents/receipt_parser_patch_safe.py"
       - "documents/receipt_problem_formats_patch.py"
+      - "documents/receipt_preflight_patch.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_metadata.py"
       - "documents/apps.py"
       - "documents/tests/test_receipt_multiform_patch.py"
       - "documents/tests/test_receipt_hotel_booking_guard.py"
       - "documents/tests/test_receipt_problem_formats.py"
+      - "documents/tests/test_receipt_preflight_patch.py"
       - "documents/tests/test_receipt_quality_guard.py"
 
 jobs:
@@ -63,4 +67,4 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
       - name: Run receipt regression tests
-        run: uv run pytest documents/tests/test_receipt_multiform_patch.py documents/tests/test_receipt_hotel_booking_guard.py documents/tests/test_receipt_problem_formats.py documents/tests/test_receipt_quality_guard.py
+        run: uv run pytest documents/tests/test_receipt_multiform_patch.py documents/tests/test_receipt_hotel_booking_guard.py documents/tests/test_receipt_problem_formats.py documents/tests/test_receipt_preflight_patch.py documents/tests/test_receipt_quality_guard.py
