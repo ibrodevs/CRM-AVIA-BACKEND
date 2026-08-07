@@ -11,9 +11,9 @@ on:
       - "documents/receipt_problem_formats_patch.py"
       - "documents/receipt_multiform_patch.py"
       - "documents/receipt_parser_patch_safe.py"
+      - "documents/receipt_metadata.py"
       - "documents/apps.py"
-      - "documents/tests/test_receipt_recognition_engine.py"
-      - "documents/tests/test_receipt_multiform_patch.py"
+      - "documents/tests/test_receipt_*.py"
       - ".github/workflows/receipt-recognition-quality.yml"
   pull_request:
     paths:
@@ -24,9 +24,9 @@ on:
       - "documents/receipt_problem_formats_patch.py"
       - "documents/receipt_multiform_patch.py"
       - "documents/receipt_parser_patch_safe.py"
+      - "documents/receipt_metadata.py"
       - "documents/apps.py"
-      - "documents/tests/test_receipt_recognition_engine.py"
-      - "documents/tests/test_receipt_multiform_patch.py"
+      - "documents/tests/test_receipt_*.py"
 
 jobs:
   test:
@@ -60,8 +60,16 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --dev
-      - name: Run recognition regression suite
+      - name: Run full receipt recognition regression suite
         run: >-
           uv run pytest
           documents/tests/test_receipt_recognition_engine.py
           documents/tests/test_receipt_multiform_patch.py
+          documents/tests/test_receipt_problem_formats.py
+          documents/tests/test_receipt_preflight_patch.py
+          documents/tests/test_receipt_quality_guard.py
+          documents/tests/test_receipt_reprocessing.py
+          documents/tests/test_receipt_metadata.py
+          documents/tests/test_receipt_avia_brand_patch.py
+          documents/tests/test_receipt_hotel_booking_guard.py
+          documents/tests/test_receipt_tax_columns.py
