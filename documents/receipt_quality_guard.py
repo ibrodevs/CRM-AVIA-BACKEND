@@ -28,6 +28,12 @@ def _has_passenger(fields: dict) -> bool:
     return _present(fields.get("passenger_name")) or bool(_passengers(fields))
 
 
+def _has_ticket(fields: dict) -> bool:
+    if _present(fields.get("ticket_number") or fields.get("ticketNo")):
+        return True
+    return any(_present(row.get("ticketNo") or row.get("ticket_number")) for row in _passengers(fields))
+
+
 def _has_route(fields: dict) -> bool:
     for segment in _segments(fields):
         origin = segment.get("from") or segment.get("fromCode")
@@ -41,7 +47,13 @@ def _has_stay(fields: dict) -> bool:
     for segment in _segments(fields):
         if _present(segment.get("date")) and _present(segment.get("endDate")):
             return True
-    return False
+    rooms = fields.get("rooms") or []
+    return any(
+        isinstance(room, dict)
+        and _present(room.get("checkInDate"))
+        and _present(room.get("checkOutDate"))
+        for room in rooms
+    )
 
 
 def _has_flight(fields: dict) -> bool:
@@ -57,6 +69,8 @@ def _has_rail_identity(fields: dict) -> bool:
             legs = receipt.get("segments") or receipt.get("legs") or []
             if not _present(receipt.get("ticket_number") or receipt.get("ticketNo")):
                 return False
+            if not _present(receipt.get("passenger") or receipt.get("passenger_name")):
+                return False
             if not any(
                 isinstance(leg, dict)
                 and _present(leg.get("flightNo"))
@@ -65,7 +79,7 @@ def _has_rail_identity(fields: dict) -> bool:
             ):
                 return False
         return True
-    return _present(fields.get("ticket_number")) and any(
+    return _has_ticket(fields) and any(
         _present(segment.get("flightNo")) for segment in _segments(fields)
     )
 
@@ -79,7 +93,7 @@ def _missing_fields(kind: str, fields: dict) -> list[str]:
             missing.append("маршрут")
         if not _has_flight(fields):
             missing.append("номер рейса")
-        if not _present(fields.get("ticket_number")):
+        if not _has_ticket(fields):
             missing.append("номер билета")
     elif kind == "rail":
         if not _has_passenger(fields):
