@@ -6,6 +6,7 @@ on:
     paths:
       - "documents/receipt_recognition_engine.py"
       - "documents/receipt_ocr_fallback.py"
+      - "documents/receipt_rzd_fastpath.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_preflight_patch.py"
       - "documents/receipt_problem_formats_patch.py"
@@ -19,6 +20,7 @@ on:
     paths:
       - "documents/receipt_recognition_engine.py"
       - "documents/receipt_ocr_fallback.py"
+      - "documents/receipt_rzd_fastpath.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_preflight_patch.py"
       - "documents/receipt_problem_formats_patch.py"
@@ -64,6 +66,7 @@ jobs:
         run: >-
           uv run pytest
           documents/tests/test_receipt_recognition_engine.py
+          documents/tests/test_receipt_rzd_fastpath.py
           documents/tests/test_receipt_multiform_patch.py
           documents/tests/test_receipt_problem_formats.py
           documents/tests/test_receipt_preflight_patch.py
