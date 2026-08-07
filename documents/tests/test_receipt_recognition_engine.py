@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from documents.receipt_ocr_fallback import _should_ocr
 from documents.receipt_quality_guard import apply_receipt_quality_guard
 from documents.receipt_recognition_engine import (
     _compact_route_recovery,
@@ -221,3 +222,24 @@ def test_more_complete_candidate_has_higher_score():
     }
 
     assert _result_score(strong) > _result_score(weak)
+
+
+def test_ocr_runs_only_for_weak_manual_review_results():
+    weak = {
+        "fields": {"service_kind": "avia"},
+        "status": "manual_review",
+        "confidence": Decimal("0.10"),
+    }
+    strong = {
+        "fields": {
+            "service_kind": "avia",
+            "passenger_name": "TEST PASSENGER",
+            "ticket_number": "421 1234567890",
+            "segments": [{"fromCode": "OVB", "toCode": "DME", "flightNo": "S7-2508"}],
+        },
+        "status": "parsed",
+        "confidence": Decimal("0.90"),
+    }
+
+    assert _should_ocr(weak) is True
+    assert _should_ocr(strong) is False
