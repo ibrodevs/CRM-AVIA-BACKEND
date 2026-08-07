@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "documents/receipt_recognition_engine.py"
+      - "documents/receipt_recognition_performance.py"
       - "documents/receipt_ocr_fallback.py"
       - "documents/receipt_rzd_fastpath.py"
       - "documents/receipt_quality_guard.py"
@@ -19,6 +20,7 @@ on:
   pull_request:
     paths:
       - "documents/receipt_recognition_engine.py"
+      - "documents/receipt_recognition_performance.py"
       - "documents/receipt_ocr_fallback.py"
       - "documents/receipt_rzd_fastpath.py"
       - "documents/receipt_quality_guard.py"
@@ -66,6 +68,7 @@ jobs:
         run: >-
           uv run pytest
           documents/tests/test_receipt_recognition_engine.py
+          documents/tests/test_receipt_recognition_performance.py
           documents/tests/test_receipt_rzd_fastpath.py
           documents/tests/test_receipt_multiform_patch.py
           documents/tests/test_receipt_problem_formats.py
