@@ -13,6 +13,7 @@ class DocumentsConfig(AppConfig):
         from documents.receipt_preflight_patch import install_receipt_preflight_patch
         from documents.receipt_problem_formats_patch import install_receipt_problem_formats_patch
         from documents.receipt_quality_guard import install_receipt_quality_guard
+        from documents.receipt_recognition_engine import install_receipt_recognition_engine
         from documents.receipt_tax_columns_patch import install_receipt_tax_columns_patch
 
         install_receipt_parser_patch()
@@ -23,3 +24,4 @@ class DocumentsConfig(AppConfig):
         install_receipt_problem_formats_patch()
         install_receipt_preflight_patch()
         install_receipt_quality_guard()
+        install_receipt_recognition_engine()
