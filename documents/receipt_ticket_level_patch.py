@@ -18,6 +18,19 @@ def _as_dict(value):
     return value if isinstance(value, dict) else {}
 
 
+def _service_kind(value):
+    raw = str(value or "").strip().lower()
+    if raw in {"rail", "train", "жд", "ж/д"}:
+        return "rail"
+    if raw in {"avia", "flight", "авиа"}:
+        return "avia"
+    if raw in {"hotel", "гостиница", "отель"}:
+        return "hotel"
+    if raw in {"transfer", "трансфер"}:
+        return "transfer"
+    return raw or "other"
+
+
 def receipt_items_from(source):
     """Find child tickets in API payloads, parser output or verified metadata."""
     source = _as_dict(source)
@@ -50,25 +63,33 @@ def normalize_receipt_items(source, *, parser_status="parsed", service_kind=""):
     """Canonicalize every supplier ticket independently without re-aggregating it."""
     rows = receipt_items_from(source)
     normalized = []
+    parent_kind = _service_kind(service_kind)
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
         item = dict(row)
         for key in RECEIPT_ITEM_KEYS:
             item.pop(key, None)
-        item.setdefault("service_kind", service_kind or item.get("service_kind") or "other")
+        item_kind = _service_kind(item.get("service_kind") or parent_kind)
+        item["service_kind"] = item_kind
         item.setdefault(
             "service_type",
-            "ЖД" if item.get("service_kind") == "rail" else item.get("service_type") or "",
+            "ЖД" if item_kind == "rail" else item.get("service_type") or "",
         )
         item["passenger"] = _first_value(item.get("passenger"), item.get("passenger_name"))
+        item["passenger_name"] = item["passenger"]
         item["ticketNo"] = _first_value(
             item.get("ticketNo"), item.get("ticket_number"), item.get("ticket_no")
         )
+        item["ticket_number"] = item["ticketNo"]
         verified = receipt_verified_data(item, parser_status=parser_status)
-        verified["receiptIndex"] = int(
-            _first_value(item.get("receiptIndex"), item.get("receipt_index"), index + 1)
-        )
+        try:
+            receipt_index = int(
+                _first_value(item.get("receiptIndex"), item.get("receipt_index"), index + 1)
+            )
+        except (TypeError, ValueError):
+            receipt_index = index + 1
+        verified["receiptIndex"] = receipt_index
         verified["receiptCount"] = 1
         # A child ticket must never recursively contain the whole group.
         verified["receiptItems"] = []
@@ -116,10 +137,13 @@ def _rail_aggregate(items):
         else:
             fare += _decimal(item.get("fare"))
         taxes += _decimal(item.get("taxes"))
-        fees += _decimal(_first_value(item.get("agencyServiceFee"), item.get("agency_service_fee")))
-        fees += _decimal(_first_value(item.get("additionalFees"), item.get("additional_fees")))
-        if not fees and item.get("fees") not in (None, ""):
-            fees += _decimal(item.get("fees"))
+        item_fees = (
+            _decimal(_first_value(item.get("agencyServiceFee"), item.get("agency_service_fee")))
+            + _decimal(_first_value(item.get("additionalFees"), item.get("additional_fees")))
+        )
+        if item_fees == 0 and item.get("fees") not in (None, ""):
+            item_fees = _decimal(item.get("fees"))
+        fees += item_fees
         total += receipt_item_total(item)
     return fare, taxes, fees, total
 
@@ -149,6 +173,7 @@ def _save_draft_items(import_job, items):
 def _store_items_in_document(document, items, *, service_kind=""):
     if document is None or not items:
         return
+    service_kind = _service_kind(service_kind)
     metadata = document.metadata or {}
     supplier_original = dict(metadata.get("supplier_original") or {})
     supplier_verified = dict(supplier_original.get("verified_data") or {})
@@ -260,7 +285,7 @@ def install_receipt_ticket_level_patch():
     def confirm(self, request, import_id):
         import_job = ReceiptImportJob.objects.filter(pk=import_id, tenant_id=request.user.tenant_id).first()
         parser_status = import_job.parser_status if import_job is not None else "parsed"
-        service_kind = import_job.guessed_type if import_job is not None else ""
+        service_kind = _service_kind(import_job.guessed_type if import_job is not None else "")
         items = normalize_receipt_items(
             request.data,
             parser_status=parser_status,
