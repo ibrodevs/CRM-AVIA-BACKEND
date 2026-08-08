@@ -160,6 +160,9 @@ class ReceiptDraft(TenantModel):
     fare_breakdown = models.JSONField(default=list, blank=True)
     tax_breakdown = models.JSONField(default=list, blank=True)
     fee_breakdown = models.JSONField(default=list, blank=True)
+    # A supplier PDF may contain several independent tickets. Keep the exact
+    # verified data for each child ticket instead of only the aggregated parent.
+    receipt_items = models.JSONField(default=list, blank=True)
     total = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     currency = models.CharField(max_length=3, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)

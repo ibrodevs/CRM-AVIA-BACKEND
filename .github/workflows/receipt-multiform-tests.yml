@@ -11,12 +11,16 @@ on:
       - "documents/receipt_preflight_patch.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_metadata.py"
+      - "documents/receipt_ticket_level_patch.py"
+      - "documents/models.py"
+      - "documents/migrations/0007_receiptdraft_receipt_items.py"
       - "documents/apps.py"
       - "documents/tests/test_receipt_multiform_patch.py"
       - "documents/tests/test_receipt_hotel_booking_guard.py"
       - "documents/tests/test_receipt_problem_formats.py"
       - "documents/tests/test_receipt_preflight_patch.py"
       - "documents/tests/test_receipt_quality_guard.py"
+      - "documents/tests/test_receipt_ticket_level_patch.py"
       - ".github/workflows/receipt-multiform-tests.yml"
   pull_request:
     paths:
@@ -27,12 +31,17 @@ on:
       - "documents/receipt_preflight_patch.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_metadata.py"
+      - "documents/receipt_ticket_level_patch.py"
+      - "documents/models.py"
+      - "documents/migrations/0007_receiptdraft_receipt_items.py"
       - "documents/apps.py"
       - "documents/tests/test_receipt_multiform_patch.py"
       - "documents/tests/test_receipt_hotel_booking_guard.py"
       - "documents/tests/test_receipt_problem_formats.py"
       - "documents/tests/test_receipt_preflight_patch.py"
       - "documents/tests/test_receipt_quality_guard.py"
+      - "documents/tests/test_receipt_ticket_level_patch.py"
+      - ".github/workflows/receipt-multiform-tests.yml"
 
 jobs:
   test:
@@ -66,5 +75,14 @@ jobs:
         run: python -m pip install uv
       - name: Install dependencies
         run: uv sync --dev
+      - name: Check migrations
+        run: uv run python manage.py makemigrations --check --dry-run
       - name: Run receipt regression tests
-        run: uv run pytest documents/tests/test_receipt_multiform_patch.py documents/tests/test_receipt_hotel_booking_guard.py documents/tests/test_receipt_problem_formats.py documents/tests/test_receipt_preflight_patch.py documents/tests/test_receipt_quality_guard.py
+        run: >-
+          uv run pytest
+          documents/tests/test_receipt_multiform_patch.py
+          documents/tests/test_receipt_hotel_booking_guard.py
+          documents/tests/test_receipt_problem_formats.py
+          documents/tests/test_receipt_preflight_patch.py
+          documents/tests/test_receipt_quality_guard.py
+          documents/tests/test_receipt_ticket_level_patch.py
