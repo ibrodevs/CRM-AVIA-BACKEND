@@ -17,6 +17,7 @@ class DocumentsConfig(AppConfig):
         from documents.receipt_recognition_engine import install_receipt_recognition_engine
         from documents.receipt_recognition_performance import install_receipt_recognition_performance_patch
         from documents.receipt_rzd_fastpath import install_receipt_rzd_fastpath
+        from documents.receipt_sequential_review_patch import install_receipt_sequential_review_patch
         from documents.receipt_tax_columns_patch import install_receipt_tax_columns_patch
         from documents.receipt_ticket_level_patch import install_receipt_ticket_level_patch
 
@@ -32,6 +33,8 @@ class DocumentsConfig(AppConfig):
         install_receipt_recognition_performance_patch()
         install_receipt_ocr_fallback()
         install_receipt_rzd_fastpath()
-        # Run last: it consumes the final parser result and persists every child
-        # ticket as an independent editable receipt item.
+        # Ticket-level storage consumes the final parser result.
         install_receipt_ticket_level_patch()
+        # Run after ticket-level storage so review status/progress is preserved
+        # for every child ticket and copied into document metadata.
+        install_receipt_sequential_review_patch()
