@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from documents.receipt_parser_patch_safe import _hotel_details, _rail, _transfer_details
+from documents.receipt_parser_patch_safe import _hotel, _hotel_details, _rail, _transfer_details
 from documents.services import (
     _avia_segments,
     _fare_breakdown,
@@ -31,6 +31,45 @@ def test_central_ppk_coupon_splits_ticket_and_reserved_seat_costs():
         "agencyServiceFee": Decimal("0"),
         "additionalFees": Decimal("0"),
     }
+
+
+def test_partner_english_hotel_voucher_keeps_fields_separate():
+    text = """
+    Reservation 134555371 made on 18.04.25
+    This accommodation is booked by our partner
+    Hard Rock Hotel Shenzhen
+    518110, No. 9 Mission Hills Road, Shenzhen
+    8675533952888
+    Check-in 28.04.2025, from 15:00:00
+    Check-out: 01.05.2025, until 12:00:00
+    Double Suite (full double bed) (bed type is subject to availability), for 1 adult
+    Bedding: Double bed
+    Guests: Koloskov Evgenii
+    Important. Please Note Hotels may charge mandatory fees directly at the property.
+    Amendment & Cancellation Policy Cancellation may result in penalties.
+    Please notify in advance if you expect to check-in after 6 pm. Hotel may cancel the
+    reservation and charge the no-show fee in case you don’t show up by that time.
+    Meal type Breakfast included
+    Deposit Deposit 1000 CNY per room for the night
+    GPS 22.726416 114.06274
+    """
+
+    fields = _hotel(text)
+    assert fields is not None
+    fields.update(_hotel_details(text, fields))
+
+    assert fields["passenger_name"] == "Koloskov Evgenii"
+    assert fields["issueDate"] == "18.04.2025"
+    assert fields["supplierOrderNo"] == "134555371"
+    assert fields["hotel"]["name"] == "Hard Rock Hotel Shenzhen"
+    assert fields["hotel"]["address"] == "518110, No. 9 Mission Hills Road, Shenzhen"
+    assert fields["hotel"]["phone"] == "8675533952888"
+    assert fields["hotel"]["map"] == "22.726416 114.06274"
+    assert fields["segments"][0]["date"] == "28.04.2025"
+    assert fields["segments"][0]["endDate"] == "01.05.2025"
+    assert fields["rooms"][0]["bedType"] == "Double bed"
+    assert fields["rooms"][0]["meal"] == "Завтрак"
+    assert fields["hotelTerms"]["deposit"] == "1000 CNY per room for the night"
 
 
 def test_rail_cost_components_fall_back_to_total_when_coupon_has_no_split():

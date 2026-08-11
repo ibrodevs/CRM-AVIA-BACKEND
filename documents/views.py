@@ -218,7 +218,10 @@ class DocumentDownloadView(APIView):
         if document.is_confidential:
             audit("documents.sensitive_downloaded", actor=request.user, resource=document, request=request)
         response = FileResponse(version.file.open("rb"), content_type=version.mime_type)
-        response["Content-Disposition"] = f'attachment; filename="{version.original_name or document.title}"'
+        disposition = "inline" if request.query_params.get("disposition") == "inline" else "attachment"
+        response["Content-Disposition"] = (
+            f'{disposition}; filename="{version.original_name or document.title}"'
+        )
         response["X-Content-Type-Options"] = "nosniff"
         return response
 

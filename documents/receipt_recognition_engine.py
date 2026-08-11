@@ -207,9 +207,18 @@ def _specialized_result(text: str) -> dict | None:
     except Exception:
         pass
     try:
-        from documents.receipt_parser_patch_safe import _rail
+        from documents.receipt_parser_patch_safe import _hotel, _hotel_details, _rail
 
         parsers.append(("rzd", _rail))
+
+        def parse_partner_hotel(value: str) -> dict | None:
+            fields = _hotel(value)
+            if not fields or fields.get("service_kind") != "hotel":
+                return None
+            fields.update(_hotel_details(value, fields))
+            return fields
+
+        parsers.append(("partner_hotel", parse_partner_hotel))
     except Exception:
         pass
 

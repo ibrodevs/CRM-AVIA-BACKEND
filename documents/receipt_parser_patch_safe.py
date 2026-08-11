@@ -116,6 +116,8 @@ def _hotel_details(text, fields):
         [
             r"Адрес\s*Address\s+(.+?)(?=\s+Телефон\s*Phone\b)",
             r"Адрес:\s*(.+?)(?=\s+Детали\s+размещения\b)",
+            r"This\s+accommodation\s+is\s+booked\s+by\s+our\s+partner\s+.+?\s+"
+            r"(\d{4,6},\s*.+?)(?=\s+\+?\d[\d ()-]{7,}\s+Check-in\b)",
         ],
     )
     partner = re.search(
@@ -128,6 +130,16 @@ def _hotel_details(text, fields):
     if partner:
         hotel_name = hotel_name or _clean(partner.group("hotel"))
         address = address or _clean(partner.group("address"))
+    english_partner = re.search(
+        r"This\s+accommodation\s+is\s+booked\s+by\s+our\s+partner\s+"
+        r"(?P<hotel>.+?)\s+(?P<address>\d{4,6},\s*.+?)\s+"
+        r"(?P<phone>\+?\d[\d ()-]{7,})\s+Check-in\b",
+        flat,
+        re.I,
+    )
+    if english_partner:
+        hotel_name = _clean(english_partner.group("hotel")) or hotel_name
+        address = _clean(english_partner.group("address")) or address
 
     city_country = re.search(
         r"Город:\s*(?P<city>.+?),\s*(?P<country>.+?)\s+Название\s+отеля:",
@@ -139,7 +151,7 @@ def _hotel_details(text, fields):
     if not country and re.search(r"(?:\bРоссия\b|\bRussia\b)", address, re.I):
         country = "Россия"
     if not city:
-        for candidate in ("Москва", "Пекин", "Обь"):
+        for candidate in ("Москва", "Пекин", "Обь", "Shenzhen"):
             if re.search(rf"\b{candidate}\b", address, re.I):
                 city = candidate
                 break
@@ -152,6 +164,8 @@ def _hotel_details(text, fields):
     )
     if not phone and partner:
         phone = _clean(partner.group("phone"))
+    if not phone and english_partner:
+        phone = _clean(english_partner.group("phone"))
     email = _match_value(
         flat,
         [r"Электронный\s+адрес\s*Email\s+([\w.+-]+@[\w.-]+\.[A-Za-zА-Яа-я]{2,})"],
@@ -159,10 +173,16 @@ def _hotel_details(text, fields):
     map_value = _match_value(flat, [r"\bGPS\s+(-?\d{1,3}[.,]\d+\s+-?\d{1,3}[.,]\d+)"])
     category = _match_value(hotel_name, [r"\b(\d)\s*\*"])
 
-    bed_type = _match_value(flat, [r"Кровати:\s*(.+?)(?=\s+Гости:)"])
+    bed_type = _match_value(
+        flat,
+        [r"Кровати:\s*(.+?)(?=\s+Гости:)", r"Bedding:\s*(.+?)(?=\s+Guests:)"],
+    )
     if not bed_type and re.search(r"двуспальн\w*\s+кроват", room_name, re.I):
         bed_type = "Двуспальная кровать"
-    adults_value = _match_value(flat, [r"\bдля\s+(\d+)\s+взросл"])
+    adults_value = _match_value(
+        flat,
+        [r"\bдля\s+(\d+)\s+взросл", r"\bfor\s+(\d+)\s+adults?\b"],
+    )
     children_value = _match_value(flat, [r"\b(\d+)\s+(?:детей|реб[её]нк)"])
 
     meal_text = _match_value(
@@ -171,12 +191,15 @@ def _hotel_details(text, fields):
             r"Тип\s+питания\s*Meal\s+type\s+(.+?)(?=\s+Номер\s+бронирования)",
             r"Питание:\s*(.+?)(?=\s+Дата\s+заезда)",
             r"\bПитание\s+(Питание\s+не\s+включено|Завтрак\s+включ[её]н)(?=\s+(?:Депозит|GPS))",
+            r"Meal\s+type\s+(.+?)(?=\s+Deposit\b)",
         ],
     )
     meal_lower = meal_text.lower()
     if "не включ" in meal_lower:
         meal = "Без питания"
     elif "завтрак" in meal_lower:
+        meal = "Завтрак"
+    elif "breakfast" in meal_lower:
         meal = "Завтрак"
     elif "полупансион" in meal_lower:
         meal = "Полупансион"
@@ -213,6 +236,7 @@ def _hotel_details(text, fields):
             r"Аннуляция\s*/\s*Изменение:\s*(.+?)(?=\s+Дополнительно:)",
             r"(При\s+отмене\s+или\s+изменении\s+заказа.+?договора\s*\.)",
             r"Условия\s+отмены\s+и\s+изменения\s+заказа\s+(.+?)(?=\s+Пожалуйста,\s+предупредите)",
+            r"Amendment\s*&\s*Cancellation\s+Policy\s+(.+?)(?=\s+Meal\s+type\b)",
         ],
     )
     amendment = cancellation
@@ -221,6 +245,7 @@ def _hotel_details(text, fields):
         [
             r"(В\s+случае\s+незаезда.+?штраф\w*\s+санкци\w*(?:\s+за\s+«?no-show»?)?\s*\.)",
             r"(При\s+аннуляции\s+заказа\s+или\s+неявке.+?тарифа\s*\.)",
+            r"(In\s+case\s+of\s+no-show.+?no-show\s+penalty\s*\.)",
         ],
     )
     important = _match_value(
@@ -229,6 +254,8 @@ def _hotel_details(text, fields):
             r"Важная\s+информация\s+(.+?)(?=\s+Условия\s+отмены)",
             r"(Если\s+Вы\s+прибываете\s+в\s+отель.+?«?no-show»?\s*\.)",
             r"(При\s+заселении\s+обязательно.+?удостоверяющий\s+личность\s*\.)",
+            r"Important(?:\s+information|\.\s*Please\s+Note)\s+"
+            r"(.+?)(?=\s+Amendment\s*&\s*Cancellation\s+Policy)",
         ],
     )
     deposit = _match_value(
@@ -236,6 +263,7 @@ def _hotel_details(text, fields):
         [
             r"Депозит\s+Залог\s+(.+?)(?=\s+GPS\b)",
             r"(кредитную\s+карту\s+или\s+наличн\w+\s+депозит.+?(?:и\s+др|проживания)\s*\.)",
+            r"\bDeposit\s+Deposit\s+(.+?)(?=\s+GPS\b)",
         ],
     )
     guest_comment = _match_value(
@@ -243,6 +271,7 @@ def _hotel_details(text, fields):
         [
             r"(Пожалуйста,\s+предупредите\s+заранее.+?штрафн\w+\s+санкци\w+\s+за\s+незаезд\s*\.)",
             r"(При\s+заселении\s+обязательно.+?удостоверяющий\s+личность\s*\.)",
+            r"(Please\s+notify(?:\s+the\s+hotel)?\s+in\s+advance.+?no-show\s+(?:fee|penalty).+?(?:time|reservation)\s*\.)",
         ],
     )
 
@@ -251,6 +280,7 @@ def _hotel_details(text, fields):
         [
             r"Номер\s+заказа\s+в\s+системе\s*бронирования\s*Order\s+number\s+in\s+the\s+booking\s+system\s+(\d+)",
             r"\bБронирование\s+(\d+)\s+от\b",
+            r"\bReservation\s+(\d+)\s+made\s+on\b",
         ],
     )
     hotel_booking = _match_value(
@@ -272,6 +302,7 @@ def _hotel_details(text, fields):
             r"Дата\s+выдачи\s*Date\s+of\s+issue\s+(\d{2}\.\d{2}\.\d{4})",
             r"\bБронирование\s+\d+\s+от\s+(\d{2}\.\d{2}\.\d{2,4})",
             r"Забронировано:\s*(\d{2}\.\d{2}\.\d{4})",
+            r"\bReservation\s+\d+\s+made\s+on\s+(\d{2}\.\d{2}\.\d{2,4})",
         ],
     )
 
@@ -452,6 +483,50 @@ def _transfer_details(text, fields):
 
 def _hotel(text):
     flat = re.sub(r"\s+", " ", text)
+    partner_booking = re.search(
+        r"Reservation\s+(?P<booking>\d{5,20})\s+made\s+on\s+"
+        r"(?P<issue>\d{2}\.\d{2}\.\d{2,4})\s+"
+        r"This\s+accommodation\s+is\s+booked\s+by\s+our\s+partner\s+"
+        r"(?P<hotel>.+?)\s+(?P<address>\d{4,6},\s*.+?)\s+"
+        r"(?P<phone>\+?\d[\d ()-]{7,})\s+"
+        r"Check-in\s+(?P<checkin>\d{2}\.\d{2}\.\d{4}),?\s+from\s+"
+        r"(?P<dep>\d{1,2}:\d{2}(?::\d{2})?)\s+"
+        r"Check-out:\s*(?P<checkout>\d{2}\.\d{2}\.\d{4}),?\s+until\s+"
+        r"(?P<arr>\d{1,2}:\d{2}(?::\d{2})?)\s+"
+        r"(?P<room>.+?)\s+for\s+(?P<adults>\d+)\s+adults?\b",
+        flat,
+        re.I,
+    )
+    if partner_booking:
+        guest = re.search(
+            r"Guests:\s*(.+?)(?=\s+Important(?:\s+information|\.\s*Please\s+Note)\b)",
+            flat,
+            re.I,
+        )
+        return {
+            "issuer": _clean(partner_booking.group("hotel")),
+            "passenger_name": _clean(guest.group(1)) if guest else "",
+            "reference": partner_booking.group("booking"),
+            "ticket_number": partner_booking.group("booking"),
+            "issue_date": partner_booking.group("issue"),
+            "service_kind": "hotel",
+            "service_type": "Гостиница",
+            "trip_type": "stay",
+            "segments": [
+                {
+                    "from": "",
+                    "fromCode": "",
+                    "to": _clean(partner_booking.group("hotel")),
+                    "toCode": "",
+                    "date": partner_booking.group("checkin"),
+                    "endDate": partner_booking.group("checkout"),
+                    "dep": partner_booking.group("dep"),
+                    "arr": partner_booking.group("arr"),
+                    "flightNo": _clean(partner_booking.group("room")),
+                    "dir": "out",
+                }
+            ],
+        }
     stay = re.search(
         r"(\d{2}\.\d{2}\.\d{4})\s+(\d{1,2}:\d{2})\s+"
         r"(\d{2}\.\d{2}\.\d{4})\s+(\d{1,2}:\d{2})",
@@ -658,7 +733,12 @@ def install_receipt_parser_patch():
             return result
         joined = "\n".join(pages)
 
-        if re.search(r"Ваучер\s+отеля|Hotel\s+voucher", joined, re.I):
+        if re.search(
+            r"Ваучер\s+отеля|Hotel\s+voucher|"
+            r"Reservation\s+\d+\s+made\s+on.+?accommodation\s+is\s+booked\s+by\s+our\s+partner",
+            joined,
+            re.I | re.S,
+        ):
             fields = _hotel(pages[0])
             if fields:
                 result["fields"].update(fields)

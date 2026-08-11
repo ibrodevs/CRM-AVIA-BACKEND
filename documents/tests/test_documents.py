@@ -52,6 +52,27 @@ class TestDocuments:
         document = Document.objects.get(pk=body["id"])
         assert document.versions.count() == 1
 
+    def test_document_can_be_opened_inline_without_changing_download_default(
+        self, admin_client, order
+    ):
+        created = admin_client.post(
+            "/api/v1/documents/",
+            {
+                "file": upload_file("supplier.pdf", b"%PDF supplier", "application/pdf"),
+                "document": json.dumps(
+                    {"order": order["id"], "kind": "voucher", "title": "Supplier PDF"}
+                ),
+            },
+            format="multipart",
+        ).json()
+        url = f"/api/v1/documents/{created['id']}/download/"
+
+        download = admin_client.get(url)
+        preview = admin_client.get(f"{url}?disposition=inline")
+
+        assert download["Content-Disposition"].startswith("attachment;")
+        assert preview["Content-Disposition"].startswith("inline;")
+
     def test_new_version_does_not_overwrite_previous(self, admin_client, order):
         created = admin_client.post(
             "/api/v1/documents/",
@@ -127,7 +148,9 @@ class TestDocuments:
         result = admin_client.get(f"/api/v1/receipt-imports/{response.json()['id']}/result/")
         assert result.status_code == 200, result.content
         body = result.json()
-        assert body["parser_status"] == "parsed"
+        # A passenger and totals alone are not enough to claim that an air
+        # ticket was parsed: without a route the operator must review it.
+        assert body["parser_status"] == "manual_review"
         assert body["draft"]["passenger_name"] == "TELEGIN IVAN KONSTANTINOVICH"
         assert body["draft"]["fare"] == "25328.00"
         assert body["draft"]["taxes"] == "120.00"
@@ -135,7 +158,7 @@ class TestDocuments:
         assert body["draft"]["currency"] == "RUB"
         assert body["verified_data"]["passenger"] == "TELEGIN IVAN KONSTANTINOVICH"
         assert body["verified_data"]["carrier"] == "Smartavia"
-        assert body["verified_data"]["recognitionPending"] is False
+        assert body["verified_data"]["recognitionPending"] is True
 
         from documents.models import ReceiptImportJob
 
@@ -147,7 +170,7 @@ class TestDocuments:
         assert source_document.current_version == 1
         assert import_job.file_version.version == 1
         assert import_job.file_version.original_name == "receipt.txt"
-        assert source_document.metadata["receipt_import"]["parser_status"] == "parsed"
+        assert source_document.metadata["receipt_import"]["parser_status"] == "manual_review"
         assert source_document.metadata["supplier_original"]["verified_data"]["passenger"] == (
             "TELEGIN IVAN KONSTANTINOVICH"
         )
@@ -465,7 +488,7 @@ class TestDocuments:
 
         result = admin_client.get(f"/api/v1/receipt-imports/{response.json()['id']}/result/")
         body = result.json()
-        assert body["parser_status"] == "parsed"
+        assert body["parser_status"] == "manual_review"
         assert body["draft"]["passenger_name"] == "ИВАНОВ ИВАН ИВАНОВИЧ"
         assert body["draft"]["fare"] == "25328.00"
         assert body["draft"]["taxes"] == "120.00"
@@ -551,7 +574,7 @@ class TestDocuments:
 
         result = admin_client.get(f"/api/v1/receipt-imports/{response.json()['id']}/result/")
         body = result.json()
-        assert body["parser_status"] == "parsed"
+        assert body["parser_status"] == "manual_review"
         assert body["draft"]["passenger_name"] == "PETROV PETR"
         assert body["draft"]["issuer"] == "S7 Airlines"
         assert body["draft"]["fare"] == "14200.00"
