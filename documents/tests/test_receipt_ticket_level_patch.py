@@ -61,6 +61,23 @@ def test_group_pdf_is_normalized_as_independent_ticket_items():
     assert items[1]["groupTickets"] == []
 
 
+def test_canonical_receipt_items_alias_is_loaded_and_stale_total_is_recalculated():
+    first = _rail_item("ВАСЯКИН ДМИТРИЙ АЛЕКСАНДРОВИЧ", "72100000000001", "079", "3868.10", "0")
+    second = _rail_item("ВАСЯКИН ДМИТРИЙ АЛЕКСАНДРОВИЧ", "72300000000002", "080", "3786.70", "0")
+    first["total"] = "7654.80"
+    second["total"] = "7654.80"
+
+    items = normalize_receipt_items(
+        {"receipt_items": [first, second]}, parser_status="parsed", service_kind="rail"
+    )
+
+    assert len(items) == 2
+    assert items[0]["total"] == "3868.10"
+    assert items[1]["total"] == "3786.70"
+    assert receipt_item_total(items[0]) == Decimal("3868.10")
+    assert receipt_item_total(items[1]) == Decimal("3786.70")
+
+
 def test_each_ticket_keeps_own_cost_and_parent_total_is_sum_of_children():
     first = _rail_item("ПРОХОРОВ АЛЕКСЕЙ НИКОЛАЕВИЧ", "71853988581936", "013", "5000.00", "1221.50")
     second = _rail_item("БЯКИН МИХАИЛ ИЛЬИЧ", "71853988581937", "014", "3000.00", "535.80")

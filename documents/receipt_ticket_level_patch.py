@@ -83,6 +83,29 @@ def normalize_receipt_items(source, *, parser_status="parsed", service_kind=""):
         )
         item["ticket_number"] = item["ticketNo"]
         verified = receipt_verified_data(item, parser_status=parser_status)
+        rail_component_keys = {
+            "ticketCost",
+            "ticket_cost",
+            "reservedSeatCost",
+            "reserved_seat_cost",
+            "agencyServiceFee",
+            "agency_service_fee",
+            "additionalFees",
+            "additional_fees",
+        }
+        if item_kind == "rail" and any(key in item for key in rail_component_keys):
+            ticket_cost, reserved, agency_fee, additional_fees = _rail_item_financials(item)
+            verified.update(
+                {
+                    "ticketCost": str(ticket_cost),
+                    "reservedSeatCost": str(reserved),
+                    "agencyServiceFee": str(agency_fee),
+                    "additionalFees": str(additional_fees),
+                    "fare": str(ticket_cost + reserved),
+                    "fees": str(agency_fee + additional_fees),
+                    "total": str(ticket_cost + reserved + agency_fee + additional_fees),
+                }
+            )
         try:
             receipt_index = int(
                 _first_value(item.get("receiptIndex"), item.get("receipt_index"), index + 1)
@@ -109,18 +132,37 @@ def _decimal(value):
         return Decimal("0")
 
 
+def _rail_item_financials(item):
+    """Return the corrected per-ticket rail amounts without using parent totals."""
+    ticket_cost = _decimal(_first_value(item.get("ticketCost"), item.get("ticket_cost")))
+    reserved = _decimal(
+        _first_value(item.get("reservedSeatCost"), item.get("reserved_seat_cost"))
+    )
+    agency_fee = _decimal(
+        _first_value(item.get("agencyServiceFee"), item.get("agency_service_fee"))
+    )
+    additional_fees = _decimal(
+        _first_value(item.get("additionalFees"), item.get("additional_fees"))
+    )
+    return ticket_cost, reserved, agency_fee, additional_fees
+
+
 def receipt_item_total(item):
+    rail_keys = {
+        "ticketCost",
+        "ticket_cost",
+        "reservedSeatCost",
+        "reserved_seat_cost",
+        "agencyServiceFee",
+        "agency_service_fee",
+        "additionalFees",
+        "additional_fees",
+    }
+    if _service_kind(item.get("service_kind")) == "rail" and any(key in item for key in rail_keys):
+        return sum(_rail_item_financials(item), Decimal("0"))
     explicit = _first_value(item.get("total"), item.get("originalTotal"), item.get("original_total"))
     if explicit not in (None, ""):
         return _decimal(explicit)
-    rail_parts = (
-        _decimal(_first_value(item.get("ticketCost"), item.get("ticket_cost")))
-        + _decimal(_first_value(item.get("reservedSeatCost"), item.get("reserved_seat_cost")))
-        + _decimal(_first_value(item.get("agencyServiceFee"), item.get("agency_service_fee")))
-        + _decimal(_first_value(item.get("additionalFees"), item.get("additional_fees")))
-    )
-    if rail_parts:
-        return rail_parts
     return _decimal(item.get("fare")) + _decimal(item.get("taxes")) + _decimal(item.get("fees"))
 
 
