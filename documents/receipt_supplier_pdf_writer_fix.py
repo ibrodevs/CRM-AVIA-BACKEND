@@ -198,12 +198,23 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
 
 def _encoded_bytes(text: str, codec, supplier_pdf) -> bytes | None:
     encoded = supplier_pdf._encode_text(text, codec)
-    if encoded is None:
-        return None
-    try:
-        return bytes(encoded)
-    except Exception:
-        return None
+    if encoded is not None:
+        try:
+            return bytes(encoded)
+        except Exception:
+            pass
+
+    # Identity-H supplier PDFs often contain literal UTF-16BE strings without a
+    # complete ToUnicode inverse map. Direct encoding is safe for raw matching:
+    # if those bytes are not actually present we simply get no match.
+    if isinstance(codec, dict) and codec.get("kind") == "multibyte":
+        encoding = codec.get("encoding")
+        if isinstance(encoding, str):
+            try:
+                return text.encode(encoding)
+            except Exception:
+                return None
+    return None
 
 
 def _page_codecs(page, supplier_pdf) -> list:
@@ -262,6 +273,8 @@ def _find_raw_replacements(data: bytes, target, codecs, supplier_pdf) -> list[tu
     """
 
     aliases = _alias_patterns(target, codecs, supplier_pdf)
+    if target.aliases and not aliases:
+        return []
     found: dict[tuple[int, int], bytes] = {}
 
     for codec in codecs:
