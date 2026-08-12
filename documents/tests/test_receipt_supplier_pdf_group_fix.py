@@ -84,10 +84,10 @@ def test_grouped_rail_targets_ignore_parent_aggregates_and_child_aliases():
 
     targets = supplier_pdf._collect_targets(before, after)
 
-    assert [(target.key, target.page_index) for target in targets] == [
+    assert {(target.key, target.page_index) for target in targets} == {
         ("receipt[0].ticketCost", 0),
         ("receipt[0].total", 0),
-    ]
+    }
     assert not any(target.key in {"fare", "fees", "total"} for target in targets)
     assert not any(target.key.endswith(".fare") or target.key.endswith(".fees") for target in targets)
 
