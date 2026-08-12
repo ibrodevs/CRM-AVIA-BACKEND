@@ -1,21 +1,39 @@
 from __future__ import annotations
 
 
-def _font_codec(font):
-    """Build a reversible codec for the font already embedded in a supplier PDF.
+def _font_maps(font):
+    """Return the font encoding and ToUnicode map across supported pypdf APIs."""
 
-    pypdf exposes Type0/CID fonts as a multibyte encoding + ToUnicode map and
-    common Type1 fonts as a byte-code -> Unicode dictionary.  Supporting both
-    lets the PDF correction path reuse the exact original font resource instead
-    of drawing a replacement text layer with a look-alike font.
-    """
+    # pypdf 6 exposes get_encoding() as the lower-level mapping API. Older
+    # versions also exposed build_char_map_from_dict(), so keep compatibility
+    # with both while using the same normalized result below.
+    try:
+        from pypdf._cmap import get_encoding
+
+        encoding, char_map = get_encoding(font)
+        return encoding, char_map
+    except (ImportError, AttributeError, TypeError, ValueError):
+        pass
 
     try:
         from pypdf._cmap import build_char_map_from_dict
 
         _subtype, _space, encoding, char_map = build_char_map_from_dict(200, font)
+        return encoding, char_map
     except Exception:
-        return None
+        return None, None
+
+
+def _font_codec(font):
+    """Build a reversible codec for the font already embedded in a supplier PDF.
+
+    Type0/CID fonts expose a multibyte encoding + ToUnicode map, while common
+    Type1 fonts expose a byte-code -> Unicode dictionary. Supporting both lets
+    the correction path reuse the exact original font resource instead of
+    drawing a replacement text layer with a look-alike font.
+    """
+
+    encoding, char_map = _font_maps(font)
 
     if isinstance(encoding, str) and isinstance(char_map, dict):
         inverse = {
@@ -40,7 +58,7 @@ def _font_codec(font):
             and isinstance(unicode_char, str)
             and len(unicode_char) == 1
         }
-        # A font may still provide extra ToUnicode entries.  For one-byte codes
+        # A font may still provide extra ToUnicode entries. For one-byte codes
         # they are useful when the base encoding does not contain a character.
         if isinstance(char_map, dict):
             for encoded_char, unicode_char in char_map.items():
@@ -118,8 +136,6 @@ def _encode_text(text: str, codec):
         for char in text:
             encoded = inverse.get(char)
             if encoded is None:
-                # ASCII fallback is safe only when the target encoding can
-                # represent it directly; the encode below is the final guard.
                 if ord(char) < 128:
                     encoded = char
                 else:
