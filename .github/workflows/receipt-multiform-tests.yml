@@ -91,7 +91,7 @@ jobs:
         run: uv sync --dev
       - name: Check migrations
         run: uv run python manage.py makemigrations --check --dry-run
-      - name: Run receipt regression tests
+      - name: Run existing receipt regression tests
         run: >-
           uv run pytest
           documents/tests/test_receipt_multiform_patch.py
@@ -101,4 +101,5 @@ jobs:
           documents/tests/test_receipt_quality_guard.py
           documents/tests/test_receipt_ticket_level_patch.py
           documents/tests/test_receipt_sequential_review.py
-          documents/tests/test_receipt_supplier_pdf_patch.py
+      - name: Run corrected supplier PDF regression tests
+        run: uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py -vv
