@@ -2,7 +2,14 @@ from decimal import Decimal
 from io import BytesIO
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    NameObject,
+    NumberObject,
+    TextStringObject,
+)
 
 from documents.receipt_supplier_pdf_font_codec import install_receipt_supplier_pdf_font_codec
 from documents.receipt_supplier_pdf_writer_fix import install_receipt_supplier_pdf_writer_fix
@@ -31,6 +38,74 @@ def _simple_supplier_pdf() -> bytes:
     )
     stream = DecodedStreamObject()
     stream.set_data(b"BT /F1 12 Tf 72 720 Td (TOTAL 25470 RUB) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def _malformed_identity_h_supplier_pdf() -> bytes:
+    """Viewer-renderable Identity-H stream that pypdf ContentStream rejects.
+
+    The Cyrillic letter Щ is U+0429, therefore its UTF-16BE low byte is 0x29
+    (')'). Some real supplier PDFs write those bytes directly in literal strings
+    without escaping the delimiter. PDF viewers tolerate the file, while pypdf's
+    content parser stops at the embedded 0x29.
+    """
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=595, height=842)
+    cid_info = DictionaryObject(
+        {
+            NameObject("/Registry"): TextStringObject("Adobe"),
+            NameObject("/Ordering"): TextStringObject("Identity"),
+            NameObject("/Supplement"): NumberObject(0),
+        }
+    )
+    cid_font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/CIDFontType2"),
+            NameObject("/BaseFont"): NameObject("/Arial"),
+            NameObject("/CIDSystemInfo"): cid_info,
+        }
+    )
+    cid_ref = writer._add_object(cid_font)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type0"),
+            NameObject("/BaseFont"): NameObject("/Arial"),
+            NameObject("/Encoding"): NameObject("/Identity-H"),
+            NameObject("/DescendantFonts"): ArrayObject([cid_ref]),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+
+    def text_row(text: str, y: int) -> bytes:
+        return (
+            b"BT /F1 10 Tf 72 "
+            + str(y).encode()
+            + b" Td [("
+            + text.encode("utf-16-be")
+            + b")] TJ ET\n"
+        )
+
+    stream = DecodedStreamObject()
+    stream.set_data(
+        b"".join(
+            [
+                text_row("СУММА Щ", 720),
+                text_row("СБОР АСБ", 700),
+                text_row(": RUB400", 680),
+                text_row("ВСЕГО К ОПЛАТЕ", 660),
+                text_row(": RUB26973", 640),
+            ]
+        )
+    )
     page[NameObject("/Contents")] = writer._add_object(stream)
     output = BytesIO()
     writer.write(output)
@@ -87,6 +162,38 @@ def test_type1_supplier_pdf_amount_changes_in_place_with_same_font_resource():
     corrected_font = corrected_reader.pages[0]["/Resources"]["/Font"]["/F1"].get_object()
     assert source_font["/BaseFont"] == corrected_font["/BaseFont"] == "/Helvetica"
     assert source_font["/Subtype"] == corrected_font["/Subtype"] == "/Type1"
+
+
+def test_malformed_identity_h_supplier_pdf_uses_raw_stream_same_font_fallback():
+    source = _malformed_identity_h_supplier_pdf()
+    corrected, report = supplier_pdf.patch_supplier_pdf(
+        source,
+        {"fees": "400", "total": "26973"},
+        {"fees": "450", "total": "27023"},
+    )
+
+    assert corrected is not None
+    assert report["requested"] == 2
+    assert report["applied"] == 2
+    assert report["unapplied"] == []
+    assert report["strategy"] == "raw_stream"
+    assert report["fallback"] is True
+    assert report["font_preserved"] is True
+    assert report["source_immutable"] is True
+
+    source_reader = PdfReader(BytesIO(source), strict=False)
+    corrected_reader = PdfReader(BytesIO(corrected), strict=False)
+    source_stream = source_reader.pages[0].get_contents().get_data()
+    corrected_stream = corrected_reader.pages[0].get_contents().get_data()
+    assert "400".encode("utf-16-be") in source_stream
+    assert "450".encode("utf-16-be") in corrected_stream
+    assert "26973".encode("utf-16-be") in source_stream
+    assert "27023".encode("utf-16-be") in corrected_stream
+
+    source_font = source_reader.pages[0]["/Resources"]["/Font"]["/F1"].get_object()
+    corrected_font = corrected_reader.pages[0]["/Resources"]["/Font"]["/F1"].get_object()
+    assert source_font["/BaseFont"] == corrected_font["/BaseFont"] == "/Arial"
+    assert source_font["/Subtype"] == corrected_font["/Subtype"] == "/Type0"
 
 
 def test_no_partial_supplier_pdf_is_published_when_a_requested_amount_is_missing():

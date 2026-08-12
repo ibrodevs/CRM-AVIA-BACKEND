@@ -108,7 +108,7 @@ jobs:
       - name: Supplier PDF same-font replacement
         run: >-
           uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py
-          -k "type1_supplier" -vv
+          -k "type1_supplier or malformed_identity_h" -vv
       - name: Supplier PDF partial-publication guard
         run: >-
           uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py
