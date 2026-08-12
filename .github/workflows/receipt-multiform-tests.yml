@@ -101,5 +101,15 @@ jobs:
           documents/tests/test_receipt_quality_guard.py
           documents/tests/test_receipt_ticket_level_patch.py
           documents/tests/test_receipt_sequential_review.py
-      - name: Run corrected supplier PDF regression tests
-        run: uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py -vv
+      - name: Supplier PDF formatting and group targeting
+        run: >-
+          uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py
+          -k "amount_format or group_ticket" -vv
+      - name: Supplier PDF same-font replacement
+        run: >-
+          uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py
+          -k "type1_supplier" -vv
+      - name: Supplier PDF partial-publication guard
+        run: >-
+          uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py
+          -k "no_partial" -vv
