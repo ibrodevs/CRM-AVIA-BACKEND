@@ -5,10 +5,13 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from documents.receipt_supplier_pdf_font_codec import install_receipt_supplier_pdf_font_codec
-from documents.receipt_supplier_pdf_patch import _collect_targets, _format_like, patch_supplier_pdf
-
+from documents.receipt_supplier_pdf_writer_fix import install_receipt_supplier_pdf_writer_fix
 
 install_receipt_supplier_pdf_font_codec()
+install_receipt_supplier_pdf_writer_fix()
+
+from documents import receipt_supplier_pdf_patch as supplier_pdf  # noqa: E402
+
 
 
 def _simple_supplier_pdf() -> bytes:
@@ -35,8 +38,8 @@ def _simple_supplier_pdf() -> bytes:
 
 
 def test_amount_format_keeps_supplier_separators():
-    assert _format_like("4 819,20", Decimal("4919.2")) == "4 919,20"
-    assert _format_like("25470", Decimal("25520")) == "25520"
+    assert supplier_pdf._format_like("4 819,20", Decimal("4919.2")) == "4 919,20"
+    assert supplier_pdf._format_like("25470", Decimal("25520")) == "25520"
 
 
 def test_group_ticket_target_keeps_its_source_page_index():
@@ -52,7 +55,7 @@ def test_group_ticket_target_keeps_its_source_page_index():
             {"total": "3372.10"},
         ]
     }
-    targets = _collect_targets(before, after)
+    targets = supplier_pdf._collect_targets(before, after)
     assert len(targets) == 1
     assert targets[0].key == "receipt[1].total"
     assert targets[0].page_index == 1
@@ -62,7 +65,7 @@ def test_group_ticket_target_keeps_its_source_page_index():
 
 def test_type1_supplier_pdf_amount_changes_in_place_with_same_font_resource():
     source = _simple_supplier_pdf()
-    corrected, report = patch_supplier_pdf(
+    corrected, report = supplier_pdf.patch_supplier_pdf(
         source,
         {"total": "25470"},
         {"total": "25520"},
@@ -88,7 +91,7 @@ def test_type1_supplier_pdf_amount_changes_in_place_with_same_font_resource():
 
 def test_no_partial_supplier_pdf_is_published_when_a_requested_amount_is_missing():
     source = _simple_supplier_pdf()
-    corrected, report = patch_supplier_pdf(
+    corrected, report = supplier_pdf.patch_supplier_pdf(
         source,
         {"total": "25470", "fees": "500"},
         {"total": "25520", "fees": "550"},
