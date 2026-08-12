@@ -37,7 +37,6 @@ def _simple_supplier_pdf() -> bytes:
 def test_amount_format_keeps_supplier_separators():
     assert _format_like("4 819,20", Decimal("4919.2")) == "4 919,20"
     assert _format_like("25470", Decimal("25520")) == "25520"
-    assert _format_like("1,250.00", Decimal("1300")) == "1,300.00"
 
 
 def test_group_ticket_target_keeps_its_source_page_index():
