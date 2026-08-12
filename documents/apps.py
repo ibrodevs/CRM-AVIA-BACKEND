@@ -7,6 +7,7 @@ class DocumentsConfig(AppConfig):
 
     def ready(self):
         from documents.receipt_avia_brand_patch import install_receipt_avia_brand_patch
+        from documents.receipt_client_pdf_finalizer import install_receipt_client_pdf_finalizer
         from documents.receipt_client_pdf_requirements import install_receipt_client_pdf_requirements_patch
         from documents.receipt_client_pdf_text_source import install_receipt_client_pdf_text_source_patch
         from documents.receipt_hotel_booking_guard import install_receipt_hotel_booking_guard
@@ -43,6 +44,9 @@ class DocumentsConfig(AppConfig):
         # dedicated pdfminer wrapper is installed last among parsers so those
         # files still get their full segment and hotel structure.
         install_receipt_client_pdf_text_source_patch()
+        # Normalize quirks found in the exact client samples (concatenated
+        # airport codes and one-line hotel deposits) before ticket storage.
+        install_receipt_client_pdf_finalizer()
         # Ticket-level storage consumes the final parser result.
         install_receipt_ticket_level_patch()
         # Run after ticket-level storage so review status/progress is preserved
