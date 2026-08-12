@@ -17,6 +17,64 @@ def _looks_like_rail_ticket(data: dict) -> bool:
     )
 
 
+def _dedupe_source_targets(targets):
+    """Collapse aggregate/detail aliases that point to one printed amount.
+
+    The receipt editor keeps a top-level financial value and its breakdown row
+    in sync.  In supplier PDFs such as dompdf/CPDF Aeroflot receipts, ``fees``
+    and ``feeBreakdown[ASB]`` are two CRM representations of the same single
+    ``СБОР АСБ`` text object.  Requiring two replacements makes the all-or-
+    nothing guard reject an otherwise safe correction after the first target
+    consumes that one source occurrence.
+
+    Only collapse a top-level target with a breakdown target when page, old and
+    new amounts match and their labels overlap.  Independent breakdown rows
+    with equal numbers and distinct codes remain separate targets.
+    """
+
+    merged = []
+    for target in targets:
+        is_breakdown = "Breakdown[" in target.key or "_breakdown[" in target.key
+        match_index = None
+        if is_breakdown:
+            target_aliases = {
+                str(alias).strip().upper()
+                for alias in target.aliases
+                if str(alias).strip()
+            }
+            for index, existing in enumerate(merged):
+                existing_is_top_level = "[" not in existing.key
+                if not existing_is_top_level:
+                    continue
+                if (existing.page_index, existing.old, existing.new) != (
+                    target.page_index,
+                    target.old,
+                    target.new,
+                ):
+                    continue
+                existing_aliases = {
+                    str(alias).strip().upper()
+                    for alias in existing.aliases
+                    if str(alias).strip()
+                }
+                if existing_aliases & target_aliases:
+                    match_index = index
+                    break
+        if match_index is None:
+            merged.append(target)
+            continue
+        existing = merged[match_index]
+        aliases = tuple(dict.fromkeys((*existing.aliases, *target.aliases)))
+        merged[match_index] = existing.__class__(
+            existing.key,
+            existing.old,
+            existing.new,
+            aliases,
+            existing.page_index,
+        )
+    return merged
+
+
 def install_receipt_supplier_pdf_group_fix() -> None:
     """Make corrected supplier PDFs target real source amounts, not CRM aggregates.
 
@@ -51,7 +109,9 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 # A grouped PDF has no real aggregate amount printed in the source.
                 # Patch only matching child tickets on their own pages.
                 targets = []
-                for index, (old_child, new_child) in enumerate(zip(old_group, new_group)):
+                for index, (old_child, new_child) in enumerate(
+                    zip(old_group, new_group, strict=False)
+                ):
                     if isinstance(old_child, dict) and isinstance(new_child, dict):
                         targets.extend(
                             collect_targets(
@@ -92,7 +152,9 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 new_rows = _value(after, breakdown_key)
                 if not isinstance(old_rows, list) or not isinstance(new_rows, list):
                     continue
-                for index, (old_row, new_row) in enumerate(zip(old_rows, new_rows)):
+                for index, (old_row, new_row) in enumerate(
+                    zip(old_rows, new_rows, strict=False)
+                ):
                     if not isinstance(old_row, dict) or not isinstance(new_row, dict):
                         continue
                     old = supplier_pdf._decimal(old_row.get("amount"))
@@ -123,7 +185,7 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 (target.key, target.old, target.new, target.page_index): target
                 for target in targets
             }
-            return list(deduped.values())
+            return _dedupe_source_targets(list(deduped.values()))
 
         collect_targets._group_source_fix = True
         supplier_pdf._collect_targets = collect_targets

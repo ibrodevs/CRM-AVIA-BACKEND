@@ -48,6 +48,29 @@ def _grouped_rail_pdf() -> bytes:
     return output.getvalue()
 
 
+def _single_avia_pdf() -> bytes:
+    writer = PdfWriter()
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+            NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page = writer.add_blank_page(width=595, height=842)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 12 Tf 72 720 Td (FEE 500 TOTAL 25470) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 def _group_payload(first_ticket="1439.60", first_total="4819.20"):
     first_fare = str(round(float(first_ticket) + 3379.60, 2))
     group_total = str(round(float(first_total) + 4536.70, 2))
@@ -114,3 +137,53 @@ def test_grouped_rail_supplier_pdf_changes_only_edited_ticket_page():
 
     # The sibling ticket must stay byte-for-byte semantically unchanged.
     assert corrected_reader.pages[1].extract_text() == source_reader.pages[1].extract_text()
+
+
+def test_avia_synced_fee_and_breakdown_patch_one_printed_amount_once():
+    source = _single_avia_pdf()
+    before = {
+        "fees": "500",
+        "total": "25470",
+        "feeBreakdown": [
+            {"code": "FEE", "label": "FEE", "amount": "500", "currency": "RUB"}
+        ],
+    }
+    after = {
+        "fees": "550",
+        "total": "25520",
+        "feeBreakdown": [
+            {"code": "FEE", "label": "FEE", "amount": "550", "currency": "RUB"}
+        ],
+    }
+
+    targets = supplier_pdf._collect_targets(before, after)
+    corrected, report = supplier_pdf.patch_supplier_pdf(source, before, after)
+
+    assert {target.key for target in targets} == {"fees", "total"}
+    assert corrected is not None
+    assert report["requested"] == 2
+    assert report["applied"] == 2
+    assert report["unapplied"] == []
+    assert "FEE 550 TOTAL 25520" in PdfReader(BytesIO(corrected)).pages[0].extract_text()
+
+
+def test_equal_independent_breakdown_rows_are_not_collapsed():
+    before = {
+        "taxBreakdown": [
+            {"code": "YR", "label": "YR", "amount": "500"},
+            {"code": "XT", "label": "XT", "amount": "500"},
+        ]
+    }
+    after = {
+        "taxBreakdown": [
+            {"code": "YR", "label": "YR", "amount": "550"},
+            {"code": "XT", "label": "XT", "amount": "550"},
+        ]
+    }
+
+    targets = supplier_pdf._collect_targets(before, after)
+
+    assert {target.key for target in targets} == {
+        "taxBreakdown[0]",
+        "taxBreakdown[1]",
+    }
