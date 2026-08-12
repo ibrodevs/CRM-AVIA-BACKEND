@@ -21,6 +21,9 @@ class DocumentsConfig(AppConfig):
         from documents.receipt_recognition_performance import install_receipt_recognition_performance_patch
         from documents.receipt_rzd_fastpath import install_receipt_rzd_fastpath
         from documents.receipt_sequential_review_patch import install_receipt_sequential_review_patch
+        from documents.receipt_supplier_pdf_font_codec import install_receipt_supplier_pdf_font_codec
+        from documents.receipt_supplier_pdf_patch import install_receipt_supplier_pdf_patch
+        from documents.receipt_supplier_pdf_writer_fix import install_receipt_supplier_pdf_writer_fix
         from documents.receipt_tax_columns_patch import install_receipt_tax_columns_patch
         from documents.receipt_ticket_level_patch import install_receipt_ticket_level_patch
 
@@ -52,3 +55,12 @@ class DocumentsConfig(AppConfig):
         # Run after ticket-level storage so review status/progress is preserved
         # for every child ticket and copied into document metadata.
         install_receipt_sequential_review_patch()
+        # Reuse the fonts already embedded in the supplier PDF for both common
+        # Type1 and Type0/CID documents before enabling financial corrections.
+        install_receipt_supplier_pdf_font_codec()
+        # Ensure modified PageObjects are written rather than re-cloning stale
+        # pre-edit content streams from the PdfReader object graph.
+        install_receipt_supplier_pdf_writer_fix()
+        # Financial corrections are applied last to a derived supplier PDF copy.
+        # The uploaded source version remains immutable for audit/history.
+        install_receipt_supplier_pdf_patch()
