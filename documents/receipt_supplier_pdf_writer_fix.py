@@ -4,6 +4,56 @@ from io import BytesIO
 import re
 
 
+def _replace_combined_text_all(array, codec, target, context: str, supplier_pdf) -> int:
+    """Replace every duplicate of one amount inside a single TJ text run.
+
+    RZD coupons can paint the same итог twice in one TJ array.  Replacing only
+    the first occurrence leaves a visually inconsistent supplier blank.  We
+    redistribute a same-length replacement back into the original text chunks,
+    so all existing glyph positions/kerning operators and the embedded font are
+    preserved.  If the replacement changes text length, the run is considered
+    unsafe and is left untouched for manual review instead of risking layout
+    distortion.
+    """
+
+    from pypdf.generic import ByteStringObject, TextStringObject
+
+    positions = [
+        index
+        for index, item in enumerate(array)
+        if isinstance(item, (TextStringObject, ByteStringObject))
+    ]
+    if not positions:
+        return 0
+    chunks = [supplier_pdf._decode_text(array[index], codec) for index in positions]
+    combined = "".join(chunks)
+    upper_context = (context + " " + combined).upper()
+    if target.aliases and not any(alias.upper() in upper_context for alias in target.aliases):
+        return 0
+
+    for variant in supplier_pdf._amount_variants(target.old):
+        pattern = re.compile(r"(?<!\d)" + re.escape(variant) + r"(?!\d)")
+        matches = list(pattern.finditer(combined))
+        if not matches:
+            continue
+        updated = pattern.sub(lambda match: supplier_pdf._format_like(match.group(0), target.new), combined)
+        if len(updated) != len(combined):
+            return 0
+        offset = 0
+        encoded_chunks = []
+        for chunk in chunks:
+            replacement_chunk = updated[offset : offset + len(chunk)]
+            offset += len(chunk)
+            encoded = supplier_pdf._encode_text(replacement_chunk, codec)
+            if encoded is None:
+                return 0
+            encoded_chunks.append(encoded)
+        for array_index, encoded in zip(positions, encoded_chunks):
+            array[array_index] = encoded
+        return len(matches)
+    return 0
+
+
 def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
     """Patch financial text operators and write the already modified pages.
 
@@ -21,6 +71,7 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
     report = {
         "requested": len(targets),
         "applied": 0,
+        "replacements": 0,
         "unapplied": [],
         "font_preserved": True,
         "source_immutable": True,
@@ -62,9 +113,11 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
                         continue
                     if target.page_index is not None and target.page_index != page_index:
                         continue
-                    if supplier_pdf._replace_combined_text(array, codec, target, context):
+                    replacements = _replace_combined_text_all(array, codec, target, context, supplier_pdf)
+                    if replacements:
                         applied_keys.add(target.key)
                         report["applied"] += 1
+                        report["replacements"] += replacements
                         page_changed = True
                         visible = "".join(
                             supplier_pdf._decode_text(item, codec)
@@ -94,12 +147,18 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
                 if target.aliases and not any(alias.upper() in context.upper() for alias in target.aliases):
                     continue
                 for variant in supplier_pdf._amount_variants(target.old):
-                    match = re.search(r"(?<!\d)" + re.escape(variant) + r"(?!\d)", updated)
-                    if not match:
+                    pattern = re.compile(r"(?<!\d)" + re.escape(variant) + r"(?!\d)")
+                    if not pattern.search(updated):
                         continue
-                    replacement = supplier_pdf._format_like(match.group(0), target.new)
-                    updated = updated[: match.start()] + replacement + updated[match.end() :]
+                    candidate, replacements = pattern.subn(
+                        lambda match: supplier_pdf._format_like(match.group(0), target.new),
+                        updated,
+                    )
+                    if len(candidate) != len(updated):
+                        continue
+                    updated = candidate
                     changed_targets.append(target.key)
+                    report["replacements"] += replacements
                     break
 
             if changed_targets:
