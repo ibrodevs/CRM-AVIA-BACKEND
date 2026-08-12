@@ -32,97 +32,117 @@ def install_receipt_supplier_pdf_group_fix() -> None:
     This patch keeps generic air-ticket behavior intact, but for grouped/source
     rail tickets it edits only the amounts that actually exist on the ticket:
     ticket cost, reserved-seat cost and the ticket total. Parent group summaries
-    are never used as source-PDF targets.
+    are never used as source-PDF targets. The supplier-PDF endpoint is also
+    marked no-store so a browser cannot keep showing the source response that it
+    cached before a corrected version was created.
     """
 
     from documents import receipt_supplier_pdf_patch as supplier_pdf
 
-    if getattr(supplier_pdf._collect_targets, "_group_source_fix", False):
-        return
+    if not getattr(supplier_pdf._collect_targets, "_group_source_fix", False):
 
-    def collect_targets(before: dict, after: dict, *, page_index: int | None = None, prefix: str = ""):
-        before = before if isinstance(before, dict) else {}
-        after = after if isinstance(after, dict) else {}
+        def collect_targets(before: dict, after: dict, *, page_index: int | None = None, prefix: str = ""):
+            before = before if isinstance(before, dict) else {}
+            after = after if isinstance(after, dict) else {}
 
-        old_group = supplier_pdf._first_group(before)
-        new_group = supplier_pdf._first_group(after)
-        if old_group or new_group:
-            # A grouped PDF has no real aggregate amount printed in the source.
-            # Patch only matching child tickets on their own pages.
+            old_group = supplier_pdf._first_group(before)
+            new_group = supplier_pdf._first_group(after)
+            if old_group or new_group:
+                # A grouped PDF has no real aggregate amount printed in the source.
+                # Patch only matching child tickets on their own pages.
+                targets = []
+                for index, (old_child, new_child) in enumerate(zip(old_group, new_group)):
+                    if isinstance(old_child, dict) and isinstance(new_child, dict):
+                        targets.extend(
+                            collect_targets(
+                                old_child,
+                                new_child,
+                                page_index=index,
+                                prefix=f"{prefix}receipt[{index}].",
+                            )
+                        )
+                deduped = {
+                    (target.key, target.old, target.new, target.page_index): target
+                    for target in targets
+                }
+                return list(deduped.values())
+
+            is_rail = _looks_like_rail_ticket(before) or _looks_like_rail_ticket(after)
+            if is_rail:
+                allowed = {"ticketCost", "reservedSeatCost", "total"}
+                financial_fields = [row for row in supplier_pdf._FINANCIAL_FIELDS if row[0] in allowed]
+                breakdowns = ()
+            else:
+                # Generic supplier PDFs (primarily aviation) use fare/tax/fee/total.
+                # Do not let rail-only compatibility fields become accidental targets.
+                allowed = {"fare", "taxes", "fees", "total"}
+                financial_fields = [row for row in supplier_pdf._FINANCIAL_FIELDS if row[0] in allowed]
+                breakdowns = supplier_pdf._BREAKDOWNS
+
             targets = []
-            for index, (old_child, new_child) in enumerate(zip(old_group, new_group)):
-                if isinstance(old_child, dict) and isinstance(new_child, dict):
-                    targets.extend(
-                        collect_targets(
-                            old_child,
-                            new_child,
-                            page_index=index,
-                            prefix=f"{prefix}receipt[{index}].",
+            for key, aliases in financial_fields:
+                old = supplier_pdf._decimal(_value(before, key))
+                new = supplier_pdf._decimal(_value(after, key))
+                if old is None or new is None or old == new:
+                    continue
+                targets.append(supplier_pdf.AmountTarget(f"{prefix}{key}", old, new, aliases, page_index))
+
+            for breakdown_key, fallback_aliases in breakdowns:
+                old_rows = _value(before, breakdown_key)
+                new_rows = _value(after, breakdown_key)
+                if not isinstance(old_rows, list) or not isinstance(new_rows, list):
+                    continue
+                for index, (old_row, new_row) in enumerate(zip(old_rows, new_rows)):
+                    if not isinstance(old_row, dict) or not isinstance(new_row, dict):
+                        continue
+                    old = supplier_pdf._decimal(old_row.get("amount"))
+                    new = supplier_pdf._decimal(new_row.get("amount"))
+                    if old is None or new is None or old == new:
+                        continue
+                    row_aliases = tuple(
+                        str(value).strip()
+                        for value in (
+                            old_row.get("code"),
+                            old_row.get("label"),
+                            new_row.get("code"),
+                            new_row.get("label"),
+                        )
+                        if str(value or "").strip()
+                    )
+                    targets.append(
+                        supplier_pdf.AmountTarget(
+                            f"{prefix}{breakdown_key}[{index}]",
+                            old,
+                            new,
+                            row_aliases or fallback_aliases,
+                            page_index,
                         )
                     )
+
             deduped = {
                 (target.key, target.old, target.new, target.page_index): target
                 for target in targets
             }
             return list(deduped.values())
 
-        is_rail = _looks_like_rail_ticket(before) or _looks_like_rail_ticket(after)
-        if is_rail:
-            allowed = {"ticketCost", "reservedSeatCost", "total"}
-            financial_fields = [row for row in supplier_pdf._FINANCIAL_FIELDS if row[0] in allowed]
-            breakdowns = ()
-        else:
-            # Generic supplier PDFs (primarily aviation) use fare/tax/fee/total.
-            # Do not let rail-only compatibility fields become accidental targets.
-            allowed = {"fare", "taxes", "fees", "total"}
-            financial_fields = [row for row in supplier_pdf._FINANCIAL_FIELDS if row[0] in allowed]
-            breakdowns = supplier_pdf._BREAKDOWNS
+        collect_targets._group_source_fix = True
+        supplier_pdf._collect_targets = collect_targets
 
-        targets = []
-        for key, aliases in financial_fields:
-            old = supplier_pdf._decimal(_value(before, key))
-            new = supplier_pdf._decimal(_value(after, key))
-            if old is None or new is None or old == new:
-                continue
-            targets.append(supplier_pdf.AmountTarget(f"{prefix}{key}", old, new, aliases, page_index))
+    # The same authenticated URL can first serve the immutable source and later
+    # serve a newly-created corrected version. Explicitly disable browser/proxy
+    # caching so opening it again always asks the backend which version is current.
+    from documents import views
 
-        for breakdown_key, fallback_aliases in breakdowns:
-            old_rows = _value(before, breakdown_key)
-            new_rows = _value(after, breakdown_key)
-            if not isinstance(old_rows, list) or not isinstance(new_rows, list):
-                continue
-            for index, (old_row, new_row) in enumerate(zip(old_rows, new_rows)):
-                if not isinstance(old_row, dict) or not isinstance(new_row, dict):
-                    continue
-                old = supplier_pdf._decimal(old_row.get("amount"))
-                new = supplier_pdf._decimal(new_row.get("amount"))
-                if old is None or new is None or old == new:
-                    continue
-                row_aliases = tuple(
-                    str(value).strip()
-                    for value in (
-                        old_row.get("code"),
-                        old_row.get("label"),
-                        new_row.get("code"),
-                        new_row.get("label"),
-                    )
-                    if str(value or "").strip()
-                )
-                targets.append(
-                    supplier_pdf.AmountTarget(
-                        f"{prefix}{breakdown_key}[{index}]",
-                        old,
-                        new,
-                        row_aliases or fallback_aliases,
-                        page_index,
-                    )
-                )
+    supplier_pdf_view = getattr(views, "DocumentSupplierPdfView", None)
+    if supplier_pdf_view is not None and not getattr(supplier_pdf_view.get, "_supplier_pdf_no_cache", False):
+        original_get = supplier_pdf_view.get
 
-        deduped = {
-            (target.key, target.old, target.new, target.page_index): target
-            for target in targets
-        }
-        return list(deduped.values())
+        def get_no_cache(self, request, document_id):
+            response = original_get(self, request, document_id)
+            response["Cache-Control"] = "private, no-store, no-cache, must-revalidate, max-age=0"
+            response["Pragma"] = "no-cache"
+            response["Expires"] = "0"
+            return response
 
-    collect_targets._group_source_fix = True
-    supplier_pdf._collect_targets = collect_targets
+        get_no_cache._supplier_pdf_no_cache = True
+        supplier_pdf_view.get = get_no_cache
