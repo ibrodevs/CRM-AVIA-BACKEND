@@ -1,5 +1,6 @@
 from decimal import Decimal
 from io import BytesIO
+from types import SimpleNamespace
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
@@ -18,7 +19,6 @@ install_receipt_supplier_pdf_font_codec()
 install_receipt_supplier_pdf_writer_fix()
 
 from documents import receipt_supplier_pdf_patch as supplier_pdf  # noqa: E402
-
 
 
 def _simple_supplier_pdf() -> bytes:
@@ -208,3 +208,35 @@ def test_no_partial_supplier_pdf_is_published_when_a_requested_amount_is_missing
     assert report["requested"] == 2
     assert report["applied"] == 1
     assert report["unapplied"]
+
+
+def test_confirmed_pricing_values_override_stale_supplier_snapshot():
+    document = SimpleNamespace(
+        metadata={
+            "receipt_import": {
+                "corrected_fields": {
+                    "fare": "23720",
+                    "taxes": "1250",
+                    "fees": "550",
+                    "total": "25520",
+                    "currency": "RUB",
+                }
+            }
+        }
+    )
+    submitted = {
+        "fare": "23720",
+        "taxes": "1250",
+        "fees": "500",
+        "total": "25470",
+        "currency": "RUB",
+        "feeBreakdown": [
+            {"code": "ASB", "label": "Сбор АСБ", "amount": "500", "currency": "RUB"}
+        ],
+    }
+
+    corrected = supplier_pdf._confirmed_verified_data(document, submitted, "parsed")
+
+    assert corrected["fees"] == "550"
+    assert corrected["total"] == "25520"
+    assert corrected["feeBreakdown"][0]["amount"] == "500"

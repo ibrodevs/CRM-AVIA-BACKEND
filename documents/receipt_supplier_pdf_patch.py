@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
-import re
 
 from django.http import FileResponse
 from rest_framework.views import APIView
@@ -81,7 +81,7 @@ def _collect_targets(before: dict, after: dict, *, page_index: int | None = None
         new_rows = _value(after, breakdown_key)
         if not isinstance(old_rows, list) or not isinstance(new_rows, list):
             continue
-        for index, (old_row, new_row) in enumerate(zip(old_rows, new_rows)):
+        for index, (old_row, new_row) in enumerate(zip(old_rows, new_rows, strict=False)):
             if not isinstance(old_row, dict) or not isinstance(new_row, dict):
                 continue
             old = _decimal(old_row.get("amount"))
@@ -97,7 +97,9 @@ def _collect_targets(before: dict, after: dict, *, page_index: int | None = None
     old_group = _first_group(before)
     new_group = _first_group(after)
     if old_group and new_group:
-        for index, (old_child, new_child) in enumerate(zip(old_group, new_group)):
+        for index, (old_child, new_child) in enumerate(
+            zip(old_group, new_group, strict=False)
+        ):
             if isinstance(old_child, dict) and isinstance(new_child, dict):
                 targets.extend(_collect_targets(old_child, new_child, page_index=index, prefix=f"{prefix}receipt[{index}]."))
     deduped: dict[tuple, AmountTarget] = {}
@@ -217,7 +219,7 @@ def _replace_combined_text(array, codec, target: AmountTarget, context: str) -> 
         updated = combined[: match.start()] + replacement + combined[match.end() :]
         if len(updated) == len(combined):
             offset = 0
-            for array_index, chunk in zip(positions, chunks):
+            for array_index, chunk in zip(positions, chunks, strict=True):
                 replacement_chunk = updated[offset : offset + len(chunk)]
                 offset += len(chunk)
                 encoded = _encode_text(replacement_chunk, codec)
@@ -375,6 +377,26 @@ def _base_verified_from_document(document) -> dict:
         return {}
 
 
+def _confirmed_verified_data(document, submitted: dict, parser_status: str) -> dict:
+    """Use the financial values actually accepted by the confirm endpoint.
+
+    The import UI stores pricing edits separately from the parsed receipt.  Its
+    confirm request therefore contains the new fee/total in the top-level
+    payload while ``supplier_original.verified_data`` can still contain the
+    recognized source amounts.  ``ReceiptImportConfirmView`` persists the
+    accepted values in ``receipt_import.corrected_fields``; those values must
+    win when producing the corrected supplier PDF.
+    """
+
+    receipt_import = (document.metadata or {}).get("receipt_import") or {}
+    confirmed = receipt_import.get("corrected_fields") or {}
+    source = {
+        **(submitted if isinstance(submitted, dict) else {}),
+        **(confirmed if isinstance(confirmed, dict) else {}),
+    }
+    return receipt_verified_data(source, parser_status=parser_status)
+
+
 def _sync_supplier_pdf(document, base_verified: dict, corrected_verified: dict, user) -> dict:
     metadata = document.metadata or {}
     supplier = {**(metadata.get("supplier_original") or {})}
@@ -454,7 +476,11 @@ def install_receipt_supplier_pdf_patch() -> None:
         corrected_input = submitted_supplier.get("verified_data") if isinstance(submitted_supplier, dict) else None
         if document_id and isinstance(corrected_input, dict):
             document = get_document_or_404(request.user, document_id)
-            corrected = receipt_verified_data(corrected_input, parser_status="parsed")
+            corrected = _confirmed_verified_data(
+                document,
+                corrected_input,
+                import_job.parser_status if import_job else "parsed",
+            )
             result = _sync_supplier_pdf(document, base_verified, corrected, request.user)
             response.data["supplier_pdf_correction"] = result
         return response

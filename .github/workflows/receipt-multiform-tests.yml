@@ -108,7 +108,7 @@ jobs:
       - name: Supplier PDF formatting and group targeting
         run: >-
           uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py
-          -k "amount_format or group_ticket" -vv
+          -k "amount_format or group_ticket or confirmed_pricing" -vv
       - name: Grouped rail supplier PDF correction
         run: >-
           uv run pytest documents/tests/test_receipt_supplier_pdf_group_fix.py -vv
