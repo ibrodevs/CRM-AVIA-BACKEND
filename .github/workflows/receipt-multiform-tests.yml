@@ -13,9 +13,12 @@ on:
       - "documents/receipt_metadata.py"
       - "documents/receipt_ticket_level_patch.py"
       - "documents/receipt_sequential_review_patch.py"
+      - "documents/receipt_supplier_pdf_patch.py"
+      - "documents/receipt_supplier_pdf_font_codec.py"
       - "documents/models.py"
       - "documents/migrations/0007_receiptdraft_receipt_items.py"
       - "documents/apps.py"
+      - "documents/urls.py"
       - "documents/tests/test_receipt_multiform_patch.py"
       - "documents/tests/test_receipt_hotel_booking_guard.py"
       - "documents/tests/test_receipt_problem_formats.py"
@@ -23,6 +26,7 @@ on:
       - "documents/tests/test_receipt_quality_guard.py"
       - "documents/tests/test_receipt_ticket_level_patch.py"
       - "documents/tests/test_receipt_sequential_review.py"
+      - "documents/tests/test_receipt_supplier_pdf_patch.py"
       - ".github/workflows/receipt-multiform-tests.yml"
   pull_request:
     paths:
@@ -35,9 +39,12 @@ on:
       - "documents/receipt_metadata.py"
       - "documents/receipt_ticket_level_patch.py"
       - "documents/receipt_sequential_review_patch.py"
+      - "documents/receipt_supplier_pdf_patch.py"
+      - "documents/receipt_supplier_pdf_font_codec.py"
       - "documents/models.py"
       - "documents/migrations/0007_receiptdraft_receipt_items.py"
       - "documents/apps.py"
+      - "documents/urls.py"
       - "documents/tests/test_receipt_multiform_patch.py"
       - "documents/tests/test_receipt_hotel_booking_guard.py"
       - "documents/tests/test_receipt_problem_formats.py"
@@ -45,6 +52,7 @@ on:
       - "documents/tests/test_receipt_quality_guard.py"
       - "documents/tests/test_receipt_ticket_level_patch.py"
       - "documents/tests/test_receipt_sequential_review.py"
+      - "documents/tests/test_receipt_supplier_pdf_patch.py"
       - ".github/workflows/receipt-multiform-tests.yml"
 
 jobs:
@@ -91,3 +99,4 @@ jobs:
           documents/tests/test_receipt_quality_guard.py
           documents/tests/test_receipt_ticket_level_patch.py
           documents/tests/test_receipt_sequential_review.py
+          documents/tests/test_receipt_supplier_pdf_patch.py
