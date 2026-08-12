@@ -22,6 +22,7 @@ class DocumentsConfig(AppConfig):
         from documents.receipt_rzd_fastpath import install_receipt_rzd_fastpath
         from documents.receipt_sequential_review_patch import install_receipt_sequential_review_patch
         from documents.receipt_supplier_pdf_font_codec import install_receipt_supplier_pdf_font_codec
+        from documents.receipt_supplier_pdf_group_fix import install_receipt_supplier_pdf_group_fix
         from documents.receipt_supplier_pdf_patch import install_receipt_supplier_pdf_patch
         from documents.receipt_supplier_pdf_writer_fix import install_receipt_supplier_pdf_writer_fix
         from documents.receipt_tax_columns_patch import install_receipt_tax_columns_patch
@@ -61,6 +62,10 @@ class DocumentsConfig(AppConfig):
         # Ensure modified PageObjects are written rather than re-cloning stale
         # pre-edit content streams from the PdfReader object graph.
         install_receipt_supplier_pdf_writer_fix()
-        # Financial corrections are applied last to a derived supplier PDF copy.
+        # Financial corrections are applied to a derived supplier PDF copy.
         # The uploaded source version remains immutable for audit/history.
         install_receipt_supplier_pdf_patch()
+        # Grouped rail PDFs contain one real ticket per page.  Install this last
+        # so aggregate CRM totals and derived rail aliases can never block the
+        # corrected supplier copy from being produced.
+        install_receipt_supplier_pdf_group_fix()
