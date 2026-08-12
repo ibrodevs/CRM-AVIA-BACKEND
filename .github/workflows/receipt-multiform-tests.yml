@@ -16,6 +16,7 @@ on:
       - "documents/receipt_supplier_pdf_patch.py"
       - "documents/receipt_supplier_pdf_font_codec.py"
       - "documents/receipt_supplier_pdf_writer_fix.py"
+      - "documents/receipt_supplier_pdf_group_fix.py"
       - "documents/models.py"
       - "documents/migrations/0007_receiptdraft_receipt_items.py"
       - "documents/apps.py"
@@ -28,6 +29,7 @@ on:
       - "documents/tests/test_receipt_ticket_level_patch.py"
       - "documents/tests/test_receipt_sequential_review.py"
       - "documents/tests/test_receipt_supplier_pdf_patch.py"
+      - "documents/tests/test_receipt_supplier_pdf_group_fix.py"
       - ".github/workflows/receipt-multiform-tests.yml"
   pull_request:
     paths:
@@ -43,6 +45,7 @@ on:
       - "documents/receipt_supplier_pdf_patch.py"
       - "documents/receipt_supplier_pdf_font_codec.py"
       - "documents/receipt_supplier_pdf_writer_fix.py"
+      - "documents/receipt_supplier_pdf_group_fix.py"
       - "documents/models.py"
       - "documents/migrations/0007_receiptdraft_receipt_items.py"
       - "documents/apps.py"
@@ -55,6 +58,7 @@ on:
       - "documents/tests/test_receipt_ticket_level_patch.py"
       - "documents/tests/test_receipt_sequential_review.py"
       - "documents/tests/test_receipt_supplier_pdf_patch.py"
+      - "documents/tests/test_receipt_supplier_pdf_group_fix.py"
       - ".github/workflows/receipt-multiform-tests.yml"
 
 jobs:
@@ -105,6 +109,9 @@ jobs:
         run: >-
           uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py
           -k "amount_format or group_ticket" -vv
+      - name: Grouped rail supplier PDF correction
+        run: >-
+          uv run pytest documents/tests/test_receipt_supplier_pdf_group_fix.py -vv
       - name: Supplier PDF same-font replacement
         run: >-
           uv run pytest documents/tests/test_receipt_supplier_pdf_patch.py
