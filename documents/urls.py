@@ -21,6 +21,11 @@ urlpatterns = [
         "documents/<uuid:document_id>/download/", v.DocumentDownloadView.as_view(), name="document-download"
     ),
     path(
+        "documents/<uuid:document_id>/supplier-pdf/",
+        v.DocumentSupplierPdfView.as_view(),
+        name="document-supplier-pdf",
+    ),
+    path(
         "documents/<uuid:document_id>/receipt/",
         v.DocumentReceiptUpdateView.as_view(),
         name="document-receipt-update",
