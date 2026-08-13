@@ -3,7 +3,6 @@ from decimal import Decimal
 from documents.receipt_client_pdf_requirements import _parse_modern_aeroflot, _parse_old_aeroflot
 from documents.receipt_client_pdf_text_source import _partner_hotel_from_pdfminer
 
-
 OLD_AEROFLOT = """
 Электронный билет (маршрут/квитанция для пассажира)
 ДАТА : 18АПР25
@@ -292,6 +291,19 @@ def test_compact_aeroflot_supports_split_flight_number_columns():
     assert parsed["taxes"] == Decimal("1250")
     assert parsed["fees"] == Decimal("500")
     assert parsed["total"] == Decimal("25470")
+
+
+def test_compact_aeroflot_reads_human_readable_cost_without_mixing_included_fees():
+    text = OLD_AEROFLOT.replace(
+        ": RUB21900\n: RUB0\n: RUB21900\nСБОР СА\nСБОР АСБ\nВСЕГО К ОПЛАТЕ\n: RUB0\n: RUB0\n: RUB0",
+        "СТОИМОСТЬ:\nВ ТОМ ЧИСЛЕ СБОР АСБ:\nВ ТОМ ЧИСЛЕ СБОР СА:\n20 982,63 РУБ.\n120,00 РУБ.\n0,00 РУБ.",
+    )
+    parsed = _parse_old_aeroflot(text)
+
+    assert parsed is not None
+    assert parsed["fare"] == Decimal("20982.63")
+    assert parsed["fees"] == Decimal("0")
+    assert parsed["total"] == Decimal("20982.63")
 
 
 def test_modern_aeroflot_itinerary_preserves_both_flights_and_tax_rows():

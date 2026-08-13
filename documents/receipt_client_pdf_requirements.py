@@ -6,7 +6,6 @@ from decimal import Decimal, InvalidOperation
 
 from documents.receipt_parser_patch_safe import _json_safe
 
-
 RU_MONTHS = {
     "ЯНВ": 1,
     "ФЕВ": 2,
@@ -297,6 +296,27 @@ def _parse_old_aeroflot(text: str) -> dict | None:
     fees = sa_fee + asb_fee
     total = payable if payable > 0 else ticket_total + fees
 
+    # Some agency-issued airline forms print a single human-readable
+    # ``СТОИМОСТЬ`` amount instead of the older ``: RUB...`` calculation
+    # columns.  Treat it as the complete ticket total; ASB/SA values below it
+    # are already included and must not be added for a second time.
+    printed_cost = re.search(
+        r"СТОИМОСТЬ\s*:\s*(?:В ТОМ ЧИСЛЕ[^\n]*\s*){0,4}"
+        r"(\d[\d\s\u00a0]*(?:[,.]\d{1,2})?)\s*РУБ",
+        text,
+        re.IGNORECASE,
+    )
+    if total <= 0 and printed_cost:
+        total = _decimal(printed_cost.group(1))
+        fare = total
+        taxes = Decimal("0")
+        fees = Decimal("0")
+        ticket_total = total
+        sa_fee = Decimal("0")
+        asb_fee = Decimal("0")
+
+    it_fare = bool(re.search(r"СТОИМОСТЬ\s*:\s*(?:В ТОМ ЧИСЛЕ[^\n]*\s*){0,4}IT\b", text, re.IGNORECASE))
+
     tax_breakdown = []
     for code, value in re.findall(r"\b([A-Z]{2,3})(-?\d+(?:[,.]\d{1,2})?)RUB\b", flat):
         tax_breakdown.append(
@@ -348,6 +368,7 @@ def _parse_old_aeroflot(text: str) -> dict | None:
         "service_kind": "avia",
         "service_type": "Авиа",
         "trip_type": "roundtrip" if roundtrip else ("complex" if len(segments) > 1 else "oneway"),
+        "output": {"priceMode": "it" if it_fare else "total"},
     }
 
 

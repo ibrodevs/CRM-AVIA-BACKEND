@@ -76,6 +76,17 @@ def install_receipt_client_pdf_finalizer() -> None:
         service_kind = str(fields.get("service_kind") or "").lower()
         segments = fields.get("segments") if isinstance(fields.get("segments"), list) else []
         if service_kind in {"avia", "flight", "авиа"} and segments:
+            passenger_name = re.sub(
+                r"\s+(?:ПСП|PASSPORT|PASS)\s*[A-ZА-ЯЁ0-9-]{5,}\s*$",
+                "",
+                _clean(str(fields.get("passenger_name") or "")),
+                flags=re.IGNORECASE,
+            ).strip()
+            if passenger_name and passenger_name != fields.get("passenger_name"):
+                fields["passenger_name"] = passenger_name
+                passengers = fields.get("passengers")
+                if isinstance(passengers, list) and passengers and isinstance(passengers[0], dict):
+                    passengers[0]["name"] = passenger_name
             codes = _modern_route_codes(text)
             if len(codes) >= len(segments) + 1:
                 for index, segment in enumerate(segments):
@@ -96,12 +107,30 @@ def install_receipt_client_pdf_finalizer() -> None:
                 deposit = _hotel_deposit(lines)
                 if deposit:
                     terms["deposit"] = deposit
+            rooms = fields.get("rooms") if isinstance(fields.get("rooms"), list) else []
+            has_early = bool(re.search(r"Ранний\s+заезд", text, re.IGNORECASE))
+            has_late = bool(re.search(r"Поздний\s+выезд", text, re.IGNORECASE))
+            for room in rooms:
+                if not isinstance(room, dict):
+                    continue
+                if has_early and not room.get("earlyCheckIn"):
+                    room["earlyCheckIn"] = room.get("checkInTime") or ""
+                if has_late and not room.get("lateCheckOut"):
+                    room["lateCheckOut"] = room.get("checkOutTime") or ""
+            booking = _clean(str(fields.get("hotel_booking_number") or fields.get("hotelBookingNo") or ""))
+            if len(booking) > 80 or re.search(r"Аннуляция|Без штрафа|Дополнительно", booking, re.IGNORECASE):
+                fields["hotel_booking_number"] = ""
+                fields["hotelBookingNo"] = ""
 
         raw = result.get("raw")
         if isinstance(raw, dict):
+            raw["passenger_name"] = fields.get("passenger_name")
+            raw["passengers"] = fields.get("passengers", [])
             raw["segments"] = fields.get("segments", [])
             if fields.get("hotelTerms"):
                 raw["hotelTerms"] = fields["hotelTerms"]
+            if fields.get("rooms"):
+                raw["rooms"] = fields["rooms"]
         return result
 
     wrapped._client_pdf_finalizer = True

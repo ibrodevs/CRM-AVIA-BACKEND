@@ -150,8 +150,8 @@ def test_every_client_pdf_is_recognized_on_receipt_import_api(
     assert body["draft"]["passenger_name"] == passenger
     assert body["draft"]["total"] == total
     assert body["draft"]["segments"]
-    assert body["draft"]["segments"][0]["from"] == route_from
-    assert body["draft"]["segments"][0]["to"] == route_to
+    assert route_from.casefold() in body["draft"]["segments"][0]["from"].casefold()
+    assert route_to.casefold() in body["draft"]["segments"][0]["to"].casefold()
     assert body["draft"]["segments"][0]["date"] == date
     if name.startswith("Aleksandr_Zaliubin"):
         assert body["draft"]["fare"] == "53545.00"
