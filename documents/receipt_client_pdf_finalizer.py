@@ -50,6 +50,24 @@ def _hotel_deposit(lines: list[str]) -> str:
     return _clean(" ".join(parts))
 
 
+def _valid_issue_date(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{2}\.\d{2}\.20\d{2}", _clean(value)))
+
+
+def _issue_date_from_text(text: str) -> str:
+    numeric = re.search(r"(?:Дата (?:выдачи|оформления)|Date of issue)\D{0,30}(\d{2})[./-](\d{2})[./-](20\d{2})", text, re.I)
+    if numeric:
+        return ".".join(numeric.groups())
+    named = re.search(r"(?:Дата (?:выдачи|оформления)|Date of issue)?\D{0,20}(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(20\d{2})", text, re.I)
+    if not named:
+        return ""
+    months = {name: index for index, name in enumerate((
+        "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря",
+    ), 1)}
+    return f"{int(named.group(1)):02d}.{months[named.group(2).lower()]:02d}.{named.group(3)}"
+
+
 def install_receipt_client_pdf_finalizer() -> None:
     from documents import services
 
@@ -76,6 +94,25 @@ def install_receipt_client_pdf_finalizer() -> None:
         service_kind = str(fields.get("service_kind") or "").lower()
         segments = fields.get("segments") if isinstance(fields.get("segments"), list) else []
         if service_kind in {"avia", "flight", "авиа"} and segments:
+            issue_date = _clean(str(fields.get("issue_date") or ""))
+            ticket_number = re.sub(r"\D", "", str(fields.get("ticket_number") or ""))
+            issue_digits = re.sub(r"\D", "", issue_date)
+            if not _valid_issue_date(issue_date) or (ticket_number and issue_digits == ticket_number):
+                fields["issue_date"] = _issue_date_from_text(text)
+
+            # IT is a tariff display mode, not a number. Supplier layouts put
+            # it next to the fare/cost heading, so never manufacture a random
+            # numeric amount when the source explicitly uses this marker.
+            has_it_fare = bool(re.search(
+                r"(?:СТОИМОСТЬ|Тариф|Fare|Итого)[^\f]{0,100}?\bIT\b|\bIT\b[^\f]{0,100}?(?:СТОИМОСТЬ|Тариф|Fare)",
+                text,
+                re.IGNORECASE,
+            ))
+            if has_it_fare:
+                output = fields.get("output") if isinstance(fields.get("output"), dict) else {}
+                output["priceMode"] = "it"
+                fields["output"] = output
+
             passenger_name = re.sub(
                 r"\s+(?:ПСП|PASSPORT|PASS)\s*[A-ZА-ЯЁ0-9-]{5,}\s*$",
                 "",
@@ -127,6 +164,9 @@ def install_receipt_client_pdf_finalizer() -> None:
             raw["passenger_name"] = fields.get("passenger_name")
             raw["passengers"] = fields.get("passengers", [])
             raw["segments"] = fields.get("segments", [])
+            raw["issue_date"] = fields.get("issue_date", "")
+            if fields.get("output"):
+                raw["output"] = fields["output"]
             if fields.get("hotelTerms"):
                 raw["hotelTerms"] = fields["hotelTerms"]
             if fields.get("rooms"):

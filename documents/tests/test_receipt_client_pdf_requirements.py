@@ -1,6 +1,10 @@
 from decimal import Decimal
 
-from documents.receipt_client_pdf_requirements import _parse_modern_aeroflot, _parse_old_aeroflot
+from documents.receipt_client_pdf_requirements import (
+    _parse_modern_aeroflot,
+    _parse_old_aeroflot,
+    _parse_russian_aeroflot_group,
+)
 from documents.receipt_client_pdf_text_source import _partner_hotel_from_pdfminer
 
 OLD_AEROFLOT = """
@@ -335,3 +339,42 @@ def test_partner_hotel_is_structured_instead_of_mixed_text():
     assert parsed["segments"][0]["date"] == "28.04.2025"
     assert parsed["segments"][0]["endDate"] == "01.05.2025"
     assert parsed["nights"] == 3
+
+
+def test_russian_aeroflot_group_keeps_each_passenger_and_all_segment_fields():
+    page = """27 октября 2025
+Маршрутная квитанция электронного билета
+{passenger}
+Документ: {document}
+№ эл.билета: {ticket}
+МАРШРУТ СЛЕДОВАНИЯ
+Код бронирования* 6RZ483 Москва Благовещенск Рейс: SU 6255
+08 дек. 2025 18:40 SVO B Шереметьево, B
+09 дек. 2025 Перевозчик: Россия* BQS 07:50 Аэропорт Игнатьево
+Класс: Эконом / P
+Вид тарифа: PCDSOC
+Статус: Оформлен
+Провоз багажа: 1 место до 23 кг
+Посадка заканчивается за 20 мин.
+Тариф RUB 6400.00
+Итого по тарифу/сборам 6400.00 RUB
+"""
+    text = page.format(passenger="KISELEVA MARGARITA SEMENOVNA", document="2202559501", ticket="5556171217873")
+    text += "\f" + page.format(passenger="DUBROVSKAIA IRINA ILINICHNA", document="2201903735", ticket="5556171217874")
+
+    parsed = _parse_russian_aeroflot_group(text)
+
+    assert parsed is not None
+    assert parsed["receipt_count"] == 2
+    assert [row["ticket_number"] for row in parsed["receipts"]] == ["5556171217873", "5556171217874"]
+    assert [row["passenger_name"] for row in parsed["receipts"]] == [
+        "KISELEVA MARGARITA SEMENOVNA", "DUBROVSKAIA IRINA ILINICHNA",
+    ]
+    segment = parsed["segments"][0]
+    assert segment == {
+        "from": "Москва", "fromCode": "SVO B", "to": "Благовещенск", "toCode": "BQS",
+        "date": "08.12.2025", "endDate": "09.12.2025", "dep": "18:40", "arr": "07:50",
+        "flightNo": "SU6255", "carrier": "Россия", "cls": "P", "status": "Оформлен",
+        "fareBasis": "PCDSOC", "cabin": "Эконом", "baggage": "1 место до 23 кг", "dir": "out",
+    }
+    assert parsed["total"] == Decimal("12800.00")

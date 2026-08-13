@@ -103,6 +103,141 @@ def _replace_result(result: dict, parsed: dict, warning: str, confidence: str = 
     return result
 
 
+def _russian_short_date(day: str, month_name: str, year: str) -> str:
+    month = RU_MONTHS.get((month_name or "").upper().replace(".", "").replace("Ё", "Е"))
+    if not month:
+        return ""
+    return f"{int(day):02d}.{month:02d}.{int(year):04d}"
+
+
+def _parse_russian_aeroflot_page(text: str) -> dict | None:
+    """Parse the current Russian-only Aeroflot itinerary layout.
+
+    One supplier PDF may contain several itinerary pages, one per passenger.
+    Parsing the pages separately is important: merging their text used to lose
+    the second passenger and all six segment attributes requested by the client.
+    """
+    if "Маршрутная квитанция электронного билета" not in text or "№ эл.билета" not in text:
+        return None
+    flat = _clean(text)
+    issue_match = re.search(r"(\d{1,2}\s+[А-Яа-яЁё]+\s+20\d{2})", text)
+    passenger_match = re.search(
+        r"Маршрутная квитанция электронного билета\s+([A-Z][A-Z '-]{4,80}?)\s+Документ:",
+        flat,
+    )
+    document_match = re.search(r"Документ:\s*(\d{6,16})", flat)
+    ticket_match = re.search(r"№\s*эл\.билета:\s*(\d{13})", flat, re.IGNORECASE)
+    reference_match = re.search(r"Код бронирования\*?\s*([A-Z0-9]{5,8})\b", flat, re.IGNORECASE)
+    route_match = re.search(
+        r"Код бронирования\*?\s*[A-Z0-9]{5,8}\s+(.+?)\s+(.+?)\s+Рейс:\s*([A-Z]{2})\s*(\d{2,5})",
+        flat,
+        re.IGNORECASE,
+    )
+    dep_match = re.search(
+        r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.?\s+(20\d{2})\s+(\d{2}:\d{2})\s+([A-Z]{3})(?:\s+([A-Z0-9]))?",
+        flat,
+        re.IGNORECASE,
+    )
+    arr_match = re.search(
+        r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.?\s+(20\d{2})\s+Перевозчик:.+?\b([A-Z]{3})\s+(\d{2}:\d{2})",
+        flat,
+        re.IGNORECASE,
+    )
+    carrier_match = re.search(r"Перевозчик:\s*([^*]+?)\*", flat, re.IGNORECASE)
+    class_match = re.search(r"Класс:\s*([^/]+?)\s*/\s*([A-Z0-9]+)", flat, re.IGNORECASE)
+    fare_basis_match = re.search(r"Вид тарифа:\s*([A-Z0-9-]+)", flat, re.IGNORECASE)
+    status_match = re.search(r"Статус:\s*([^\n]+?)(?=\s+Провоз багажа:)", flat, re.IGNORECASE)
+    baggage_match = re.search(r"Провоз багажа:\s*(.+?)(?=\s+Посадка заканчивается)", flat, re.IGNORECASE)
+    fare_match = re.search(r"Тариф\s+RUB\s*([\d\s]+(?:[,.]\d{1,2})?)", flat, re.IGNORECASE)
+    total_match = re.search(r"Итого по тарифу/сборам\s*([\d\s]+(?:[,.]\d{1,2})?)\s*RUB", flat, re.IGNORECASE)
+    if not all((passenger_match, ticket_match, route_match, dep_match, arr_match)):
+        return None
+
+    fare = _decimal(fare_match.group(1)) if fare_match else Decimal("0")
+    total = _decimal(total_match.group(1)) if total_match else fare
+    cabin = _clean(class_match.group(1)) if class_match else ""
+    booking_class = class_match.group(2).upper() if class_match else ""
+    segment = {
+        "from": _clean(route_match.group(1)),
+        "fromCode": dep_match.group(5).upper() + (f" {dep_match.group(6).upper()}" if dep_match.group(6) else ""),
+        "to": _clean(route_match.group(2)),
+        "toCode": arr_match.group(4).upper(),
+        "date": _russian_short_date(*dep_match.groups()[:3]),
+        "endDate": _russian_short_date(*arr_match.groups()[:3]),
+        "dep": dep_match.group(4),
+        "arr": arr_match.group(5),
+        "flightNo": route_match.group(3).upper() + route_match.group(4),
+        "carrier": _clean(carrier_match.group(1)) if carrier_match else "",
+        "cls": booking_class,
+        "status": _clean(status_match.group(1)) if status_match else "",
+        "fareBasis": fare_basis_match.group(1).upper() if fare_basis_match else "",
+        "cabin": cabin,
+        "baggage": _clean(baggage_match.group(1)) if baggage_match else "",
+        "dir": "out",
+    }
+    passenger = _person(passenger_match.group(1))
+    ticket = ticket_match.group(1)
+    document = document_match.group(1) if document_match else ""
+    issue_date = _named_date(issue_match.group(1)) if issue_match else ""
+    reference = reference_match.group(1).upper() if reference_match else ""
+    return {
+        "issuer": "АЭРОФЛОТ",
+        "passenger_name": passenger,
+        "passengers": [{"name": passenger, "dob": "", "document": document, "ticketNo": ticket}],
+        "reference": reference,
+        "ticket_number": ticket,
+        "document_number": document,
+        "date_of_birth": "",
+        "issue_date": issue_date,
+        "booking_class": booking_class,
+        "booking_status": segment["status"],
+        "fare_basis": segment["fareBasis"],
+        "baggage": segment["baggage"],
+        "hand_baggage": "",
+        "fare": fare,
+        "taxes": Decimal("0"),
+        "fees": total - fare if total >= fare else Decimal("0"),
+        "total": total,
+        "originalTotal": total,
+        "currency": "RUB",
+        "segments": [segment],
+        "fare_breakdown": [{"code": "FARE", "label": "Тариф", "amount": str(fare), "currency": "RUB"}],
+        "tax_breakdown": [],
+        "fee_breakdown": [],
+        "service_kind": "avia",
+        "service_type": "Авиа",
+        "trip_type": "oneway",
+        "output": {"priceMode": "total"},
+    }
+
+
+def _parse_russian_aeroflot_group(text: str) -> dict | None:
+    pages = [page for page in text.split("\f") if "Маршрутная квитанция электронного билета" in page]
+    receipts = [parsed for page in pages if (parsed := _parse_russian_aeroflot_page(page))]
+    if not receipts:
+        return None
+    parent = dict(receipts[0])
+    if len(receipts) == 1:
+        return parent
+    parent["passengers"] = [passenger for receipt in receipts for passenger in receipt["passengers"]]
+    parent["passenger_name"] = ", ".join(receipt["passenger_name"] for receipt in receipts)
+    parent["ticket_number"] = ", ".join(receipt["ticket_number"] for receipt in receipts)
+    for key in ("fare", "taxes", "fees", "total", "originalTotal"):
+        parent[key] = sum((_decimal(receipt.get(key)) for receipt in receipts), Decimal("0"))
+    children = []
+    for index, receipt in enumerate(receipts, 1):
+        child = dict(receipt)
+        child.update({"receiptIndex": index, "receiptPage": index, "blankId": receipt["ticket_number"], "recognitionPending": False})
+        children.append(child)
+    parent.update({
+        "receipts": children,
+        "receipt_items": children,
+        "receipt_count": len(children),
+        "recognitionPending": False,
+    })
+    return parent
+
+
 def _old_aeroflot_routes(lines: list[str]) -> list[tuple[str, str, str, str, str]]:
     try:
         start = next(index for index, line in enumerate(lines) if "МАРШРУТ/ПЕРЕВОЗЧИК" in line)
@@ -678,6 +813,14 @@ def install_receipt_client_pdf_requirements_patch() -> None:
         text = services._extract_pdf_text(content)
         if not text:
             return result
+
+        parsed = _parse_russian_aeroflot_group(text)
+        if parsed:
+            return _replace_result(
+                result,
+                parsed,
+                f"Групповая маршрут-квитанция распознана: {parsed.get('receipt_count', 1)} бланк(а); пассажиры и параметры рейса сохранены раздельно.",
+            )
 
         parsed = _parse_old_aeroflot(text)
         if parsed:

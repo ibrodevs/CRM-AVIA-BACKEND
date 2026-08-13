@@ -7,6 +7,7 @@ from documents.receipt_client_pdf_requirements import (
     _clean,
     _parse_modern_aeroflot,
     _parse_old_aeroflot,
+    _parse_russian_aeroflot_group,
     _replace_result,
 )
 
@@ -222,6 +223,13 @@ def install_receipt_client_pdf_text_source_patch() -> None:
         if not text:
             return result
 
+        parsed = _parse_russian_aeroflot_group(text)
+        if parsed:
+            return _replace_result(
+                result,
+                parsed,
+                f"Групповая маршрут-квитанция распознана: {parsed.get('receipt_count', 1)} бланк(а); пассажиры и параметры рейса сохранены раздельно.",
+            )
         parsed = _parse_old_aeroflot(text)
         if parsed:
             return _replace_result(
