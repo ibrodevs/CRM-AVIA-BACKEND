@@ -19,6 +19,7 @@ class DocumentsConfig(AppConfig):
         from documents.receipt_quality_guard import install_receipt_quality_guard
         from documents.receipt_recognition_engine import install_receipt_recognition_engine
         from documents.receipt_recognition_performance import install_receipt_recognition_performance_patch
+        from documents.receipt_red_wings_patch import install_receipt_red_wings_patch
         from documents.receipt_rzd_fastpath import install_receipt_rzd_fastpath
         from documents.receipt_sequential_review_patch import install_receipt_sequential_review_patch
         from documents.receipt_supplier_pdf_font_codec import install_receipt_supplier_pdf_font_codec
@@ -51,6 +52,11 @@ class DocumentsConfig(AppConfig):
         # Normalize quirks found in the exact client samples (concatenated
         # airport codes and one-line hotel deposits) before ticket storage.
         install_receipt_client_pdf_finalizer()
+        # Red Wings uses the same bilingual TCH visual form but a different text
+        # extraction order: route/airport values come after both date columns and
+        # ticket/issuer/date values come after their three labels. Resolve that
+        # exact supplier layout after generic finalization and before storage.
+        install_receipt_red_wings_patch()
         # Ticket-level storage consumes the final parser result.
         install_receipt_ticket_level_patch()
         # Run after ticket-level storage so review status/progress is preserved

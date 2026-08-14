@@ -8,6 +8,7 @@ on:
       - "documents/receipt_recognition_performance.py"
       - "documents/receipt_ocr_fallback.py"
       - "documents/receipt_rzd_fastpath.py"
+      - "documents/receipt_red_wings_patch.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_preflight_patch.py"
       - "documents/receipt_problem_formats_patch.py"
@@ -23,6 +24,7 @@ on:
       - "documents/receipt_recognition_performance.py"
       - "documents/receipt_ocr_fallback.py"
       - "documents/receipt_rzd_fastpath.py"
+      - "documents/receipt_red_wings_patch.py"
       - "documents/receipt_quality_guard.py"
       - "documents/receipt_preflight_patch.py"
       - "documents/receipt_problem_formats_patch.py"
@@ -79,3 +81,4 @@ jobs:
           documents/tests/test_receipt_avia_brand_patch.py
           documents/tests/test_receipt_hotel_booking_guard.py
           documents/tests/test_receipt_tax_columns.py
+          documents/tests/test_receipt_red_wings_patch.py
