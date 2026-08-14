@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from decimal import Decimal
 from io import BytesIO
 
 from documents.receipt_client_pdf_requirements import _clean, _named_date, _replace_result
@@ -46,17 +45,12 @@ def _route_value(value: str) -> bool:
     return True
 
 
-def _label_value(flat: str, label: str, pattern: str) -> str:
-    match = re.search(label + r"\s*(" + pattern + r")", flat, re.IGNORECASE)
-    return _clean(match.group(1)) if match else ""
-
-
 def _parse_red_wings(text: str) -> dict | None:
     """Parse the TCH bilingual Red Wings e-ticket used by the client.
 
     The layout differs from the Aeroflot bilingual form in two important ways:
     route/airport names are emitted after both date columns, and the ticket /
-    issuer / issue-date values are emitted after all three labels.  A generic
+    issuer / issue-date values are emitted after all three labels. A generic
     row-by-row parser therefore loses the route and often mislabels the carrier.
     """
 
@@ -221,9 +215,8 @@ def _parse_red_wings(text: str) -> dict | None:
         "dir": "out",
     }
 
-    # The supplied ticket explicitly uses confidential IT pricing. Do not
-    # invent a numeric amount that is absent from the supplier document.
-    fare = taxes = fees = total = Decimal("0")
+    # The supplier explicitly prints confidential IT pricing and no numeric
+    # amount/currency. Keep those values unknown instead of turning IT into 0.
     return {
         "issuer": issuer,
         "carrier": carrier,
@@ -247,12 +240,12 @@ def _parse_red_wings(text: str) -> dict | None:
         "fare_basis": fare_basis,
         "baggage": baggage,
         "hand_baggage": "",
-        "fare": fare,
-        "taxes": taxes,
-        "fees": fees,
-        "total": total,
-        "originalTotal": total,
-        "currency": "RUB",
+        "fare": None,
+        "taxes": None,
+        "fees": None,
+        "total": None,
+        "originalTotal": None,
+        "currency": "",
         "segments": [segment],
         "fare_breakdown": [],
         "tax_breakdown": [],
