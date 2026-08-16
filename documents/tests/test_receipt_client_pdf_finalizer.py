@@ -1,4 +1,4 @@
-from documents.receipt_client_pdf_finalizer import _hotel_deposit, _modern_route_codes
+from documents.receipt_client_pdf_finalizer import _hotel_deposit, _modern_route_codes, _russian_hotel_terms
 from documents.receipt_metadata import receipt_verified_data
 
 
@@ -31,6 +31,27 @@ def test_partner_hotel_accepts_split_deposit_columns():
     lines = ["Deposit", "1000", "CNY", "per room for the night", "GPS 22.726416 114.06274"]
 
     assert _hotel_deposit(lines) == "1000 CNY per room for the night"
+
+
+def test_russian_hotel_terms_keep_full_conditions_without_duplicate_comment():
+    text = """
+    При заселении обязательно иметь при себе данный ваучер и документ удостоверяющий личность.
+    В случае незаезда или несвоевременной аннуляции будет выставлен штраф.
+    Оплата за проживание производится по безналичному расчету. Все услуги, указанные в этом ваучере,
+    полностью оплачены. Оплата дополнительных услуг осуществляется гостем самостоятельно.
+    В случае внесения изменений в подтвержденное бронирование стоимость услуги может быть изменена.
+    Пожалуйста, уточняйте условия изменений у вашего агента по бронированию.
+    Согласно Правилам предоставления гостиничных услуг в РФ, размещение граждан РФ осуществляется
+    на основании паспорта. Для миграционного учета гостиницы вправе потребовать миграционную карту.
+    """
+    terms = _russian_hotel_terms(text)
+
+    assert "полностью оплачены" in terms["important"]
+    assert "миграционную карту" in terms["important"]
+    assert "будет выставлен штраф" in terms["noShow"]
+    assert "стоимость услуги может быть изменена" in terms["amendment"]
+    assert terms["cancellation"] == ""
+    assert terms["guestComment"] == ""
 
 
 def test_receipt_metadata_keeps_carry_on_separate_from_checked_baggage():

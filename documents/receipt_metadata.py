@@ -162,6 +162,21 @@ def receipt_verified_data(fields: dict, *, parser_status: str) -> dict:
     service_kind = source.get("service_kind") or "other"
     service_type = source.get("service_type") or SERVICE_KIND_LABELS.get(service_kind, "Прочее")
     total = source.get("total")
+    top_class = _first_value(source.get("cls"), source.get("booking_class"))
+    top_fare = _first_value(source.get("fareBasis"), source.get("fare_basis"))
+    top_baggage = source.get("baggage") or ""
+    top_hand_baggage = source.get("handBaggage") or source.get("hand_baggage") or ""
+    for segment in segments:
+        if not segment.get("cls") and top_class:
+            segment["cls"] = top_class
+        if not segment.get("cabin") and str(top_class).upper() in {"ECONOMY", "BUSINESS", "FIRST"}:
+            segment["cabin"] = str(top_class).upper()
+        if not segment.get("fareBasis") and top_fare:
+            segment["fareBasis"] = top_fare
+        if not segment.get("baggage") and top_baggage:
+            segment["baggage"] = top_baggage
+        if not segment.get("handBaggage") and top_hand_baggage:
+            segment["handBaggage"] = top_hand_baggage
     verified = {
         **source,
         "carrier": _first_value(
@@ -205,6 +220,7 @@ def receipt_verified_data(fields: dict, *, parser_status: str) -> dict:
         "cls": _first_value(source.get("cls"), source.get("booking_class"), first_segment.get("cls")),
         "fareBasis": _first_value(source.get("fareBasis"), source.get("fare_basis"), first_segment.get("fareBasis")),
         "handBaggage": source.get("handBaggage") or source.get("hand_baggage") or "",
+        "output": source.get("output") if isinstance(source.get("output"), dict) else {},
         "tripType": source.get("tripType")
         or source.get("trip_type")
         or ("stay" if service_kind == "hotel" else "oneway"),

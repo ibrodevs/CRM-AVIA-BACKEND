@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from documents.receipt_multiform_patch import _aggregate_rail_receipts
 from documents.receipt_parser_patch_safe import _rail
-from documents.receipt_problem_formats_patch import _parse_s7_ticket
+from documents.receipt_problem_formats_patch import _parse_azimuth_ticket, _parse_s7_ticket
 
 
 S7_DENIS = """
@@ -66,6 +66,22 @@ S7-2508 OVB - DME (VSTOW)
 Тариф Эконом Стандарт
 Ручная кладь 10 кг. Габариты 55x40x23 см.
 Багаж 1 место по 23 кг.
+"""
+
+
+AZIMUTH = """
+ЭЛЕКТРОННЫЙ БИЛЕТ (маршрут-квитанция для пассажира)
+Заказ №5073872 код бронирования: MNN7JV
+Пассажир Номер документа Номер билета Бонусная карта Продажа
+ЛОСЕВ АЛЕКСАНДР ВАДИМОВИЧ Г-Н(ГОА) 23OCT2003 6024738770 222 2409777877 01.10.2024
+Рейс под брендом авиакомпании Азимут
+Киров, KVX Минеральные Воды, MRV Авиакомпания-
+перевозчик Рейс Тариф Багаж Статус
+05:55 Чт, 03 Октября 2024 09:30 Чт, 03 Октября 2024 Азимут A4-6014 ECONOMY
+BGRFLOW 1М OK
+Стоимость: 10 808,00 руб.
+в том числе сбор АСБ: 450,00 руб.
+в том числе сбор СА: 0,00 руб.
 """
 
 
@@ -148,6 +164,24 @@ def test_s7_oneway_keeps_route_ticket_and_costs():
     assert result["fare"] == Decimal("26855")
     assert result["taxes"] == Decimal("2298")
     assert result["total"] == Decimal("29153")
+
+
+def test_azimuth_columns_do_not_shift_status_into_baggage():
+    result = _parse_azimuth_ticket(AZIMUTH)
+
+    assert result is not None
+    assert result["passenger_name"] == "ЛОСЕВ АЛЕКСАНДР ВАДИМОВИЧ"
+    assert result["booking_class"] == "ECONOMY"
+    assert result["fare_basis"] == "BGRFLOW"
+    assert result["baggage"] == "1PC"
+    assert result["booking_status"] == "OK"
+    assert result["fare"] == Decimal("10358.00")
+    segment = result["segments"][0]
+    assert segment["flightNo"] == "A4-6014"
+    assert segment["cabin"] == "ECONOMY"
+    assert segment["fareBasis"] == "BGRFLOW"
+    assert segment["baggage"] == "1PC"
+    assert segment["status"] == "OK"
 
 
 def test_eight_rzd_coupons_stay_eight_independent_receipts():

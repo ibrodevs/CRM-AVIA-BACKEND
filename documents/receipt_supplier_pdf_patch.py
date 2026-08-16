@@ -19,7 +19,7 @@ from documents.selectors import get_document_or_404
 class AmountTarget:
     key: str
     old: Decimal
-    new: Decimal
+    new: Decimal | str
     aliases: tuple[str, ...]
     page_index: int | None = None
 
@@ -70,9 +70,15 @@ def _collect_targets(before: dict, after: dict, *, page_index: int | None = None
     targets: list[AmountTarget] = []
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
+    output = _value(after, "output")
+    price_mode = str(output.get("priceMode") or output.get("price_mode") or "").strip().lower() if isinstance(output, dict) else ""
     for key, aliases in _FINANCIAL_FIELDS:
         old = _decimal(_value(before, key))
         new = _decimal(_value(after, key))
+        if key == "fare" and price_mode in {"it", "закрыть как it", "closed_it"}:
+            if old is not None:
+                targets.append(AmountTarget(f"{prefix}fare.it", old, "IT", aliases, page_index))
+            continue
         if old is None or new is None or old == new:
             continue
         targets.append(AmountTarget(f"{prefix}{key}", old, new, aliases, page_index))
@@ -125,7 +131,9 @@ def _amount_variants(value: Decimal) -> list[str]:
     return sorted(result, key=len, reverse=True)
 
 
-def _format_like(template: str, value: Decimal) -> str:
+def _format_like(template: str, value: Decimal | str) -> str:
+    if isinstance(value, str):
+        return value
     normalized = template.replace("\u00a0", " ")
     sign = "-" if value < 0 else ""
     value = abs(value)

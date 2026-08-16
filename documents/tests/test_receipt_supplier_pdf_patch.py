@@ -44,6 +44,27 @@ def _simple_supplier_pdf() -> bytes:
     return output.getvalue()
 
 
+def _simple_fare_pdf() -> bytes:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=595, height=842)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+        NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+    })
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 12 Tf 72 720 Td (FARE 23720 RUB TAX 1250 RUB TOTAL 25470 RUB) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 def _malformed_identity_h_supplier_pdf() -> bytes:
     """Viewer-renderable Identity-H stream that pypdf ContentStream rejects.
 
@@ -162,6 +183,25 @@ def test_type1_supplier_pdf_amount_changes_in_place_with_same_font_resource():
     corrected_font = corrected_reader.pages[0]["/Resources"]["/Font"]["/F1"].get_object()
     assert source_font["/BaseFont"] == corrected_font["/BaseFont"] == "/Helvetica"
     assert source_font["/Subtype"] == corrected_font["/Subtype"] == "/Type1"
+
+
+def test_supplier_pdf_can_close_fare_as_it_without_hiding_taxes_or_total():
+    source = _simple_fare_pdf()
+    corrected, report = supplier_pdf.patch_supplier_pdf(
+        source,
+        {"fare": "23720", "taxes": "1250", "total": "25470"},
+        {
+            "fare": "23720", "taxes": "1250", "total": "25470",
+            "output": {"priceMode": "it"},
+        },
+    )
+
+    assert corrected is not None
+    assert report["requested"] == report["applied"] == 1
+    text = PdfReader(BytesIO(corrected)).pages[0].extract_text()
+    assert "FARE IT RUB" in text
+    assert "TAX 1250 RUB" in text
+    assert "TOTAL 25470 RUB" in text
 
 
 def test_malformed_identity_h_supplier_pdf_uses_raw_stream_same_font_fallback():

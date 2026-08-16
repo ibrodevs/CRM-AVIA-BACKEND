@@ -68,6 +68,36 @@ def _issue_date_from_text(text: str) -> str:
     return f"{int(named.group(1)):02d}.{months[named.group(2).lower()]:02d}.{named.group(3)}"
 
 
+def _russian_hotel_terms(text: str) -> dict[str, str]:
+    flat = _clean(text)
+    if (
+        "При заселении обязательно иметь при себе данный ваучер" not in flat
+        or "Оплата за проживание производится по безналичному расчету" not in flat
+        or "Согласно Правилам предоставления гостиничных услуг" not in flat
+    ):
+        return {}
+    def take(pattern: str) -> str:
+        match = re.search(pattern, flat, re.IGNORECASE)
+        return _clean(match.group(1)) if match else ""
+    check_in = take(r"(При\s+заселении\s+обязательно.+?личность\s*\.)")
+    payment = take(r"(Оплата\s+за\s+проживание.+?самостоятельно\s*\.)")
+    documents = take(r"(Согласно\s+Правилам\s+предоставления.+?миграционную\s+карту\s*\.)")
+    amendment = take(
+        r"(В\s+случае\s+внесения\s+изменений.+?изменена\s*\.\s*"
+        r"Пожалуйста,\s+уточняйте\s+условия\s+изменений.+?бронированию\s*\.)"
+    )
+    no_show = take(r"(В\s+случае\s+незаезда.+?штраф\s*\.)")
+    return {
+        "important": _clean(" ".join(value for value in (check_in, payment, documents) if value)),
+        "noShow": no_show,
+        "amendment": amendment,
+        "cancellation": "",
+        # This supplier has no separate guest comment. Repeating the check-in
+        # sentence here created two identical blocks on the branded voucher.
+        "guestComment": "",
+    }
+
+
 def install_receipt_client_pdf_finalizer() -> None:
     from documents import services
 
@@ -124,6 +154,23 @@ def install_receipt_client_pdf_finalizer() -> None:
                 passengers = fields.get("passengers")
                 if isinstance(passengers, list) and passengers and isinstance(passengers[0], dict):
                     passengers[0]["name"] = passenger_name
+            top_class = _clean(str(fields.get("booking_class") or fields.get("cls") or ""))
+            top_fare = _clean(str(fields.get("fare_basis") or fields.get("fareBasis") or ""))
+            top_baggage = _clean(str(fields.get("baggage") or ""))
+            top_hand = _clean(str(fields.get("hand_baggage") or fields.get("handBaggage") or ""))
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                if not segment.get("cls") and top_class:
+                    segment["cls"] = top_class
+                if not segment.get("cabin") and top_class.upper() in {"ECONOMY", "BUSINESS", "FIRST"}:
+                    segment["cabin"] = top_class.upper()
+                if not segment.get("fareBasis") and top_fare:
+                    segment["fareBasis"] = top_fare
+                if not segment.get("baggage") and top_baggage:
+                    segment["baggage"] = top_baggage
+                if not segment.get("handBaggage") and top_hand:
+                    segment["handBaggage"] = top_hand
             codes = _modern_route_codes(text)
             if len(codes) >= len(segments) + 1:
                 for index, segment in enumerate(segments):
@@ -144,6 +191,17 @@ def install_receipt_client_pdf_finalizer() -> None:
                 deposit = _hotel_deposit(lines)
                 if deposit:
                     terms["deposit"] = deposit
+            parsed_terms = _russian_hotel_terms(text)
+            if parsed_terms:
+                terms.update(parsed_terms)
+            def same_term(left: str, right: str) -> bool:
+                return bool(_clean(left)) and _clean(left).casefold() == _clean(right).casefold()
+            if same_term(terms.get("guestComment", ""), terms.get("important", "")):
+                terms["guestComment"] = ""
+            if same_term(terms.get("noShow", ""), terms.get("cancellation", "")):
+                terms["noShow"] = ""
+            if same_term(terms.get("amendment", ""), terms.get("cancellation", "")):
+                terms["amendment"] = ""
             rooms = fields.get("rooms") if isinstance(fields.get("rooms"), list) else []
             has_early = bool(re.search(r"Ранний\s+заезд", text, re.IGNORECASE))
             has_late = bool(re.search(r"Поздний\s+выезд", text, re.IGNORECASE))

@@ -256,6 +256,92 @@ def _parse_s7_ticket(text: str) -> dict | None:
     }
 
 
+def _parse_azimuth_ticket(text: str) -> dict | None:
+    """Parse PSC itinerary receipts issued for Azimuth.
+
+    The supplier places the cabin, fare basis, baggage and status on the line
+    after the flight.  Generic column heuristics used to shift the header
+    ``Статус`` into baggage and leave the segment class/fare empty.
+    """
+
+    lines = [_clean for _clean in (
+        re.sub(r"\s+", " ", line).strip() for line in (text or "").splitlines()
+    ) if _clean]
+    flat = " ".join(lines)
+    if "авиакомпании Азимут" not in flat or "ЭЛЕКТРОННЫЙ БИЛЕТ" not in flat:
+        return None
+
+    passenger_row = re.search(
+        r"Продажа\s+(?P<passenger>[А-ЯЁA-Z][А-ЯЁA-Z \-]+?)\s+"
+        r"(?:Г-Н\(ГОА\)\s+)?(?P<dob>\d{2}[A-Z]{3}\d{4})\s+"
+        r"(?P<document>\d{10})\s+(?P<ticket>\d{3}\s+\d{10})\s+"
+        r"(?P<sale>\d{2}\.\d{2}\.\d{4})",
+        flat,
+    )
+    route = re.search(
+        r"(?P<from>[^.]{2,80}?),\s*(?P<fromCode>[A-Z]{3})\s+"
+        r"(?P<to>[^.]{2,80}?),\s*(?P<toCode>[A-Z]{3})\s+Авиакомпания-",
+        flat,
+    )
+    segment_row = re.search(
+        r"(?P<dep>\d{2}:\d{2})\s+(?P<depDate>[А-Яа-яЁё]{2},\s+\d{1,2}\s+[А-Яа-яЁё]+\s+\d{4})\s+"
+        r"(?P<arr>\d{2}:\d{2})\s+(?P<arrDate>[А-Яа-яЁё]{2},\s+\d{1,2}\s+[А-Яа-яЁё]+\s+\d{4})\s+"
+        r"Азимут\s+(?P<flight>A4-\d{3,5})\s+(?P<cabin>ECONOMY|BUSINESS)\s+"
+        r"(?P<fare>[A-Z0-9-]{2,20})\s+(?P<baggage>\d+\s*(?:М|PC|КГ|KG))\s+(?P<status>OK|CONFIRMED)",
+        flat,
+        re.IGNORECASE,
+    )
+    if not passenger_row or not route or not segment_row:
+        return None
+
+    total_match = re.search(r"Стоимость:\s*([\d ]+(?:[,.]\d{2})?)\s*руб", flat, re.I)
+    fee_values = [
+        _decimal(value)
+        for value in re.findall(r"в\s+том\s+числе\s+сбор\s+(?:АСБ|СА):\s*([\d ]+(?:[,.]\d{2})?)", flat, re.I)
+    ]
+    total = _decimal(total_match.group(1)) if total_match else Decimal("0")
+    fees = sum(fee_values, Decimal("0"))
+    fare = max(total - fees, Decimal("0"))
+    baggage_raw = re.sub(r"\s+", "", segment_row.group("baggage")).upper()
+    baggage = re.sub(r"М$", "PC", baggage_raw)
+    passenger = passenger_row.group("passenger").strip()
+    ticket = passenger_row.group("ticket").strip()
+    cabin = segment_row.group("cabin").upper()
+    fare_basis = segment_row.group("fare").upper()
+    status = segment_row.group("status").upper()
+    segment = {
+        "from": route.group("from").strip(), "fromCode": route.group("fromCode"),
+        "to": route.group("to").strip(), "toCode": route.group("toCode"),
+        "date": _ru_date(segment_row.group("depDate")),
+        "endDate": _ru_date(segment_row.group("arrDate")),
+        "dep": segment_row.group("dep"), "arr": segment_row.group("arr"),
+        "flightNo": segment_row.group("flight").upper(), "carrier": "Азимут",
+        "cls": cabin, "cabin": cabin, "fareBasis": fare_basis,
+        "baggage": baggage, "handBaggage": "", "status": status, "dir": "out",
+    }
+    order = re.search(r"Заказ\s*№\s*(\d+)", flat, re.I)
+    reference = re.search(r"код\s+бронирования:\s*([A-Z0-9]+)", flat, re.I)
+    return {
+        "issuer": "Азимут", "passenger_name": passenger,
+        "passengers": [{
+            "name": passenger, "dob": passenger_row.group("dob"),
+            "document": passenger_row.group("document"), "ticketNo": ticket,
+        }],
+        "reference": reference.group(1) if reference else "", "ticket_number": ticket,
+        "document_number": passenger_row.group("document"),
+        "date_of_birth": passenger_row.group("dob"), "issue_date": passenger_row.group("sale"),
+        "supplier_order_number": order.group(1) if order else "",
+        "booking_class": cabin, "fare_basis": fare_basis, "baggage": baggage,
+        "hand_baggage": "", "booking_status": status,
+        "fare": fare, "taxes": Decimal("0"), "fees": fees, "total": total,
+        "originalTotal": total, "currency": "RUB", "segments": [segment],
+        "service_kind": "avia", "service_type": "Авиа", "trip_type": "oneway",
+        "fare_breakdown": [{"code": "FARE", "label": "Тариф", "amount": str(fare), "currency": "RUB"}],
+        "tax_breakdown": [],
+        "fee_breakdown": ([{"code": "ASB", "label": "Сбор АСБ/СА", "amount": str(fees), "currency": "RUB"}] if fees else []),
+    }
+
+
 def _replace_result(result: dict, parsed: dict, *, warning: str) -> dict:
     fields = result.setdefault("fields", {})
     if not isinstance(fields, dict):
@@ -333,6 +419,13 @@ def install_receipt_problem_formats_patch() -> None:
             return result
 
         joined_pypdf = "\n".join(pages)
+        azimuth = _parse_azimuth_ticket(joined_pypdf)
+        if azimuth:
+            return _replace_result(
+                result,
+                azimuth,
+                warning="Азимут распознан полностью: класс, код тарифа, багаж и статус сохранены в сегменте.",
+            )
         s7 = _parse_s7_ticket(joined_pypdf)
         if s7:
             return _replace_result(

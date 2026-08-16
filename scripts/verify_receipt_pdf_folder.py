@@ -54,6 +54,29 @@ def receipt_issues(fields: dict, status: str) -> list[str]:
             issues.append("fare_basis_contains_baggage")
         if str(fields.get("hand_baggage") or "").strip().upper() in {"OK", "OPEN", "CONFIRMED"}:
             issues.append("hand_baggage_contains_status")
+        issuer = str(fields.get("issuer") or fields.get("carrier") or "").lower()
+        invalid_column_values = {"СТАТУС", "БАГАЖ", "ТАРИФ", "РЕЙС"}
+        for index, segment in enumerate(segments, 1):
+            if not isinstance(segment, dict):
+                issues.append(f"segment_{index}_invalid")
+                continue
+            if not present(segment.get("from") or segment.get("fromCode")) or not present(segment.get("to") or segment.get("toCode")):
+                issues.append(f"segment_{index}_route")
+            if not present(segment.get("flightNo") or segment.get("flight_number")):
+                issues.append(f"segment_{index}_flight")
+            cabin = segment.get("cabin") or segment.get("cls")
+            if not present(cabin):
+                issues.append(f"segment_{index}_class")
+            fare_basis = segment.get("fareBasis") or segment.get("fare_basis")
+            # Air Serbia's exact client sample prints no fare-basis code. It is
+            # correct to keep this field empty instead of shifting 1PC into it.
+            if not present(fare_basis) and "air serbia" not in issuer:
+                issues.append(f"segment_{index}_fare_basis")
+            baggage = str(segment.get("baggage") or "").strip()
+            if not present(baggage):
+                issues.append(f"segment_{index}_baggage")
+            elif baggage.upper() in invalid_column_values:
+                issues.append(f"segment_{index}_baggage_shifted")
     elif kind == "rail":
         if not present(fields.get("ticket_number") or fields.get("ticketNo") or fields.get("receipt_items")):
             issues.append("ticket")
@@ -65,6 +88,14 @@ def receipt_issues(fields: dict, status: str) -> list[str]:
             issues.append("hotel")
         if not present(fields.get("rooms")):
             issues.append("rooms")
+        terms = fields.get("hotelTerms") if isinstance(fields.get("hotelTerms"), dict) else {}
+        narrative_keys = ("cancellation", "noShow", "amendment", "important", "guestComment")
+        normalized_terms = [
+            re.sub(r"\s+", " ", str(terms.get(key))).strip().lower()
+            for key in narrative_keys if present(terms.get(key))
+        ]
+        if len(normalized_terms) != len(set(normalized_terms)):
+            issues.append("duplicate_hotel_terms")
     return issues
 
 

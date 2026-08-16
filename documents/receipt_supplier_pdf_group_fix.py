@@ -140,9 +140,15 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 breakdowns = supplier_pdf._BREAKDOWNS
 
             targets = []
+            output = _value(after, "output")
+            price_mode = str(output.get("priceMode") or output.get("price_mode") or "").strip().lower() if isinstance(output, dict) else ""
             for key, aliases in financial_fields:
                 old = supplier_pdf._decimal(_value(before, key))
                 new = supplier_pdf._decimal(_value(after, key))
+                if key == "fare" and price_mode in {"it", "закрыть как it", "closed_it"}:
+                    if old is not None:
+                        targets.append(supplier_pdf.AmountTarget(f"{prefix}fare.it", old, "IT", aliases, page_index))
+                    continue
                 if old is None or new is None or old == new:
                     continue
                 targets.append(supplier_pdf.AmountTarget(f"{prefix}{key}", old, new, aliases, page_index))
