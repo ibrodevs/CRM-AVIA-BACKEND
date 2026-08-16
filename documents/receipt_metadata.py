@@ -31,7 +31,7 @@ def _first_value(*values):
 
 def _normalize_receipt_segment(segment):
     source = json_safe(segment) if isinstance(segment, dict) else {}
-    return {
+    normalized = {
         **source,
         "from": _first_value(
             source.get("from"),
@@ -118,8 +118,26 @@ def _normalize_receipt_segment(segment):
             source.get("baggage_allowance"),
             source.get("checked_baggage"),
         ),
+        "handBaggage": _first_value(
+            source.get("handBaggage"),
+            source.get("hand_baggage"),
+            source.get("carryOn"),
+            source.get("carry_on"),
+        ),
         "dir": _first_value(source.get("dir"), source.get("direction"), "out"),
     }
+    if not normalized["cabin"]:
+        booking_class = str(normalized["cls"] or "").strip().upper()
+        normalized["cabin"] = {
+            "ECONOMY": "ECONOMY",
+            "ЭКОНОМ": "ECONOMY",
+            "ЭКОНОМИЧЕСКИЙ": "ECONOMY",
+            "BUSINESS": "BUSINESS",
+            "БИЗНЕС": "BUSINESS",
+            "FIRST": "FIRST",
+            "ПЕРВЫЙ": "FIRST",
+        }.get(booking_class, "")
+    return normalized
 
 
 def receipt_verified_data(fields: dict, *, parser_status: str) -> dict:

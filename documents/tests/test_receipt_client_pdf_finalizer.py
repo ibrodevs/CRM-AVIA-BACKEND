@@ -1,4 +1,5 @@
 from documents.receipt_client_pdf_finalizer import _hotel_deposit, _modern_route_codes
+from documents.receipt_metadata import receipt_verified_data
 
 
 def test_modern_fare_calculation_extracts_codes_joined_to_amounts():
@@ -30,3 +31,23 @@ def test_partner_hotel_accepts_split_deposit_columns():
     lines = ["Deposit", "1000", "CNY", "per room for the night", "GPS 22.726416 114.06274"]
 
     assert _hotel_deposit(lines) == "1000 CNY per room for the night"
+
+
+def test_receipt_metadata_keeps_carry_on_separate_from_checked_baggage():
+    verified = receipt_verified_data({
+        "service_kind": "avia",
+        "segments": [{"cls": "ECONOMY", "baggage": "1PC", "hand_baggage": "8KG"}],
+    }, parser_status="parsed")
+
+    assert verified["legs"][0]["baggage"] == "1PC"
+    assert verified["legs"][0]["handBaggage"] == "8KG"
+    assert verified["legs"][0]["cabin"] == "ECONOMY"
+
+
+def test_receipt_metadata_does_not_guess_cabin_from_one_letter_booking_code():
+    verified = receipt_verified_data({
+        "service_kind": "avia",
+        "segments": [{"cls": "P", "cabin": ""}],
+    }, parser_status="parsed")
+
+    assert verified["legs"][0]["cabin"] == ""
