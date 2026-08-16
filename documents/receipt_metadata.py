@@ -1,4 +1,5 @@
 from decimal import Decimal
+import re
 
 SERVICE_KIND_LABELS = {
     "avia": "Авиа",
@@ -27,6 +28,10 @@ def _first_value(*values):
             continue
         return value
     return ""
+
+
+def _baggage_allowance(value) -> bool:
+    return bool(re.fullmatch(r"\d+(?:[.,]\d+)?\s*(?:PC|KG|КГ|КМ)", str(value or "").strip(), re.IGNORECASE))
 
 
 def _normalize_receipt_segment(segment):
@@ -137,6 +142,14 @@ def _normalize_receipt_segment(segment):
             "FIRST": "FIRST",
             "ПЕРВЫЙ": "FIRST",
         }.get(booking_class, "")
+    if (
+        not normalized["handBaggage"]
+        and _baggage_allowance(normalized["fareBasis"])
+        and _baggage_allowance(normalized["baggage"])
+    ):
+        normalized["handBaggage"] = normalized["baggage"]
+        normalized["baggage"] = normalized["fareBasis"]
+        normalized["fareBasis"] = ""
     return normalized
 
 

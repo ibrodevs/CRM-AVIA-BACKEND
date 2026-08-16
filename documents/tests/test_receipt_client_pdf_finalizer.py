@@ -51,3 +51,15 @@ def test_receipt_metadata_does_not_guess_cabin_from_one_letter_booking_code():
     }, parser_status="parsed")
 
     assert verified["legs"][0]["cabin"] == ""
+
+
+def test_receipt_metadata_repairs_previously_saved_shifted_baggage_columns():
+    verified = receipt_verified_data({
+        "service_kind": "avia",
+        "segments": [{"fareBasis": "1PC", "baggage": "8KG", "status": "OK"}],
+    }, parser_status="parsed")
+
+    assert verified["legs"][0]["fareBasis"] == ""
+    assert verified["legs"][0]["baggage"] == "1PC"
+    assert verified["legs"][0]["handBaggage"] == "8KG"
+    assert verified["legs"][0]["status"] == "OK"

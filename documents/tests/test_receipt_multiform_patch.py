@@ -82,6 +82,52 @@ OK
 : RUB26973
 """
 
+AIR_SERBIA_WITHOUT_FARE_BASIS = """
+ИП Хмель Марина Валерьевна
+ЭЛЕКТРОННЫЙ БИЛЕТ
+(маршрут-квитанция для пассажира)
+Заказ №6151117
+код бронирования: FQW7JB
+Пассажир
+ILIN VIACHESLAV
+Дата рождения
+30.05.1960
+Номер документа
+ПСП 673796676
+Номер билета
+115 9531174060
+Бонусная карта
+Продажа
+27.01.2026
+SVO (Терминал C)
+Москва, Шереметьево
+19:45
+Вт, 11 Августа 2026
+BEG (Терминал 2)
+Белград, Никола Тесла
+22:00
+Вт, 11 Августа 2026
+Перевозчик
+Рейс
+Тариф
+Багаж
+Ручная
+кладь
+Статус
+Air Serbia
+JU-133
+ECONOMY
+1PC
+8KG
+OK
+Стоимость:
+в том числе сбор АСБ:
+в том числе сбор СА:
+43 462,76 руб.
+710,00 руб.
+0,00 руб.
+"""
+
 
 def rail_receipt(*, passenger, ticket, train, seat, total, ticket_cost, reserved, route_from, route_to, date, dep, arr):
     return {
@@ -233,3 +279,16 @@ def test_malformed_supplier_air_pdf_text_has_complete_fallback():
     assert result["taxes"] == Decimal("693")
     assert result["fees"] == Decimal("400")
     assert result["total"] == Decimal("26973")
+
+
+def test_air_serbia_short_columns_do_not_shift_baggage_into_fare_basis():
+    result = _parse_psc_air(AIR_SERBIA_WITHOUT_FARE_BASIS)
+
+    assert result is not None
+    assert result["fare_basis"] == ""
+    assert result["baggage"] == "1PC"
+    assert result["hand_baggage"] == "8KG"
+    assert result["booking_status"] == "OK"
+    assert result["segments"][0]["fareBasis"] == ""
+    assert result["segments"][0]["baggage"] == "1PC"
+    assert result["segments"][0]["handBaggage"] == "8KG"

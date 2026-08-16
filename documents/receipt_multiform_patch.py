@@ -159,16 +159,27 @@ def _parse_psc_air(text: str) -> dict | None:
 
     try:
         status_index = lines.index("Статус")
-        carrier_values = lines[status_index + 1 : status_index + 8]
+        carrier_values = []
+        for value in lines[status_index + 1 :]:
+            if re.match(r"(?:Стоимость|РАСЧЕТ ТАРИФА|ТАРИФ|СБОР/TAX)\s*:? ?$", value, re.I):
+                break
+            carrier_values.append(value)
+            if len(carrier_values) >= 7:
+                break
     except ValueError:
         carrier_values = []
     issuer = carrier_values[0] if len(carrier_values) > 0 else ""
     flight_number = carrier_values[1] if len(carrier_values) > 1 else ""
     cabin = carrier_values[2] if len(carrier_values) > 2 else ""
-    fare_basis = carrier_values[3] if len(carrier_values) > 3 else ""
-    baggage = carrier_values[4] if len(carrier_values) > 4 else ""
-    hand_baggage = carrier_values[5] if len(carrier_values) > 5 else ""
-    booking_status = carrier_values[6] if len(carrier_values) > 6 else ""
+    # This supplier has two valid layouts under the same headers:
+    # carrier, flight, cabin, fare basis, baggage, carry-on, status; and a
+    # shorter layout without fare basis. Read the stable columns from the end
+    # so 1PC/8KG can never slide into fare/baggage respectively.
+    booking_status = carrier_values[-1] if len(carrier_values) >= 6 else ""
+    hand_baggage = carrier_values[-2] if len(carrier_values) >= 6 else ""
+    baggage = carrier_values[-3] if len(carrier_values) >= 6 else ""
+    fare_values = carrier_values[3:-3] if len(carrier_values) >= 6 else []
+    fare_basis = fare_values[0] if fare_values else ""
     segment.update(
         {
             "carrier": issuer,
@@ -176,6 +187,7 @@ def _parse_psc_air(text: str) -> dict | None:
             "cabin": cabin,
             "fareBasis": fare_basis,
             "baggage": baggage,
+            "handBaggage": hand_baggage,
             "status": booking_status,
         }
     )

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -27,6 +28,10 @@ def present(value) -> bool:
     return bool(str(value or "").strip())
 
 
+def baggage_allowance(value) -> bool:
+    return bool(re.fullmatch(r"\d+(?:[.,]\d+)?\s*(?:PC|KG|КГ|КМ)", str(value or "").strip(), re.IGNORECASE))
+
+
 def receipt_issues(fields: dict, status: str) -> list[str]:
     issues: list[str] = []
     kind = str(fields.get("service_kind") or "").lower()
@@ -45,6 +50,10 @@ def receipt_issues(fields: dict, status: str) -> list[str]:
             issues.append("ticket")
         if not present(fields.get("fare") or fields.get("total")):
             issues.append("cost")
+        if baggage_allowance(fields.get("fare_basis")):
+            issues.append("fare_basis_contains_baggage")
+        if str(fields.get("hand_baggage") or "").strip().upper() in {"OK", "OPEN", "CONFIRMED"}:
+            issues.append("hand_baggage_contains_status")
     elif kind == "rail":
         if not present(fields.get("ticket_number") or fields.get("ticketNo") or fields.get("receipt_items")):
             issues.append("ticket")
