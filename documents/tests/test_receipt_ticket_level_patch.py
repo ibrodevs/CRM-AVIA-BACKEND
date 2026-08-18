@@ -90,3 +90,23 @@ def test_each_ticket_keeps_own_cost_and_parent_total_is_sum_of_children():
     assert taxes == Decimal("0")
     assert fees == Decimal("0")
     assert total == Decimal("9757.30")
+
+
+def test_group_ticket_client_math_stays_individual():
+    first = _rail_item("ПЕРВЫЙ ПАССАЖИР", "71853988581936", "013", "5000.00", "1221.50")
+    second = _rail_item("ВТОРОЙ ПАССАЖИР", "71853988581937", "014", "3000.00", "535.80")
+    first.update({"agencyServiceFee": "300", "markup": "100", "commission": "20", "clientTotal": "6621.50"})
+    second.update({"agencyServiceFee": "150", "markup": "50", "commission": "10", "clientTotal": "3735.80"})
+
+    items = normalize_receipt_items(
+        {"supplier_original": {"verified_data": {"groupTickets": [first, second]}}},
+        parser_status="parsed",
+        service_kind="rail",
+    )
+
+    assert items[0]["ticketCost"] == "5000.00"
+    assert items[1]["ticketCost"] == "3000.00"
+    assert items[0]["agencyServiceFee"] == "300"
+    assert items[1]["agencyServiceFee"] == "150"
+    assert items[0]["clientTotal"] == "6621.50"
+    assert items[1]["clientTotal"] == "3735.80"

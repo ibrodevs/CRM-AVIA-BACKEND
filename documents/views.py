@@ -580,16 +580,46 @@ class ReceiptImportConfirmView(APIView):
             draft.total = total
             draft.currency = currency
             draft.confirmed_at = timezone.now()
+            raw_service_kind = str(
+                (import_job.raw_extraction or {}).get("service_kind", import_job.guessed_type)
+                or ""
+            ).strip().lower()
+            normalized_service_kind = {
+                "авиа": "avia",
+                "flight": "avia",
+                "жд": "rail",
+                "ж/д": "rail",
+                "train": "rail",
+                "гостиница": "hotel",
+                "отель": "hotel",
+                "трансфер": "transfer",
+            }.get(raw_service_kind, raw_service_kind or "other")
+            document_kind = {
+                "avia": "itinerary_receipt",
+                "rail": "ticket",
+                "hotel": "voucher",
+                "transfer": "voucher",
+            }.get(normalized_service_kind, "other")
+            document_label = {
+                "avia": "Маршрут-квитанция",
+                "rail": "Электронный ЖД-билет",
+                "hotel": "Ваучер отеля",
+                "transfer": "Ваучер трансфера",
+            }.get(normalized_service_kind, "Документ услуги")
+            document_title = " · ".join(
+                part for part in (document_label, draft.passenger_name or draft.issuer) if part
+            )
             source_document = import_job.file_version.document if import_job.file_version_id else None
             document = source_document or Document.objects.create(
                 tenant_id=request.user.tenant_id,
-                kind="itinerary_receipt",
-                title=f"Квитанция {draft.passenger_name or ''}".strip(),
+                kind=document_kind,
+                title=document_title,
                 source="supplier",
                 created_by=request.user,
             )
             document.order = order
-            document.title = f"Квитанция {draft.passenger_name or ''}".strip()
+            document.kind = document_kind
+            document.title = document_title
             document.source = "corrected"
             document.amount = total
             document.currency = currency
@@ -605,9 +635,7 @@ class ReceiptImportConfirmView(APIView):
                     "import_id": str(import_job.id),
                     "parser_status": import_job.parser_status,
                     "warnings": import_job.warnings,
-                    "service_kind": (import_job.raw_extraction or {}).get(
-                        "service_kind", import_job.guessed_type
-                    ),
+                    "service_kind": normalized_service_kind,
                     "service_type": (import_job.raw_extraction or {}).get("service_type", ""),
                     "original_total": str(data.get("original_total", draft.total or 0)),
                     "client_total": str(data.get("client_total", total)),
@@ -681,7 +709,7 @@ class ReceiptImportConfirmView(APIView):
                 )
                 document.service = service
                 document.metadata["receipt_import"]["created_service"] = str(service.id)
-            document.save(update_fields=["order", "service", "title", "source", "amount", "currency", "metadata"])
+            document.save(update_fields=["order", "service", "kind", "title", "source", "amount", "currency", "metadata"])
             draft.result_document = document
             draft.save()
             content = (

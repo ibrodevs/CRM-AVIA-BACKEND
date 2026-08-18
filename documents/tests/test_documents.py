@@ -320,6 +320,8 @@ class TestDocuments:
         assert str(original_document.id) == confirm.json()["document_id"]
         assert str(original_document.order_id) == order["id"]
         assert original_document.source == "corrected"
+        assert original_document.kind == "itinerary_receipt"
+        assert original_document.title == "Маршрут-квитанция · IVANOV IVAN EDITED"
         assert original_document.current_version == 2
         versions = list(original_document.versions.order_by("version"))
         assert versions[0].version == 1
