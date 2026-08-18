@@ -278,10 +278,15 @@ def _parse_azimuth_ticket(text: str) -> dict | None:
         r"(?P<sale>\d{2}\.\d{2}\.\d{4})",
         flat,
     )
+    # Anchor the route directly after the Azimuth brand line.  Without this
+    # boundary the generic ``[^.]{2,80}`` prefix can start inside the sale date
+    # and produce values such as ``2024 Рейс под брендом ... Киров``.
     route = re.search(
-        r"(?P<from>[^.]{2,80}?),\s*(?P<fromCode>[A-Z]{3})\s+"
-        r"(?P<to>[^.]{2,80}?),\s*(?P<toCode>[A-Z]{3})\s+Авиакомпания-",
+        r"Рейс\s+под\s+брендом\s+авиакомпании\s+Азимут\s+"
+        r"(?P<from>.+?),\s*(?P<fromCode>[A-Z]{3})\s+"
+        r"(?P<to>.+?),\s*(?P<toCode>[A-Z]{3})\s+Авиакомпания-",
         flat,
+        re.IGNORECASE,
     )
     segment_row = re.search(
         r"(?P<dep>\d{2}:\d{2})\s+(?P<depDate>[А-Яа-яЁё]{2},\s+\d{1,2}\s+[А-Яа-яЁё]+\s+\d{4})\s+"

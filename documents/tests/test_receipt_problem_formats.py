@@ -177,6 +177,11 @@ def test_azimuth_columns_do_not_shift_status_into_baggage():
     assert result["booking_status"] == "OK"
     assert result["fare"] == Decimal("10358.00")
     segment = result["segments"][0]
+    assert segment["from"] == "Киров"
+    assert segment["fromCode"] == "KVX"
+    assert segment["to"] == "Минеральные Воды"
+    assert segment["toCode"] == "MRV"
+    assert "Рейс под брендом" not in segment["from"]
     assert segment["flightNo"] == "A4-6014"
     assert segment["cabin"] == "ECONOMY"
     assert segment["fareBasis"] == "BGRFLOW"
