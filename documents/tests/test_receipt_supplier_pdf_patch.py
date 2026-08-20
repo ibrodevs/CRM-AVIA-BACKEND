@@ -280,3 +280,27 @@ def test_confirmed_pricing_values_override_stale_supplier_snapshot():
     assert corrected["fees"] == "550"
     assert corrected["total"] == "25520"
     assert corrected["feeBreakdown"][0]["amount"] == "500"
+
+
+def test_confirmed_client_total_is_printed_in_corrected_supplier_pdf():
+    document = SimpleNamespace(
+        metadata={
+            "receipt_import": {
+                "client_total": "26020",
+                "markup": "500",
+                "corrected_fields": {
+                    "fare": "23720",
+                    "taxes": "1250",
+                    "fees": "550",
+                    "total": "25520",
+                    "currency": "RUB",
+                },
+            }
+        }
+    )
+
+    corrected = supplier_pdf._confirmed_verified_data(document, {}, "parsed")
+
+    assert corrected["fare"] == "23720"
+    assert corrected["fees"] == "550"
+    assert corrected["total"] == "26020"

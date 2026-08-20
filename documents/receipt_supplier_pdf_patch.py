@@ -479,6 +479,12 @@ def _confirmed_verified_data(document, submitted: dict, parser_status: str) -> d
         **(submitted if isinstance(submitted, dict) else {}),
         **(confirmed if isinstance(confirmed, dict) else {}),
     }
+    client_total = receipt_import.get("client_total")
+    if client_total not in (None, ""):
+        # The accepted supplier components intentionally exclude the agency
+        # markup.  The payable amount printed in the corrected working PDF is
+        # the client total, while fare/taxes/fees stay available separately.
+        source["total"] = client_total
     return receipt_verified_data(source, parser_status=parser_status)
 
 
