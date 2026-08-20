@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from io import BytesIO
 import re
+from io import BytesIO
 
 
-def _replace_combined_text_all(array, codec, target, context: str, supplier_pdf) -> int:
+def _replace_combined_text_all(
+    array,
+    codec,
+    target,
+    context: str,
+    supplier_pdf,
+    *,
+    allow_unlabeled: bool = False,
+) -> int:
     """Replace every duplicate of one amount inside a single TJ text run.
 
     RZD coupons can paint the same итог twice in one TJ array. Replacing only
@@ -28,7 +36,11 @@ def _replace_combined_text_all(array, codec, target, context: str, supplier_pdf)
     chunks = [supplier_pdf._decode_text(array[index], codec) for index in positions]
     combined = "".join(chunks)
     upper_context = (context + " " + combined).upper()
-    if target.aliases and not any(alias.upper() in upper_context for alias in target.aliases):
+    if (
+        target.aliases
+        and not allow_unlabeled
+        and not any(alias.upper() in upper_context for alias in target.aliases)
+    ):
         return 0
 
     for variant in supplier_pdf._amount_variants(target.old):
@@ -48,7 +60,7 @@ def _replace_combined_text_all(array, codec, target, context: str, supplier_pdf)
             if encoded is None:
                 return 0
             encoded_chunks.append(encoded)
-        for array_index, encoded in zip(positions, encoded_chunks):
+        for array_index, encoded in zip(positions, encoded_chunks, strict=True):
             array[array_index] = encoded
         return len(matches)
     return 0
@@ -73,14 +85,188 @@ def _write_reader_pages(reader) -> bytes:
     return output.getvalue()
 
 
+def _equivalent_target_keys(target, targets) -> set[str]:
+    """Return CRM fields represented by the same printed numeric value.
+
+    Supplier forms often print one amount several times (fare calculation,
+    tariff and total), while CRM tracks those occurrences as separate fields.
+    One safe page-scoped replacement can therefore satisfy several equal
+    targets; requiring the already replaced source token a second time made the
+    whole corrected PDF fail its all-or-nothing guard.
+    """
+
+    return {
+        candidate.key
+        for candidate in targets
+        if candidate.old == target.old
+        and candidate.new == target.new
+        and candidate.page_index == target.page_index
+        and candidate.page_markers == target.page_markers
+    }
+
+
+def _financial_pairs(before: dict, after: dict, supplier_pdf) -> list[tuple[object, object]]:
+    pairs = []
+    for key, _aliases in supplier_pdf._FINANCIAL_FIELDS:
+        old = supplier_pdf._decimal(supplier_pdf._value(before, key))
+        new = supplier_pdf._decimal(supplier_pdf._value(after, key))
+        if old is not None and new is not None:
+            pairs.append((old, new))
+    for breakdown_key, _aliases in supplier_pdf._BREAKDOWNS:
+        old_rows = supplier_pdf._value(before, breakdown_key)
+        new_rows = supplier_pdf._value(after, breakdown_key)
+        if not isinstance(old_rows, list) or not isinstance(new_rows, list):
+            continue
+        for old_row, new_row in zip(old_rows, new_rows, strict=False):
+            if not isinstance(old_row, dict) or not isinstance(new_row, dict):
+                continue
+            old = supplier_pdf._decimal(old_row.get("amount"))
+            new = supplier_pdf._decimal(new_row.get("amount"))
+            if old is not None and new is not None:
+                pairs.append((old, new))
+    return pairs
+
+
+def _page_wide_target_keys(before: dict, after: dict, targets, supplier_pdf) -> set[str]:
+    """Allow unlabeled replacement only when every equal source field agrees.
+
+    Example: an Aeroflot blank prints the same 6400 as fare calculation, fare
+    and total. If all three fields become 6500, every occurrence is safe to
+    replace. If only total becomes 6500 because a service fee was added, fare
+    remains 6400 and page-wide replacement is deliberately disabled.
+    """
+
+    old_group = supplier_pdf._first_group(before)
+    new_group = supplier_pdf._first_group(after)
+    scope_pairs = {}
+    if old_group or new_group:
+        for index, (old_child, new_child) in enumerate(zip(old_group, new_group, strict=False)):
+            if isinstance(old_child, dict) and isinstance(new_child, dict):
+                scope_pairs[index] = _financial_pairs(old_child, new_child, supplier_pdf)
+    else:
+        scope_pairs[None] = _financial_pairs(before, after, supplier_pdf)
+
+    safe = set()
+    for target in targets:
+        if isinstance(target.new, str):
+            continue
+        pairs = scope_pairs.get(target.page_index, scope_pairs.get(None, []))
+        equal_source = [new for old, new in pairs if old == target.old]
+        if equal_source and all(new == target.new for new in equal_source):
+            safe.add(target.key)
+    return safe
+
+
+def _operation_text_contexts(stream, codecs, supplier_pdf) -> dict[int, str]:
+    """Build a tight previous/current/next text window for each text operator."""
+
+    from pypdf.generic import ArrayObject, ByteStringObject, TextStringObject
+
+    active_font = None
+    entries: list[tuple[int, str]] = []
+    for operation_index, (operands, operator) in enumerate(stream.operations):
+        if operator == b"Tf" and operands:
+            active_font = str(operands[0])
+            continue
+        codec = codecs.get(active_font)
+        visible = ""
+        if operator == b"TJ" and operands and isinstance(operands[0], ArrayObject):
+            visible = "".join(
+                supplier_pdf._decode_text(item, codec)
+                for item in operands[0]
+                if isinstance(item, (TextStringObject, ByteStringObject))
+            )
+        elif operator in (b"Tj", b"'", b'"') and operands:
+            item = operands[-1]
+            if isinstance(item, (TextStringObject, ByteStringObject)):
+                visible = supplier_pdf._decode_text(item, codec)
+        if visible:
+            entries.append((operation_index, visible))
+
+    contexts = {}
+    for position, (operation_index, _visible) in enumerate(entries):
+        nearby = entries[max(0, position - 2): position + 3]
+        contexts[operation_index] = " ".join(text for _index, text in nearby)
+    return contexts
+
+
+def _replace_text_operand(
+    value,
+    codec,
+    target,
+    context: str,
+    supplier_pdf,
+    *,
+    allow_unlabeled: bool = False,
+):
+    """Replace only amount glyph bytes and preserve the rest of a Tj string.
+
+    Some embedded CID fonts expose reversible codes for digits but not for the
+    adjacent Cyrillic currency suffix. Re-encoding ``10000РУБ`` as a whole then
+    fails even though replacing the five numeric glyphs is fully supported.
+    Byte spans are calculated from the original font encoding, so the suffix,
+    font resource and layout remain untouched.
+    """
+
+    from pypdf.generic import ByteStringObject
+
+    visible = supplier_pdf._decode_text(value, codec)
+    upper_context = (context + " " + visible).upper()
+    if (
+        target.aliases
+        and not allow_unlabeled
+        and not any(alias.upper() in upper_context for alias in target.aliases)
+    ):
+        return None, 0
+
+    raw = supplier_pdf._original_bytes(value)
+    spans: list[tuple[int, int]] = []
+    if isinstance(codec, dict) and codec.get("kind") == "single-byte":
+        spans = [(index, index + 1) for index in range(len(raw))]
+    elif isinstance(codec, dict) and codec.get("kind") == "multibyte":
+        encoding = codec.get("encoding")
+        try:
+            encoded_text = raw.decode(encoding)
+            cursor = 0
+            for character in encoded_text:
+                chunk = character.encode(encoding)
+                spans.append((cursor, cursor + len(chunk)))
+                cursor += len(chunk)
+        except Exception:
+            spans = []
+    if len(spans) != len(visible):
+        return None, 0
+
+    for variant in supplier_pdf._amount_variants(target.old):
+        pattern = re.compile(r"(?<!\d)" + re.escape(variant) + r"(?!\d)")
+        matches = list(pattern.finditer(visible))
+        if not matches:
+            continue
+        updated = raw
+        replacements = 0
+        for match in reversed(matches):
+            replacement_text = supplier_pdf._format_like(match.group(0), target.new)
+            encoded = supplier_pdf._encode_text(replacement_text, codec)
+            if encoded is None:
+                return None, 0
+            start = spans[match.start()][0]
+            end = spans[match.end() - 1][1]
+            updated = updated[:start] + bytes(encoded) + updated[end:]
+            replacements += 1
+        return ByteStringObject(updated), replacements
+    return None, 0
+
+
 def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
     """Use pypdf's parsed operators when the supplier stream is valid."""
 
     from pypdf import PdfReader
     from pypdf.generic import ArrayObject, ByteStringObject, ContentStream, TextStringObject
+
     from documents import receipt_supplier_pdf_patch as supplier_pdf
 
     targets = supplier_pdf._collect_targets(before, after)
+    page_wide_keys = _page_wide_target_keys(before, after, targets, supplier_pdf)
     report = {
         "requested": len(targets),
         "applied": 0,
@@ -105,11 +291,12 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
             for name, reference in font_resources.items()
         }
         stream = ContentStream(page.get_contents(), reader)
+        operation_contexts = _operation_text_contexts(stream, codecs, supplier_pdf)
         active_font = None
-        recent_text: list[str] = []
         page_changed = False
+        page_target_keys: set[str] = set()
 
-        for operands, operator in stream.operations:
+        for operation_index, (operands, operator) in enumerate(stream.operations):
             if operator == b"Tf" and operands:
                 active_font = str(operands[0])
                 continue
@@ -122,16 +309,27 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
                     for item in array
                     if isinstance(item, (TextStringObject, ByteStringObject))
                 )
-                context = " ".join(recent_text[-12:])
+                context = operation_contexts.get(operation_index, visible)
                 for target in targets:
                     if target.key in applied_keys:
                         continue
-                    if target.page_index is not None and target.page_index != page_index:
+                    if not supplier_pdf._target_matches_page(target, page_index, page):
                         continue
-                    replacements = _replace_combined_text_all(array, codec, target, context, supplier_pdf)
+                    replacements = _replace_combined_text_all(
+                        array,
+                        codec,
+                        target,
+                        context,
+                        supplier_pdf,
+                        allow_unlabeled=target.key in page_wide_keys,
+                    )
                     if replacements:
-                        applied_keys.add(target.key)
-                        report["applied"] += 1
+                        if target.key in page_wide_keys:
+                            page_target_keys.update(
+                                _equivalent_target_keys(target, targets) & page_wide_keys
+                            )
+                        else:
+                            page_target_keys.add(target.key)
                         report["replacements"] += replacements
                         page_changed = True
                         visible = "".join(
@@ -139,8 +337,6 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
                             for item in array
                             if isinstance(item, (TextStringObject, ByteStringObject))
                         )
-                if visible:
-                    recent_text.append(visible)
                 continue
 
             if operator not in (b"Tj", b"'", b'"') or not operands:
@@ -150,45 +346,44 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
                 continue
 
             visible = supplier_pdf._decode_text(item, codec)
-            context = " ".join(recent_text[-12:]) + " " + visible
-            updated = visible
+            context = operation_contexts.get(operation_index, visible)
             changed_targets: list[str] = []
+            updated_item = item
 
             for target in targets:
                 if target.key in applied_keys:
                     continue
-                if target.page_index is not None and target.page_index != page_index:
+                if not supplier_pdf._target_matches_page(target, page_index, page):
                     continue
-                if target.aliases and not any(alias.upper() in context.upper() for alias in target.aliases):
-                    continue
-                for variant in supplier_pdf._amount_variants(target.old):
-                    pattern = re.compile(r"(?<!\d)" + re.escape(variant) + r"(?!\d)")
-                    if not pattern.search(updated):
-                        continue
-                    candidate, replacements = pattern.subn(
-                        lambda match: supplier_pdf._format_like(match.group(0), target.new),
-                        updated,
-                    )
-                    if len(candidate) != len(updated):
-                        continue
-                    updated = candidate
+                replacement_item, replacements = _replace_text_operand(
+                    updated_item,
+                    codec,
+                    target,
+                    context,
+                    supplier_pdf,
+                    allow_unlabeled=target.key in page_wide_keys,
+                )
+                if replacement_item is not None:
+                    updated_item = replacement_item
                     changed_targets.append(target.key)
                     report["replacements"] += replacements
-                    break
 
             if changed_targets:
-                encoded = supplier_pdf._encode_text(updated, codec)
-                if encoded is not None:
-                    operands[-1] = encoded
-                    page_changed = True
-                    for key in changed_targets:
-                        applied_keys.add(key)
-                        report["applied"] += 1
-            if updated:
-                recent_text.append(updated)
+                operands[-1] = updated_item
+                page_changed = True
+                for key in changed_targets:
+                    target = next(candidate for candidate in targets if candidate.key == key)
+                    if key in page_wide_keys:
+                        page_target_keys.update(
+                            _equivalent_target_keys(target, targets) & page_wide_keys
+                        )
+                    else:
+                        page_target_keys.add(key)
 
         if page_changed:
             page.replace_contents(stream)
+            report["applied"] += len(page_target_keys - applied_keys)
+            applied_keys.update(page_target_keys)
 
     report["unapplied"] = [target.key for target in targets if target.key not in applied_keys]
     if report["unapplied"]:
@@ -260,7 +455,14 @@ def _has_digit_boundary(data: bytes, start: int, end: int, digit_patterns: list[
     return True
 
 
-def _find_raw_replacements(data: bytes, target, codecs, supplier_pdf) -> list[tuple[int, int, bytes]]:
+def _find_raw_replacements(
+    data: bytes,
+    target,
+    codecs,
+    supplier_pdf,
+    *,
+    allow_unlabeled: bool = False,
+) -> list[tuple[int, int, bytes]]:
     """Find amount bytes without parsing PDF string syntax.
 
     Some client supplier PDFs contain Identity-H UTF-16BE literal strings whose
@@ -273,7 +475,7 @@ def _find_raw_replacements(data: bytes, target, codecs, supplier_pdf) -> list[tu
     """
 
     aliases = _alias_patterns(target, codecs, supplier_pdf)
-    if target.aliases and not aliases:
+    if target.aliases and not aliases and not allow_unlabeled:
         return []
     found: dict[tuple[int, int], bytes] = {}
 
@@ -299,7 +501,7 @@ def _find_raw_replacements(data: bytes, target, codecs, supplier_pdf) -> list[tu
                     continue
                 if aliases:
                     context = data[max(0, index - 1400): min(len(data), end + 700)]
-                    if not any(alias in context for alias in aliases):
+                    if not any(alias in context for alias in aliases) and not allow_unlabeled:
                         continue
                 found[(index, end)] = new_bytes
 
@@ -311,9 +513,11 @@ def _patch_supplier_pdf_raw(content: bytes, before: dict, after: dict) -> tuple[
 
     from pypdf import PdfReader
     from pypdf.generic import DecodedStreamObject, NameObject
+
     from documents import receipt_supplier_pdf_patch as supplier_pdf
 
     targets = supplier_pdf._collect_targets(before, after)
+    page_wide_keys = _page_wide_target_keys(before, after, targets, supplier_pdf)
     report = {
         "requested": len(targets),
         "applied": 0,
@@ -342,16 +546,25 @@ def _patch_supplier_pdf_raw(content: bytes, before: dict, after: dict) -> tuple[
         page_replacements: dict[tuple[int, int], bytes] = {}
         page_target_keys: set[str] = set()
         for target in targets:
-            if target.key in applied_keys:
+            if target.key in applied_keys or target.key in page_target_keys:
                 continue
-            if target.page_index is not None and target.page_index != page_index:
+            if not supplier_pdf._target_matches_page(target, page_index, page):
                 continue
-            replacements = _find_raw_replacements(data, target, codecs, supplier_pdf)
+            replacements = _find_raw_replacements(
+                data,
+                target,
+                codecs,
+                supplier_pdf,
+                allow_unlabeled=target.key in page_wide_keys,
+            )
             if not replacements:
                 continue
             for start, end, replacement in replacements:
                 page_replacements[(start, end)] = replacement
-            page_target_keys.add(target.key)
+            if target.key in page_wide_keys:
+                page_target_keys.update(_equivalent_target_keys(target, targets) & page_wide_keys)
+            else:
+                page_target_keys.add(target.key)
 
         if not page_replacements:
             continue

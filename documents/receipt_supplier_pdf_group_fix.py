@@ -52,6 +52,8 @@ def _dedupe_source_targets(targets):
                     target.new,
                 ):
                     continue
+                if existing.page_markers != target.page_markers:
+                    continue
                 existing_aliases = {
                     str(alias).strip().upper()
                     for alias in existing.aliases
@@ -71,6 +73,7 @@ def _dedupe_source_targets(targets):
             existing.new,
             aliases,
             existing.page_index,
+            existing.page_markers,
         )
     return merged
 
@@ -99,7 +102,14 @@ def install_receipt_supplier_pdf_group_fix() -> None:
 
     if not getattr(supplier_pdf._collect_targets, "_group_source_fix", False):
 
-        def collect_targets(before: dict, after: dict, *, page_index: int | None = None, prefix: str = ""):
+        def collect_targets(
+            before: dict,
+            after: dict,
+            *,
+            page_index: int | None = None,
+            prefix: str = "",
+            page_markers: tuple[str, ...] = (),
+        ):
             before = before if isinstance(before, dict) else {}
             after = after if isinstance(after, dict) else {}
 
@@ -119,6 +129,10 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                                 new_child,
                                 page_index=index,
                                 prefix=f"{prefix}receipt[{index}].",
+                                page_markers=(
+                                    supplier_pdf._ticket_page_markers(old_child)
+                                    or supplier_pdf._ticket_page_markers(new_child)
+                                ),
                             )
                         )
                 deduped = {
@@ -147,11 +161,17 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 new = supplier_pdf._decimal(_value(after, key))
                 if key == "fare" and price_mode in {"it", "закрыть как it", "closed_it"}:
                     if old is not None:
-                        targets.append(supplier_pdf.AmountTarget(f"{prefix}fare.it", old, "IT", aliases, page_index))
+                        targets.append(supplier_pdf.AmountTarget(
+                            f"{prefix}fare.it", old, "IT", aliases, page_index, page_markers
+                        ))
                     continue
                 if old is None or new is None or old == new:
                     continue
-                targets.append(supplier_pdf.AmountTarget(f"{prefix}{key}", old, new, aliases, page_index))
+                if old == 0 and key != "total":
+                    continue
+                targets.append(supplier_pdf.AmountTarget(
+                    f"{prefix}{key}", old, new, aliases, page_index, page_markers
+                ))
 
             for breakdown_key, fallback_aliases in breakdowns:
                 old_rows = _value(before, breakdown_key)
@@ -166,6 +186,8 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                     old = supplier_pdf._decimal(old_row.get("amount"))
                     new = supplier_pdf._decimal(new_row.get("amount"))
                     if old is None or new is None or old == new:
+                        continue
+                    if old == 0:
                         continue
                     row_aliases = tuple(
                         str(value).strip()
@@ -184,6 +206,7 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                             new,
                             row_aliases or fallback_aliases,
                             page_index,
+                            page_markers,
                         )
                     )
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from documents.receipt_parser_patch_safe import _json_safe
 
-HARDENING_VERSION = "2026.08.20-v1"
+HARDENING_VERSION = "2026.08.20-v2"
 _CURRENCIES = {"RUB", "USD", "EUR", "KGS", "CNY", "РУБ"}
 _PASSENGER_TITLE = re.compile(
     r"\s+(?:MR|MRS|MS|MSTR|Г-Н|Г-ЖА|Г-Ж|ГОСПОДИН|ГОСПОЖА)$",
@@ -42,6 +42,31 @@ def _pdf_pages(content: bytes) -> list[str]:
         except Exception:
             pages.append("")
     return pages
+
+
+def _page_token(value: Any) -> str:
+    return "".join(character for character in str(value or "").casefold() if character.isalnum())
+
+
+def _receipt_source_page(item: dict, pages: list[str], fallback: int) -> int:
+    page_tokens = [_page_token(page) for page in pages]
+    markers = (
+        item.get("blankId"),
+        item.get("ticketNo"),
+        item.get("ticket_number"),
+        item.get("docNo"),
+        item.get("document_number"),
+        item.get("passenger"),
+        item.get("passenger_name"),
+    )
+    for marker in markers:
+        token = _page_token(marker)
+        if len(token) < 5:
+            continue
+        for page_index, page_token in enumerate(page_tokens):
+            if token in page_token:
+                return page_index
+    return min(max(fallback, 0), max(len(pages) - 1, 0))
 
 
 def _is_bilingual_eticket(text: str) -> bool:
@@ -343,9 +368,12 @@ def install_receipt_structural_hardening() -> None:
                 if not isinstance(item, dict):
                     continue
                 try:
-                    page_index = max(int(item.get("receiptPage") or index + 1) - 1, 0)
+                    fallback_page_index = max(int(item.get("receiptPage") or index + 1) - 1, 0)
                 except (TypeError, ValueError):
-                    page_index = index
+                    fallback_page_index = index
+                page_index = _receipt_source_page(item, pages, fallback_page_index)
+                item["receiptPage"] = page_index + 1
+                item["receipt_page"] = page_index + 1
                 child_text = pages[page_index] if page_index < len(pages) else "\n".join(pages)
                 changed.update(harden_avia_fields(item, child_text))
 

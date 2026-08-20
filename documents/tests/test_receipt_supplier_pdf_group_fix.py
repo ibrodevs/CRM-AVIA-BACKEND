@@ -1,5 +1,8 @@
+import copy
 from io import BytesIO
+from pathlib import Path
 
+import pytest
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
@@ -12,6 +15,8 @@ install_receipt_supplier_pdf_writer_fix()
 install_receipt_supplier_pdf_group_fix()
 
 from documents import receipt_supplier_pdf_patch as supplier_pdf  # noqa: E402
+from documents.receipt_metadata import receipt_verified_data  # noqa: E402
+from documents.services import extract_receipt_fields  # noqa: E402
 
 
 def _grouped_rail_pdf() -> bytes:
@@ -187,3 +192,79 @@ def test_equal_independent_breakdown_rows_are_not_collapsed():
         "taxBreakdown[0]",
         "taxBreakdown[1]",
     }
+
+
+def _client_pdf(name: str) -> Path | None:
+    workspace = Path(__file__).resolve().parents[3]
+    for directory in workspace.iterdir():
+        if directory.is_dir() and directory.name.startswith("PDF"):
+            matches = list(directory.rglob(name))
+            if matches:
+                return matches[0]
+    return None
+
+
+@pytest.mark.skipif(_client_pdf("6RZ483_documents (1).pdf") is None, reason="client PDF folder is not available")
+def test_real_grouped_avia_pdf_finds_ticket_pages_and_preserves_unchanged_fare():
+    """The second blank starts on PDF page three, not ordinal page two."""
+
+    path = _client_pdf("6RZ483_documents (1).pdf")
+    source = path.read_bytes()
+    extraction = extract_receipt_fields(source, mime="application/pdf", name=path.name)
+    before = receipt_verified_data(
+        extraction.get("fields") or {},
+        parser_status=extraction.get("status") or "parsed",
+    )
+    after = copy.deepcopy(before)
+    tickets = copy.deepcopy(after.get("receipts") or after.get("receipt_items") or [])
+    assert len(tickets) == 2
+    assert [ticket.get("receiptPage") for ticket in tickets] == [1, 3]
+
+    # Add a service fee without changing the recognized 6400 fare. Only the
+    # printed payable totals must become 6500 on each real ticket page.
+    for ticket in tickets:
+        ticket["fees"] = "100"
+        ticket["total"] = "6500"
+    after.update({"groupTickets": tickets, "fare": "12800", "fees": "200", "total": "13000"})
+
+    corrected, report = supplier_pdf.patch_supplier_pdf(source, before, after)
+
+    assert corrected is not None
+    assert report["requested"] == report["applied"] == 2
+    source_pages = [page.extract_text() or "" for page in PdfReader(BytesIO(source)).pages]
+    corrected_pages = [page.extract_text() or "" for page in PdfReader(BytesIO(corrected)).pages]
+    assert "MOW SU BQS6400RUB6400END" in corrected_pages[0]
+    assert "MOW SU BQS6400RUB6400END" in corrected_pages[2]
+    assert "6500.00 RUBИтого по тарифу/сборам" in corrected_pages[0]
+    assert "6500.00 RUBИтого по тарифу/сборам" in corrected_pages[2]
+    assert "6500.00 RUBИтого по тарифу/сборам" not in source_pages[0]
+    assert corrected_pages[1] == source_pages[1]
+    assert corrected_pages[3] == source_pages[3]
+
+
+@pytest.mark.skipif(_client_pdf("Калмыков.pdf") is None, reason="client PDF folder is not available")
+def test_real_utair_pdf_rewrites_fare_and_total_inside_original_font_strings():
+    path = _client_pdf("Калмыков.pdf")
+    source = path.read_bytes()
+    extraction = extract_receipt_fields(source, mime="application/pdf", name=path.name)
+    before = receipt_verified_data(
+        extraction.get("fields") or {},
+        parser_status=extraction.get("status") or "parsed",
+    )
+    after = copy.deepcopy(before)
+    after.update({
+        "fare": "8900",
+        "total": "10100",
+        "fareBreakdown": [{"code": "FARE", "label": "Тариф", "amount": "8900", "currency": "RUB"}],
+    })
+
+    corrected, report = supplier_pdf.patch_supplier_pdf(source, before, after)
+
+    assert corrected is not None
+    assert report["requested"] == report["applied"] == 2
+    source_text = PdfReader(BytesIO(source)).pages[0].extract_text() or ""
+    corrected_text = PdfReader(BytesIO(corrected)).pages[0].extract_text() or ""
+    assert "Тариф/Fare 8800.00РУБ" in source_text
+    assert "Тариф/Fare 8900.00РУБ" in corrected_text
+    assert "Итого/Total 10000РУБ" in source_text
+    assert "Итого/Total 10100РУБ" in corrected_text

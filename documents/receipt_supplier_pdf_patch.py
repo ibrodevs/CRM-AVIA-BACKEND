@@ -22,13 +22,22 @@ class AmountTarget:
     new: Decimal | str
     aliases: tuple[str, ...]
     page_index: int | None = None
+    page_markers: tuple[str, ...] = ()
 
 
 _FINANCIAL_FIELDS = (
     ("fare", ("ТАРИФ", "FARE")),
     ("taxes", ("СБОР/TAX", "TAX", "ТАКС")),
     ("fees", ("СБОР АСБ", "СБОР СА", "SERVICE FEE", "FEE", "СБОР")),
-    ("total", ("ВСЕГО К ОПЛАТЕ", "ИТОГО", "TOTAL", "AMOUNT")),
+    ("total", (
+        "ВСЕГО К ОПЛАТЕ",
+        "ИТОГО ПО ТАРИФУ/СБОРАМ",
+        "СУММА ПЛАТЕЖА",
+        "ИТОГО",
+        "TOTAL",
+        "PAYMENT AMOUNT",
+        "AMOUNT",
+    )),
     ("ticketCost", ("БИЛЕТ", "TICKET")),
     ("reservedSeatCost", ("ПЛАЦКАРТА", "RESERVED SEAT")),
     ("agencyServiceFee", ("СЕРВИСНЫЙ СБОР", "SERVICE FEE", "СБОР")),
@@ -66,7 +75,55 @@ def _first_group(data: dict) -> list:
     return []
 
 
-def _collect_targets(before: dict, after: dict, *, page_index: int | None = None, prefix: str = "") -> list[AmountTarget]:
+def _ticket_page_markers(data: dict) -> tuple[str, ...]:
+    if not isinstance(data, dict):
+        return ()
+    values = (
+        _value(data, "blankId"),
+        _value(data, "ticketNo"),
+        data.get("ticket_number"),
+        _value(data, "docNo"),
+        data.get("document_number"),
+        data.get("passenger"),
+        data.get("passenger_name"),
+    )
+    return tuple(dict.fromkeys(str(value).strip() for value in values if str(value or "").strip()))
+
+
+def _page_marker_token(value) -> str:
+    return "".join(character for character in str(value or "").casefold() if character.isalnum())
+
+
+def _target_matches_page(target: AmountTarget, page_index: int, page) -> bool:
+    """Match grouped tickets by their identity, not by their ordinal position.
+
+    A single ticket can span several physical PDF pages. The editor's second
+    blank is therefore not necessarily PDF page two (Aeroflot commonly uses
+    pages 1–2 for ticket one and 3–4 for ticket two). Ticket/document markers
+    locate the actual financial page; the ordinal index remains a fallback for
+    older payloads that do not contain identity fields.
+    """
+
+    if target.page_markers:
+        try:
+            page_text = _page_marker_token(page.extract_text() or "")
+        except Exception:
+            page_text = ""
+        return any(
+            marker and marker in page_text
+            for marker in (_page_marker_token(value) for value in target.page_markers)
+        )
+    return target.page_index is None or target.page_index == page_index
+
+
+def _collect_targets(
+    before: dict,
+    after: dict,
+    *,
+    page_index: int | None = None,
+    prefix: str = "",
+    page_markers: tuple[str, ...] = (),
+) -> list[AmountTarget]:
     targets: list[AmountTarget] = []
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
@@ -77,11 +134,16 @@ def _collect_targets(before: dict, after: dict, *, page_index: int | None = None
         new = _decimal(_value(after, key))
         if key == "fare" and price_mode in {"it", "закрыть как it", "closed_it"}:
             if old is not None:
-                targets.append(AmountTarget(f"{prefix}fare.it", old, "IT", aliases, page_index))
+                targets.append(AmountTarget(f"{prefix}fare.it", old, "IT", aliases, page_index, page_markers))
             continue
         if old is None or new is None or old == new:
             continue
-        targets.append(AmountTarget(f"{prefix}{key}", old, new, aliases, page_index))
+        # A zero-valued component is usually absent from the supplier blank.
+        # Replacing every printed zero is unsafe; the changed payable total is
+        # still patched and reflects the new cost.
+        if old == 0 and key != "total":
+            continue
+        targets.append(AmountTarget(f"{prefix}{key}", old, new, aliases, page_index, page_markers))
     for breakdown_key, fallback_aliases in _BREAKDOWNS:
         old_rows = _value(before, breakdown_key)
         new_rows = _value(after, breakdown_key)
@@ -94,12 +156,21 @@ def _collect_targets(before: dict, after: dict, *, page_index: int | None = None
             new = _decimal(new_row.get("amount"))
             if old is None or new is None or old == new:
                 continue
+            if old == 0:
+                continue
             row_aliases = tuple(
                 str(value).strip()
                 for value in (old_row.get("code"), old_row.get("label"), new_row.get("code"), new_row.get("label"))
                 if str(value or "").strip()
             )
-            targets.append(AmountTarget(f"{prefix}{breakdown_key}[{index}]", old, new, row_aliases or fallback_aliases, page_index))
+            targets.append(AmountTarget(
+                f"{prefix}{breakdown_key}[{index}]",
+                old,
+                new,
+                row_aliases or fallback_aliases,
+                page_index,
+                page_markers,
+            ))
     old_group = _first_group(before)
     new_group = _first_group(after)
     if old_group and new_group:
@@ -107,7 +178,13 @@ def _collect_targets(before: dict, after: dict, *, page_index: int | None = None
             zip(old_group, new_group, strict=False)
         ):
             if isinstance(old_child, dict) and isinstance(new_child, dict):
-                targets.extend(_collect_targets(old_child, new_child, page_index=index, prefix=f"{prefix}receipt[{index}]."))
+                targets.extend(_collect_targets(
+                    old_child,
+                    new_child,
+                    page_index=index,
+                    prefix=f"{prefix}receipt[{index}].",
+                    page_markers=_ticket_page_markers(old_child) or _ticket_page_markers(new_child),
+                ))
     deduped: dict[tuple, AmountTarget] = {}
     for target in targets:
         deduped[(target.key, target.old, target.new, target.page_index)] = target
@@ -297,7 +374,7 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
                 visible = "".join(_decode_text(item, codec) for item in array if isinstance(item, (TextStringObject, ByteStringObject)))
                 context = " ".join(recent_text[-12:])
                 for target in targets:
-                    if target.key in applied_keys or (target.page_index is not None and target.page_index != page_index):
+                    if target.key in applied_keys or not _target_matches_page(target, page_index, page):
                         continue
                     if _replace_combined_text(array, codec, target, context):
                         applied_keys.add(target.key)
@@ -315,7 +392,7 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
                 updated = visible
                 changed_targets: list[str] = []
                 for target in targets:
-                    if target.key in applied_keys or (target.page_index is not None and target.page_index != page_index):
+                    if target.key in applied_keys or not _target_matches_page(target, page_index, page):
                         continue
                     if target.aliases and not any(alias.upper() in context.upper() for alias in target.aliases):
                         continue
