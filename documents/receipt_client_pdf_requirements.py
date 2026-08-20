@@ -62,7 +62,12 @@ def _clean(value: str) -> str:
 
 
 def _person(value: str) -> str:
-    value = re.sub(r"\s+(?:MR|MRS|MS)$", "", _clean(value), flags=re.IGNORECASE)
+    value = re.sub(
+        r"\s+(?:MR|MRS|MS|MSTR|Г-Н|Г-ЖА|Г-Ж|ГОСПОДИН|ГОСПОЖА)$",
+        "",
+        _clean(value),
+        flags=re.IGNORECASE,
+    )
     return _clean(value.replace("/", " "))
 
 
@@ -263,6 +268,7 @@ def _parse_russian_aeroflot_page(text: str) -> dict | None:
                 ("YR", "XT"),
                 ("Сбор системы бронирования", "Аэропортовые/государственные сборы"),
                 tax_amounts,
+                strict=False,
             )
         ],
         "fee_breakdown": [],
@@ -599,6 +605,12 @@ def _parse_modern_aeroflot(text: str) -> dict | None:
     ticket_match = re.search(r"Номер билета\s+Ticket number\s+(\d{3}\s+\d{10}|\d{13})", flat, re.IGNORECASE)
     issue_match = re.search(r"Дата выдачи\s+Date of issue\s+(\d{1,2}\s+[А-Яа-яЁё]+\s+20\d{2})", flat, re.IGNORECASE)
     reference_match = re.search(r"Данные бронирования\s+Booking ref\s+(.+?)\s+Место выдачи", flat, re.IGNORECASE)
+    issuer_match = re.search(
+        r"Выдан\s+от/Issued\s+by\s+(.+?)\s+Дата\s+выдачи",
+        flat,
+        re.IGNORECASE,
+    )
+    source_issuer = _clean(issuer_match.group(1)) if issuer_match else ""
 
     blocks = list(re.finditer(r"Рейс/Flight", text))
     details_start = text.find("Дополнительные детали")
@@ -634,7 +646,7 @@ def _parse_modern_aeroflot(text: str) -> dict | None:
             "dep": block_lines[dep_index],
             "arr": block_lines[arr_index],
             "flightNo": flight_match.group(1) + flight_match.group(2),
-            "carrier": _clean(carrier_match.group(1)) if carrier_match else "АЭРОФЛОТ",
+            "carrier": _clean(carrier_match.group(1)) if carrier_match else source_issuer,
             "cls": "",
             "status": status_match.group(1) if status_match else "",
             "fareBasis": fare_basis_match.group(1) if fare_basis_match else "",
@@ -648,7 +660,11 @@ def _parse_modern_aeroflot(text: str) -> dict | None:
     fare_calculation = re.search(r"Расчет тарифа/Fare calculation\s+([A-Z0-9 ]+?)\s+Тариф/Fare", flat, re.IGNORECASE)
     route_codes = []
     if fare_calculation:
-        route_codes = re.findall(r"\b[A-Z]{3}\b", fare_calculation.group(1))
+        route_codes = re.findall(
+            r"(?<![A-Z])([A-Z]{3})(?=(?:\s|\d|RUB|USD|EUR|END|$))",
+            fare_calculation.group(1).upper(),
+        )
+        route_codes = [code for code in route_codes if code not in {"RUB", "USD", "EUR", "END"}]
     if len(route_codes) >= len(segments) + 1:
         for index, segment in enumerate(segments):
             segment["fromCode"] = route_codes[index]
@@ -692,7 +708,10 @@ def _parse_modern_aeroflot(text: str) -> dict | None:
     baggage_values = list(dict.fromkeys(segment["baggage"] for segment in segments if segment["baggage"]))
     statuses = list(dict.fromkeys(segment["status"] for segment in segments if segment["status"]))
     return {
-        "issuer": "АЭРОФЛОТ",
+        "issuer": source_issuer or next(
+            (segment["carrier"] for segment in segments if segment.get("carrier")),
+            "",
+        ),
         "passenger_name": passenger,
         "passengers": [{"name": passenger, "dob": "", "document": document_number, "ticketNo": ticket_number}],
         "reference": booking_reference,

@@ -26,6 +26,7 @@ class DocumentsConfig(AppConfig):
         from documents.receipt_supplier_pdf_group_fix import install_receipt_supplier_pdf_group_fix
         from documents.receipt_supplier_pdf_patch import install_receipt_supplier_pdf_patch
         from documents.receipt_supplier_pdf_writer_fix import install_receipt_supplier_pdf_writer_fix
+        from documents.receipt_structural_hardening import install_receipt_structural_hardening
         from documents.receipt_tax_columns_patch import install_receipt_tax_columns_patch
         from documents.receipt_ticket_level_patch import install_receipt_ticket_level_patch
 
@@ -57,6 +58,10 @@ class DocumentsConfig(AppConfig):
         # ticket/issuer/date values come after their three labels. Resolve that
         # exact supplier layout after generic finalization and before storage.
         install_receipt_red_wings_patch()
+        # Resolve labels and financial values from the actual PDF after all
+        # supplier-specific parsers. This prevents a shared visual template
+        # from inheriting the airline or amounts of the first known sample.
+        install_receipt_structural_hardening()
         # Ticket-level storage consumes the final parser result.
         install_receipt_ticket_level_patch()
         # Run after ticket-level storage so review status/progress is preserved
