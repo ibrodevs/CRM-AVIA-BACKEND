@@ -17,9 +17,22 @@ RU_MONTHS = {
     "ИЮЛ": 7,
     "АВГ": 8,
     "СЕН": 9,
+    "СЕНТ": 9,
     "ОКТ": 10,
     "НОЯ": 11,
     "ДЕК": 12,
+    "JAN": 1,
+    "FEB": 2,
+    "MAR": 3,
+    "APR": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUL": 7,
+    "AUG": 8,
+    "SEP": 9,
+    "OCT": 10,
+    "NOV": 11,
+    "DEC": 12,
 }
 RU_MONTH_NAMES = {
     "января": 1,
@@ -59,7 +72,7 @@ def _time(value: str) -> str:
 
 
 def _compact_date(value: str, year: int) -> str:
-    match = re.fullmatch(r"(\d{1,2})([А-ЯЁ]{3})(\d{2,4})?", (value or "").upper())
+    match = re.fullmatch(r"(\d{1,2})([А-ЯЁA-Z]{3,4})(\d{2,4})?", (value or "").upper())
     if not match:
         return ""
     day, month_name, parsed_year = match.groups()
@@ -117,7 +130,10 @@ def _parse_russian_aeroflot_page(text: str) -> dict | None:
     Parsing the pages separately is important: merging their text used to lose
     the second passenger and all six segment attributes requested by the client.
     """
-    if "Маршрутная квитанция электронного билета" not in text or "№ эл.билета" not in text:
+    if (
+        "Маршрутная квитанция электронного билета" not in text
+        or not re.search(r"(?:№|No)\s*эл\.билета", text, re.IGNORECASE)
+    ):
         return None
     flat = _clean(text)
     issue_match = re.search(r"(\d{1,2}\s+[А-Яа-яЁё]+\s+20\d{2})", text)
@@ -126,46 +142,65 @@ def _parse_russian_aeroflot_page(text: str) -> dict | None:
         flat,
     )
     document_match = re.search(r"Документ:\s*(\d{6,16})", flat)
-    ticket_match = re.search(r"№\s*эл\.билета:\s*(\d{13})", flat, re.IGNORECASE)
+    ticket_match = re.search(r"(?:№|No)\s*эл\.билета:\s*(\d{13})", flat, re.IGNORECASE)
     reference_match = re.search(r"Код бронирования\*?\s*([A-Z0-9]{5,8})\b", flat, re.IGNORECASE)
     route_match = re.search(
         r"Код бронирования\*?\s*[A-Z0-9]{5,8}\s+(.+?)\s+(.+?)\s+Рейс:\s*([A-Z]{2})\s*(\d{2,5})",
         flat,
         re.IGNORECASE,
     )
-    dep_match = re.search(
-        r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.?\s+(20\d{2})\s+(\d{2}:\d{2})\s+([A-Z]{3})(?:\s+([A-Z0-9]))?",
-        flat,
-        re.IGNORECASE,
+    flight_block_match = re.search(
+        r"Рейс:\s*[A-Z]{2}\s*\d{2,5}(.+?)(?=Тип ВС:|Класс:)", flat, re.IGNORECASE
     )
-    arr_match = re.search(
-        r"(\d{1,2})\s+([А-Яа-яЁё]{3})\.?\s+(20\d{2})\s+Перевозчик:.+?\b([A-Z]{3})\s+(\d{2}:\d{2})",
-        flat,
-        re.IGNORECASE,
-    )
-    carrier_match = re.search(r"Перевозчик:\s*([^*]+?)\*", flat, re.IGNORECASE)
+    flight_block = flight_block_match.group(1) if flight_block_match else ""
+    flight_dates = re.findall(r"(\d{1,2})\s+([А-Яа-яЁё]{3,4})\.?\s+(20\d{2})", flight_block)
+    flight_times = re.findall(r"\b(\d{2}:\d{2})\b", flight_block)
+    airport_matches = re.findall(r"\b([A-Z]{3})(?:\s+([A-Z0-9]))?\b", flight_block)
+    carrier_match = re.search(r"Перевозчик:\s*(.+?)(?=\s+Вид тарифа:|\*)", flat, re.IGNORECASE)
     class_match = re.search(r"Класс:\s*([^/]+?)\s*/\s*([A-Z0-9]+)", flat, re.IGNORECASE)
     fare_basis_match = re.search(r"Вид тарифа:\s*([A-Z0-9-]+)", flat, re.IGNORECASE)
     status_match = re.search(r"Статус:\s*([^\n]+?)(?=\s+Провоз багажа:)", flat, re.IGNORECASE)
-    baggage_match = re.search(r"Провоз багажа:\s*(.+?)(?=\s+Посадка заканчивается)", flat, re.IGNORECASE)
-    fare_match = re.search(r"Тариф\s+RUB\s*([\d\s]+(?:[,.]\d{1,2})?)", flat, re.IGNORECASE)
+    baggage_match = re.search(
+        r"Провоз багажа:\s*(.+?)(?=\s+(?:Нормы провоза ручной клади|Посадка заканчивается))",
+        flat,
+        re.IGNORECASE,
+    )
+    fare_match = re.search(r"\b[A-Z]{3}\s+SU\s+[A-Z]{3}(\d+(?:[,.]\d{1,2})?)RUB", flat, re.IGNORECASE)
+    if not fare_match:
+        fare_match = re.search(r"Тариф\s+RUB\s*([\d\s]+(?:[,.]\d{1,2})?)", flat, re.IGNORECASE)
     total_match = re.search(r"Итого по тарифу/сборам\s*([\d\s]+(?:[,.]\d{1,2})?)\s*RUB", flat, re.IGNORECASE)
-    if not all((passenger_match, ticket_match, route_match, dep_match, arr_match)):
+    hand_baggage_match = re.search(
+        r"Нормы провоза ручной клади:\s*(.+?)(?=\s+СВЕДЕНИЯ ОБ ОПЛАТЕ)", flat, re.IGNORECASE
+    )
+    dob_match = re.search(r"\bDOB(\d{2})([A-Z]{3})(\d{2})\b", flat, re.IGNORECASE)
+    payment_block_match = re.search(
+        r"Вид предоставляемой услуги(.+?)Итого по тарифу/сборам", flat, re.IGNORECASE
+    )
+    payment_amounts = re.findall(
+        r"RUB\s*([\d\s]+(?:[,.]\d{1,2})?)",
+        payment_block_match.group(1) if payment_block_match else "",
+        re.IGNORECASE,
+    )
+    if not all((passenger_match, ticket_match, route_match, flight_dates, len(flight_times) >= 2, len(airport_matches) >= 2)):
         return None
 
     fare = _decimal(fare_match.group(1)) if fare_match else Decimal("0")
     total = _decimal(total_match.group(1)) if total_match else fare
     cabin = _clean(class_match.group(1)) if class_match else ""
     booking_class = class_match.group(2).upper() if class_match else ""
+    origin_airport, destination_airport = airport_matches[0], airport_matches[1]
+    origin_code = origin_airport[0] + (f" {origin_airport[1]}" if origin_airport[1] else "")
+    destination_code = destination_airport[0] + (f" {destination_airport[1]}" if destination_airport[1] else "")
+    arrival_date_parts = flight_dates[1] if len(flight_dates) > 1 else flight_dates[0]
     segment = {
         "from": _clean(route_match.group(1)),
-        "fromCode": dep_match.group(5).upper() + (f" {dep_match.group(6).upper()}" if dep_match.group(6) else ""),
+        "fromCode": origin_code.upper(),
         "to": _clean(route_match.group(2)),
-        "toCode": arr_match.group(4).upper(),
-        "date": _russian_short_date(*dep_match.groups()[:3]),
-        "endDate": _russian_short_date(*arr_match.groups()[:3]),
-        "dep": dep_match.group(4),
-        "arr": arr_match.group(5),
+        "toCode": destination_code.upper(),
+        "date": _russian_short_date(*flight_dates[0]),
+        "endDate": _russian_short_date(*arrival_date_parts),
+        "dep": flight_times[0],
+        "arr": flight_times[1],
         "flightNo": route_match.group(3).upper() + route_match.group(4),
         "carrier": _clean(carrier_match.group(1)) if carrier_match else "",
         "cls": booking_class,
@@ -178,31 +213,58 @@ def _parse_russian_aeroflot_page(text: str) -> dict | None:
     passenger = _person(passenger_match.group(1))
     ticket = ticket_match.group(1)
     document = document_match.group(1) if document_match else ""
+    date_of_birth = ""
+    if dob_match:
+        birth_year = int(dob_match.group(3))
+        birth_year += 1900 if birth_year > 30 else 2000
+        date_of_birth = _compact_date(f"{dob_match.group(1)}{dob_match.group(2)}{birth_year}", birth_year)
     issue_date = _named_date(issue_match.group(1)) if issue_match else ""
     reference = reference_match.group(1).upper() if reference_match else ""
+    tax_amounts = [_decimal(value) for value in payment_amounts[1:3]]
+    taxes = total - fare if total >= fare else Decimal("0")
+    hand_baggage = ""
+    if hand_baggage_match:
+        baggage_rule = _clean(hand_baggage_match.group(1))
+        weight = re.search(r"одно место весом не более\s*(\d+)\s*кг", baggage_rule, re.IGNORECASE)
+        dimensions = re.search(
+            r"(\d+)\s*см\s+в длину,\s*(\d+)\s*см\s+в ширину,\s*(\d+)\s*см\s+в высоту",
+            baggage_rule,
+            re.IGNORECASE,
+        )
+        if weight:
+            hand_baggage = f"1 место до {weight.group(1)} кг"
+            if dimensions:
+                hand_baggage += f" ({dimensions.group(1)}×{dimensions.group(2)}×{dimensions.group(3)} см)"
     return {
         "issuer": "АЭРОФЛОТ",
         "passenger_name": passenger,
-        "passengers": [{"name": passenger, "dob": "", "document": document, "ticketNo": ticket}],
+        "passengers": [{"name": passenger, "dob": date_of_birth, "document": document, "ticketNo": ticket}],
         "reference": reference,
         "ticket_number": ticket,
         "document_number": document,
-        "date_of_birth": "",
+        "date_of_birth": date_of_birth,
         "issue_date": issue_date,
         "booking_class": booking_class,
         "booking_status": segment["status"],
         "fare_basis": segment["fareBasis"],
         "baggage": segment["baggage"],
-        "hand_baggage": "",
+        "hand_baggage": hand_baggage,
         "fare": fare,
-        "taxes": Decimal("0"),
-        "fees": total - fare if total >= fare else Decimal("0"),
+        "taxes": taxes,
+        "fees": Decimal("0"),
         "total": total,
         "originalTotal": total,
         "currency": "RUB",
         "segments": [segment],
         "fare_breakdown": [{"code": "FARE", "label": "Тариф", "amount": str(fare), "currency": "RUB"}],
-        "tax_breakdown": [],
+        "tax_breakdown": [
+            {"code": code, "label": label, "amount": str(amount), "currency": "RUB"}
+            for code, label, amount in zip(
+                ("YR", "XT"),
+                ("Сбор системы бронирования", "Аэропортовые/государственные сборы"),
+                tax_amounts,
+            )
+        ],
         "fee_breakdown": [],
         "service_kind": "avia",
         "service_type": "Авиа",

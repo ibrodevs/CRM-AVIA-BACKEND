@@ -241,6 +241,32 @@ def test_rzd_card_payment_layout_deduplicates_name_and_splits_full_cost():
     assert fields["segments"][0]["seat"] == "032"
 
 
+def test_rzd_single_vat_header_before_amounts_splits_ticket_and_reserved_seat():
+    text = """
+    ЭЛЕКТРОННЫЙ БИЛЕТ. КОНТРОЛЬНЫЙ КУПОН
+    № 76 764 996 544 932
+    ПОЕЗД ВАГОН МЕСТО 101 101 05 05 027 027
+    06:55 27.09.2026 10:22 27.09.2026
+    ПАСПОРТ РФ 7812978035 24.03.1968 RUS М
+    ТРИФОНОВ АЛЕКСАНДР ОЛЕГОВИЧ
+    Посадка в поезд осуществляется
+    101ЯА 27.09.2026 06:55 05С 027 ЯРОСЛАВЛЬ-ГЛАВНЫЙ - МОСКВА ЯРОСЛАВСКАЯ ПН7812978035
+    Заказ: 76764996544932
+    Перевозчик: ФПК СЕВ-ЗАПАДНЫЙ / ФПК ИНН 7708709686
+    Оплата наличными
+    Билет Плацкарта НДС 0%
+    568,10 ₽ 657,50 ₽ 0,00 ₽
+    Итого Вкл. НДС 1 225,60 ₽ 1 225,60 ₽
+    """
+
+    fields = _rail(text)
+
+    assert fields is not None
+    assert fields["ticketCost"] == Decimal("568.10")
+    assert fields["reservedSeatCost"] == Decimal("657.50")
+    assert fields["total"] == Decimal("1225.60")
+
+
 def test_rzd_group_coupon_control_line_with_star_marker_is_parsed():
     text = """
     ЭЛЕКТРОННЫЙ БИЛЕТ. КОНТРОЛЬНЫЙ КУПОН

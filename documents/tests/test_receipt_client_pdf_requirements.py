@@ -378,3 +378,45 @@ def test_russian_aeroflot_group_keeps_each_passenger_and_all_segment_fields():
         "fareBasis": "PCDSOC", "cabin": "Эконом", "baggage": "1 место до 23 кг", "dir": "out",
     }
     assert parsed["total"] == Decimal("12800.00")
+
+
+def test_current_aeroflot_no_ticket_layout_reads_hand_baggage_and_real_fare():
+    text = """18 августа 2026
+Маршрутная квитанция электронного билета
+TRIFONOV ALEKSANDR OLEGOVICH
+Документ: 7812978035
+No эл.билета: 5552400122919
+Код бронирования* G5N9D1
+Москва
+Волгоград
+Рейс: SU 1182
+27 сент. 2026 14:55 SVO B
+27 сент. 2026 16:50 VOG C2
+Перевозчик: Аэрофлот
+Вид тарифа: GCOR
+Тип ВС: Airbus A320
+Класс: Эконом / G
+Статус: Оформлен
+Провоз багажа: 1 место до 23 кг
+Нормы провоза ручной клади: класс Эконом и класс Комфорт – одно место весом не более 10 кг. Габариты одного места ручной клади для всех классов обслуживания не должны превышать: 55 см в длину, 40 см в ширину, 25 см в высоту.
+СВЕДЕНИЯ ОБ ОПЛАТЕ
+P7812978035/DOB24MAR68/INCL
+MOW SU VOG11070RUB11070END
+Вид предоставляемой услуги Авиаперевозка RUB 11070.00
+Сбор за предоставление услуг автоматизированных систем бронирования (YR) RUB 122.00
+Аэропортовые/государственные сборы (XT) RUB 535.00
+Итого по тарифу/сборам 11727.00 RUB
+"""
+
+    parsed = _parse_russian_aeroflot_group(text)
+
+    assert parsed is not None
+    assert parsed["ticket_number"] == "5552400122919"
+    assert parsed["date_of_birth"] == "24.03.1968"
+    assert parsed["hand_baggage"] == "1 место до 10 кг (55×40×25 см)"
+    assert parsed["fare"] == Decimal("11070")
+    assert parsed["taxes"] == Decimal("657.00")
+    assert parsed["fees"] == Decimal("0")
+    assert parsed["total"] == Decimal("11727.00")
+    assert parsed["segments"][0]["from"] == "Москва"
+    assert parsed["segments"][0]["to"] == "Волгоград"

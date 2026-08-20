@@ -606,7 +606,7 @@ def _rail(text):
     )
     fare_block = re.search(
         r"Оплата\s+(?:наличными|банковской\s+картой)(?:\s+\*+\d+)?\s+Билет\s+Плацкарта\s+"
-        r"НДС\s*\d+(?:[,.]\d+)?%\s+НДС\s*\d+(?:[,.]\d+)?%\s+"
+        r"(?:НДС\s*\d+(?:[,.]\d+)?%\s+)+"
         r"(?P<body>.+?)\s+Итого",
         flat,
         re.I,
@@ -616,6 +616,19 @@ def _rail(text):
         if fare_block
         else []
     )
+    # Some current RZD coupons print the table headers (including "Итого")
+    # before all monetary values.  In that layout the first two values still
+    # belong to "Билет" and "Плацкарта" respectively.
+    if len(fare_parts) < 2:
+        current_fare_block = re.search(
+            r"Оплата\s+(?:наличными|банковской\s+картой)(?:\s+\*+\d+)?\s+"
+            r"Билет\s+Плацкарта\s+(?:НДС\s*\d+(?:[,.]\d+)?%\s+)+"
+            r"Итого\s+Вкл\.\s*НДС\s+(?P<body>(?:\d[\d ]*[,.]\d{2}\s*₽\s*){4,7})",
+            flat,
+            re.I,
+        )
+        if current_fare_block:
+            fare_parts = re.findall(r"(\d[\d ]*[,.]\d{2})\s*₽", current_fare_block.group("body"))
     totals = re.findall(r"Вкл\. НДС\s+([\d ]+[,.]\d{2})\s*₽", flat, re.I)
     if not (passenger and journey):
         return None
