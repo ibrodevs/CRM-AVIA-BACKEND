@@ -17,6 +17,19 @@ def person(tenant, admin_user):
 
 
 @pytest.fixture
+def company(tenant, admin_user):
+    from crm.models import Company
+
+    return Company.objects.create(
+        tenant=tenant,
+        legal_name="ОсОО Тестовая компания",
+        short_name="Тестовая компания",
+        tax_id="12345678901234",
+        created_by=admin_user,
+    )
+
+
+@pytest.fixture
 def order(admin_client, person):
     return admin_client.post(
         "/api/v1/orders/",
@@ -421,6 +434,83 @@ class TestDocuments:
             "Стоимость плацкарты"
         )
         assert document.metadata["receipt_import"]["stage"] == "confirmed"
+
+    def test_receipt_editor_update_can_bind_document_to_company(
+        self,
+        admin_client,
+        tenant,
+        admin_user,
+        company,
+    ):
+        document = Document.objects.create(
+            tenant=tenant,
+            kind=Document.Kind.TICKET,
+            title="ЖД-билет",
+            created_by=admin_user,
+        )
+
+        response = admin_client.post(
+            f"/api/v1/documents/{document.id}/receipt/",
+            {
+                "company": str(company.id),
+                "verified_data": {
+                    "service_kind": "rail",
+                    "service_type": "ЖД",
+                    "passenger": "ИВАНОВ ИВАН",
+                    "total": "2877.70",
+                    "currency": "RUB",
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.content
+        document.refresh_from_db()
+        assert document.company_id == company.id
+        assert response.json()["company"] == str(company.id)
+
+    def test_receipt_import_confirm_can_bind_directly_to_company(
+        self,
+        admin_client,
+        company,
+    ):
+        imported = admin_client.post(
+            "/api/v1/receipt-imports/",
+            {
+                "file": upload_file(
+                    "company_rail_receipt.txt",
+                    (
+                        "Услуга: rail\n"
+                        "Пассажир: ИВАНОВ ИВАН\n"
+                        "Маршрут: МОСКВА → КАЗАНЬ\n"
+                        "Итого: 2877.70 RUB\n"
+                    ).encode(),
+                )
+            },
+            format="multipart",
+        )
+        assert imported.status_code == 201, imported.content
+
+        response = admin_client.post(
+            f"/api/v1/receipt-imports/{imported.json()['id']}/confirm/",
+            {
+                "company": str(company.id),
+                "fare": "2877.70",
+                "taxes": "0",
+                "fees": "0",
+                "currency": "RUB",
+                "service_type": "ЖД",
+                "create_services": False,
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.content
+        document = Document.objects.get(pk=response.json()["document_id"])
+        assert document.company_id == company.id
+        assert document.order_id is None
+        assert document.service_id is None
+        assert response.json()["company"] == str(company.id)
 
     def test_receipt_editor_close_saves_unconfirmed_draft(self, admin_client):
         from documents.models import ReceiptImportJob

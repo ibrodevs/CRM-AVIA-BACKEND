@@ -273,6 +273,21 @@ class DocumentReceiptUpdateView(APIView):
             else:
                 document.person = None
 
+        if "company" in request.data:
+            company_id = request.data.get("company")
+            if company_id:
+                from crm.models import Company
+
+                company = Company.objects.filter(
+                    pk=company_id,
+                    tenant_id=request.user.tenant_id,
+                ).first()
+                if company is None:
+                    raise ApiError(code="NOT_FOUND", message="Юрлицо не найдено", status_code=404)
+                document.company = company
+            else:
+                document.company = None
+
         save_as_draft = bool(request.data.get("draft"))
         verified = receipt_verified_data(
             verified_input,
@@ -313,7 +328,9 @@ class DocumentReceiptUpdateView(APIView):
                 ) from None
         document.currency = str(verified.get("currency") or document.currency or "")
         document.source = "corrected"
-        document.save(update_fields=["order", "person", "amount", "currency", "source", "metadata"])
+        document.save(
+            update_fields=["order", "person", "company", "amount", "currency", "source", "metadata"]
+        )
         audit(
             "documents.receipt_draft_saved" if save_as_draft else "documents.receipt_updated",
             actor=request.user,
@@ -557,12 +574,26 @@ class ReceiptImportConfirmView(APIView):
             raise ApiError(code="ALREADY_CONFIRMED", message="Черновик уже подтверждён", status_code=409)
         data = request.data
         order = None
+        person = None
+        company = None
         if order_id := data.get("order"):
             from orders.models import Order
 
             order = Order.objects.filter(pk=order_id, tenant_id=request.user.tenant_id).first()
             if order is None:
                 raise ApiError(code="NOT_FOUND", message="Заказ не найден", status_code=404)
+        if person_id := data.get("person"):
+            from crm.models import Person
+
+            person = Person.objects.filter(pk=person_id, tenant_id=request.user.tenant_id).first()
+            if person is None:
+                raise ApiError(code="NOT_FOUND", message="Физлицо не найдено", status_code=404)
+        if company_id := data.get("company"):
+            from crm.models import Company
+
+            company = Company.objects.filter(pk=company_id, tenant_id=request.user.tenant_id).first()
+            if company is None:
+                raise ApiError(code="NOT_FOUND", message="Юрлицо не найдено", status_code=404)
         currency = str(data.get("currency", "USD"))
         fare = Decimal(str(data.get("fare", "0")))
         taxes = Decimal(str(data.get("taxes", "0")))
@@ -618,6 +649,8 @@ class ReceiptImportConfirmView(APIView):
                 created_by=request.user,
             )
             document.order = order
+            document.person = person
+            document.company = company
             document.kind = document_kind
             document.title = document_title
             document.source = "corrected"
@@ -709,7 +742,20 @@ class ReceiptImportConfirmView(APIView):
                 )
                 document.service = service
                 document.metadata["receipt_import"]["created_service"] = str(service.id)
-            document.save(update_fields=["order", "service", "kind", "title", "source", "amount", "currency", "metadata"])
+            document.save(
+                update_fields=[
+                    "order",
+                    "service",
+                    "person",
+                    "company",
+                    "kind",
+                    "title",
+                    "source",
+                    "amount",
+                    "currency",
+                    "metadata",
+                ]
+            )
             draft.result_document = document
             draft.save()
             content = (
@@ -728,4 +774,13 @@ class ReceiptImportConfirmView(APIView):
                 correction_diff=document.metadata["receipt_import"]["corrected_fields"],
             )
         audit("documents.receipt_confirmed", actor=request.user, resource=document, request=request)
-        return Response({"document_id": str(document.id), "total": str(total), "currency": currency})
+        return Response(
+            {
+                "document_id": str(document.id),
+                "total": str(total),
+                "currency": currency,
+                "order": str(document.order_id) if document.order_id else None,
+                "person": str(document.person_id) if document.person_id else None,
+                "company": str(document.company_id) if document.company_id else None,
+            }
+        )
