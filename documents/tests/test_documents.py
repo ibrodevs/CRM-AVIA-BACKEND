@@ -469,6 +469,65 @@ class TestDocuments:
         assert document.company_id == company.id
         assert response.json()["company"] == str(company.id)
 
+    def test_receipt_preview_pdf_sync_is_queued_and_coalesced(
+        self,
+        admin_client,
+        tenant,
+        admin_user,
+    ):
+        from django.core.management import call_command
+
+        from common.models import BackgroundJob
+        from documents.receipt_supplier_pdf_patch import SUPPLIER_PDF_SYNC_JOB
+
+        document = Document.objects.create(
+            tenant=tenant,
+            kind=Document.Kind.ITINERARY_RECEIPT,
+            title="Маршрут-квитанция",
+            created_by=admin_user,
+        )
+        payload = {
+            "draft": True,
+            "preview_sync": True,
+            "verified_data": {
+                "service_kind": "avia",
+                "fare": "100.00",
+                "taxes": "20.00",
+                "fees": "5.00",
+                "total": "125.00",
+                "currency": "USD",
+            },
+        }
+
+        first = admin_client.post(
+            f"/api/v1/documents/{document.id}/receipt/",
+            payload,
+            format="json",
+        )
+        payload["verified_data"]["total"] = "130.00"
+        second = admin_client.post(
+            f"/api/v1/documents/{document.id}/receipt/",
+            payload,
+            format="json",
+        )
+
+        assert first.status_code == 200, first.content
+        assert second.status_code == 200, second.content
+        first_correction = first.json()["supplier_pdf_correction"]
+        second_correction = second.json()["supplier_pdf_correction"]
+        assert first_correction["status"] == "queued"
+        assert second_correction["job_id"] == first_correction["job_id"]
+        assert BackgroundJob.objects.filter(
+            kind=SUPPLIER_PDF_SYNC_JOB,
+            payload__document_id=str(document.id),
+        ).count() == 1
+
+        call_command("run_jobs", "--once", "--worker-id", "receipt-pdf-test")
+        job = BackgroundJob.objects.get(pk=first_correction["job_id"])
+        assert job.status == BackgroundJob.Status.SUCCEEDED
+        assert job.result["status"] == "unsupported"
+        assert job.result["document_id"] == str(document.id)
+
     def test_receipt_import_confirm_can_bind_directly_to_company(
         self,
         admin_client,

@@ -10,6 +10,8 @@ from django.http import FileResponse
 from rest_framework.views import APIView
 
 from accounts.permissions import require
+from common.jobs import enqueue, job_handler
+from common.models import BackgroundJob
 from documents.models import ReceiptImportJob
 from documents.receipt_metadata import json_safe, receipt_verified_data
 from documents.selectors import get_document_or_404
@@ -534,6 +536,55 @@ def _sync_supplier_pdf(document, base_verified: dict, corrected_verified: dict, 
     return result
 
 
+SUPPLIER_PDF_SYNC_JOB = "documents.supplier_pdf.sync"
+
+
+def _enqueue_supplier_pdf_sync(document, request) -> BackgroundJob:
+    """Keep at most one queued follow-up behind a currently running PDF job.
+
+    Every job reads the latest verified document metadata, so reusing a queued
+    job coalesces rapid editor changes without losing the final state.
+    """
+
+    queued = BackgroundJob.objects.filter(
+        tenant_id=document.tenant_id,
+        kind=SUPPLIER_PDF_SYNC_JOB,
+        status=BackgroundJob.Status.QUEUED,
+        payload__document_id=str(document.id),
+    ).order_by("created_at").first()
+    if queued is not None:
+        return queued
+    return enqueue(
+        SUPPLIER_PDF_SYNC_JOB,
+        {"document_id": str(document.id)},
+        priority=40,
+        request=request,
+        tenant_id=document.tenant_id,
+    )
+
+
+@job_handler(SUPPLIER_PDF_SYNC_JOB, max_attempts=3, retryable=True, user_cancellable=False)
+def sync_supplier_pdf_job(job: BackgroundJob) -> dict:
+    from documents.models import Document
+
+    document_id = job.payload.get("document_id")
+    document = Document.objects.filter(pk=document_id, tenant_id=job.tenant_id).first()
+    if document is None:
+        return {"status": "missing", "document_id": str(document_id or "")}
+    metadata = document.metadata or {}
+    supplier_original = metadata.get("supplier_original") or {}
+    receipt_import = metadata.get("receipt_import") or {}
+    corrected = supplier_original.get("verified_data") or receipt_import.get("verified_data") or {}
+    base_verified = _base_verified_from_document(document)
+    result = _sync_supplier_pdf(
+        document,
+        base_verified,
+        corrected if isinstance(corrected, dict) else {},
+        job.initiated_by or document.updated_by or document.created_by,
+    )
+    return {**result, "document_id": str(document.id)}
+
+
 def install_receipt_supplier_pdf_patch() -> None:
     from documents import views
     if getattr(views.DocumentReceiptUpdateView.post, "_supplier_pdf_patch", False):
@@ -542,6 +593,21 @@ def install_receipt_supplier_pdf_patch() -> None:
     original_confirm = views.ReceiptImportConfirmView.post
 
     def update_post(self, request, document_id):
+        if request.data.get("preview_sync"):
+            response = original_update(self, request, document_id)
+            document = get_document_or_404(request.user, document_id)
+            job = _enqueue_supplier_pdf_sync(document, request)
+            try:
+                from documents.serializers import DocumentSerializer
+
+                response.data = DocumentSerializer(document).data
+                response.data["supplier_pdf_correction"] = {
+                    "status": "queued",
+                    "job_id": str(job.id),
+                }
+            except Exception:
+                pass
+            return response
         document_before = get_document_or_404(request.user, document_id)
         base_verified = _base_verified_from_document(document_before)
         response = original_update(self, request, document_id)
