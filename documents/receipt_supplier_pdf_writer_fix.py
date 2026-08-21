@@ -4,6 +4,251 @@ import re
 from io import BytesIO
 
 
+def _layout_lines(content: bytes):
+    """Return page text lines and exact character boxes for visual fallback."""
+
+    from pdfminer.high_level import extract_pages
+    from pdfminer.layout import LTChar, LTContainer, LTTextLine
+
+    def walk(node):
+        if isinstance(node, LTTextLine):
+            yield node
+            return
+        if isinstance(node, LTContainer):
+            for child in node:
+                yield from walk(child)
+
+    pages = []
+    for page_index, layout in enumerate(extract_pages(BytesIO(content))):
+        lines = []
+        for line in walk(layout):
+            characters = [child for child in line if isinstance(child, LTChar)]
+            if not characters:
+                continue
+            lines.append({
+                "page": page_index,
+                "text": line.get_text(),
+                "characters": characters,
+                "bbox": line.bbox,
+            })
+        pages.append(lines)
+    return pages
+
+
+def _token(value) -> str:
+    return "".join(character for character in str(value or "").casefold() if character.isalnum())
+
+
+def _amount_boxes(line, target, supplier_pdf):
+    characters = line["characters"]
+    visible = "".join(character.get_text() for character in characters)
+    boxes = []
+    for variant in supplier_pdf._amount_variants(target.old):
+        compact_variant = variant.replace(" ", "")
+        pattern = re.compile(r"(?<!\d)" + re.escape(compact_variant) + r"(?!\d)")
+        for match in pattern.finditer(visible.replace(" ", "")):
+            compact_visible = visible.replace(" ", "")
+            if match.end() < len(compact_visible) and re.match(
+                r"[.,]\d", compact_visible[match.end() : match.end() + 2]
+            ):
+                continue
+            # Amounts contain only digits, separators and optional grouping
+            # spaces.  PDFMiner usually exposes grouping spaces as LTChar; map
+            # compact offsets back to the original character positions.
+            compact_positions = [
+                index for index, character in enumerate(visible) if character != " "
+            ]
+            if match.end() > len(compact_positions):
+                continue
+            start = compact_positions[match.start()]
+            end = compact_positions[match.end() - 1]
+            selected = characters[start : end + 1]
+            boxes.append((
+                min(character.x0 for character in selected),
+                min(character.y0 for character in selected),
+                max(character.x1 for character in selected),
+                max(character.y1 for character in selected),
+                visible[start : end + 1],
+            ))
+        if boxes:
+            break
+    return boxes
+
+
+def _overlay_text_width(text: str, font_size: float) -> float:
+    widths = {".": 0.28, ",": 0.28, " ": 0.28, "I": 0.28, "T": 0.61, "-": 0.33}
+    return sum(widths.get(character, 0.56) for character in text) * font_size
+
+
+def _pdf_literal(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _is_financial_alias_line(target, line_text: str) -> bool:
+    key = target.key.rsplit(".", 1)[-1]
+    token = _token(line_text)
+    if key == "ticketCost":
+        return "тариф" in token or "fare" in token
+    if key == "reservedSeatCost":
+        return "тариф" in token or "fare" in token or "reservation" in token
+    return True
+
+
+def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
+    """Visually replace amounts when a supplier's font cannot be re-encoded.
+
+    The fallback is deliberately all-or-nothing. PDFMiner must locate every
+    requested old value next to its financial label on the intended ticket
+    page. Only those exact character boxes are covered; new numeric text is
+    then painted in a standard PDF font. The source bytes are never modified.
+    """
+
+    from pypdf import PdfReader
+    from pypdf.generic import (
+        DecodedStreamObject,
+        DictionaryObject,
+        NameObject,
+    )
+
+    from documents import receipt_supplier_pdf_patch as supplier_pdf
+
+    targets = supplier_pdf._collect_targets(before, after)
+    report = {
+        "requested": len(targets),
+        "applied": 0,
+        "replacements": 0,
+        "unapplied": [],
+        "font_preserved": True,
+        "source_immutable": True,
+        "strategy": "labeled_visual_overlay",
+        "fallback": True,
+    }
+    if not targets:
+        return None, report
+    try:
+        pages = _layout_lines(content)
+    except Exception as exc:
+        report["layout_error"] = type(exc).__name__
+        report["unapplied"] = [target.key for target in targets]
+        return None, report
+
+    claimed: dict[tuple[int, float, float, float, float], tuple[str, str]] = {}
+    overlays: dict[int, list[tuple[float, float, float, float, str]]] = {}
+    applied_keys: set[str] = set()
+    for target in targets:
+        target_matches = []
+        for page_index, lines in enumerate(pages):
+            page_text = _token(" ".join(line["text"] for line in lines))
+            if target.page_markers and not any(_token(marker) in page_text for marker in target.page_markers):
+                continue
+            if not target.page_markers and target.page_index is not None and target.page_index != page_index:
+                continue
+            candidates = [
+                box
+                for line in lines
+                for box in _amount_boxes(line, target, supplier_pdf)
+            ]
+            if not candidates:
+                continue
+            alias_lines = [
+                line for line in lines
+                if _is_financial_alias_line(target, line["text"])
+                and any(_token(alias) and _token(alias) in _token(line["text"]) for alias in target.aliases)
+            ]
+            selected = []
+            for alias_line in alias_lines:
+                alias_y = (alias_line["bbox"][1] + alias_line["bbox"][3]) / 2
+                nearby = sorted(
+                    candidates,
+                    key=lambda box: (
+                        abs(((box[1] + box[3]) / 2) - alias_y),
+                        abs(box[0] - alias_line["bbox"][2]),
+                    ),
+                )
+                if nearby and abs(((nearby[0][1] + nearby[0][3]) / 2) - alias_y) <= 35:
+                    selected.append(nearby[0])
+            if not selected and len(candidates) == 1:
+                selected = candidates
+            for box in selected:
+                if box not in target_matches:
+                    target_matches.append((page_index, *box))
+
+        new_texts = []
+        conflict = False
+        for page_index, x0, y0, x1, y1, template in target_matches:
+            new_text = supplier_pdf._format_like(template, target.new)
+            identity = (page_index, round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3))
+            previous = claimed.get(identity)
+            if previous and previous[1] != new_text:
+                conflict = True
+                break
+            new_texts.append((identity, page_index, x0, y0, x1, y1, new_text))
+        if conflict or not new_texts:
+            continue
+        for identity, page_index, x0, y0, x1, y1, new_text in new_texts:
+            claimed[identity] = (target.key, new_text)
+            overlay = (x0, y0, x1, y1, new_text)
+            if overlay not in overlays.setdefault(page_index, []):
+                overlays[page_index].append(overlay)
+        applied_keys.add(target.key)
+
+    report["unapplied"] = [target.key for target in targets if target.key not in applied_keys]
+    if report["unapplied"]:
+        return None, report
+
+    reader = PdfReader(BytesIO(content), strict=False)
+    font_name = NameObject("/CRMCorrection")
+    for page_index, page_overlays in overlays.items():
+        page = reader.pages[page_index]
+        resources = page.get("/Resources")
+        if resources is None:
+            resources = DictionaryObject()
+            page[NameObject("/Resources")] = resources
+        else:
+            resources = resources.get_object()
+        fonts = resources.get("/Font")
+        if fonts is None:
+            fonts = DictionaryObject()
+            resources[NameObject("/Font")] = fonts
+        else:
+            fonts = fonts.get_object()
+        fonts[font_name] = DictionaryObject({
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        })
+
+        commands = []
+        for x0, y0, x1, y1, new_text in page_overlays:
+            height = max(y1 - y0, 1)
+            font_size = max(height * 0.88, 5)
+            text_width = _overlay_text_width(new_text, font_size)
+            text_x = x1 - text_width
+            cover_x = min(x0, text_x) - 0.8
+            cover_width = max(x1, text_x + text_width) - cover_x + 0.8
+            commands.append(
+                f"q 1 1 1 rg {cover_x:.3f} {y0 - 0.8:.3f} {cover_width:.3f} {height + 1.6:.3f} re f Q\n"
+                f"BT /CRMCorrection {font_size:.3f} Tf 0 0 0 rg {text_x:.3f} {y0 + height * 0.10:.3f} Td "
+                f"({_pdf_literal(new_text)}) Tj ET\n"
+            )
+        overlay_data = "".join(commands).encode("ascii")
+        contents = page.get_contents()
+        if contents is None:
+            original_data = b""
+        else:
+            original_data = contents.get_data()
+        combined_stream = DecodedStreamObject()
+        # Supplier generators sometimes leave a scale/flip CTM active at the
+        # end of their stream. Isolate it so PDFMiner's page coordinates map
+        # directly to the correction overlay.
+        combined_stream.set_data(b"q\n" + original_data + b"\nQ\n" + overlay_data)
+        page[NameObject("/Contents")] = combined_stream
+        report["replacements"] += len(page_overlays)
+
+    report["applied"] = len(applied_keys)
+    return _write_reader_pages(reader), report
+
+
 def _replace_combined_text_all(
     array,
     codec,
@@ -600,6 +845,14 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
         structured_error = type(exc).__name__
 
     corrected, report = _patch_supplier_pdf_raw(content, before, after)
+    if corrected is None:
+        overlay_corrected, overlay_report = _patch_supplier_pdf_overlay(content, before, after)
+        if overlay_corrected is not None:
+            if structured_error:
+                overlay_report["structured_error"] = structured_error
+            if report.get("unapplied"):
+                overlay_report["raw_unapplied"] = report["unapplied"]
+            return overlay_corrected, overlay_report
     if structured_error:
         report["structured_error"] = structured_error
     elif structured_report and structured_report.get("unapplied"):

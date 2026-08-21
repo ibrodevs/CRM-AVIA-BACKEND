@@ -116,7 +116,12 @@ def receipt_issues(fields: dict, status: str, source_text: str = "") -> list[str
             fare_basis = segment.get("fareBasis") or segment.get("fare_basis")
             # Air Serbia's exact client sample prints no fare-basis code. It is
             # correct to keep this field empty instead of shifting 1PC into it.
-            if not present(fare_basis) and "air serbia" not in issuer:
+            source_has_fare_basis = bool(re.search(
+                r"(?:fare\s+basis|код\s+тарифа)|\b[A-Z0-9-]{2,20}\s+(?:ECONOMY|BUSINESS)\b",
+                source_text,
+                re.IGNORECASE,
+            ))
+            if not present(fare_basis) and "air serbia" not in issuer and source_has_fare_basis:
                 issues.append(f"segment_{index}_fare_basis")
             baggage = str(segment.get("baggage") or "").strip()
             if not present(baggage):

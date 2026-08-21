@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
-from io import BytesIO
 from typing import Any
 
 from documents.receipt_parser_patch_safe import _json_safe
 
-HARDENING_VERSION = "2026.08.20-v2"
+HARDENING_VERSION = "2026.08.21-v3"
 _CURRENCIES = {"RUB", "USD", "EUR", "KGS", "CNY", "РУБ"}
 _PASSENGER_TITLE = re.compile(
     r"\s+(?:MR|MRS|MS|MSTR|Г-Н|Г-ЖА|Г-Ж|ГОСПОДИН|ГОСПОЖА)$",
@@ -29,19 +28,25 @@ def _decimal(value: Any) -> Decimal | None:
 
 
 def _pdf_pages(content: bytes) -> list[str]:
+    # Some client PDFs contain malformed text arrays: viewers and pdfminer can
+    # read them, while pypdf raises during ``extract_text``. Reuse the same
+    # resilient per-page selection as the grouping engine so final hardening is
+    # never silently skipped for exactly those supplier files.
     try:
-        from pypdf import PdfReader
+        from documents.receipt_multiform_patch import _page_texts
 
-        reader = PdfReader(BytesIO(content), strict=False)
+        pypdf_pages, pdfminer_pages = _page_texts(content)
+        count = max(len(pypdf_pages), len(pdfminer_pages))
+        # Prefer pypdf whenever it successfully exposes the page because its
+        # row order is better for route columns. Use pdfminer only for pages
+        # whose malformed stream makes pypdf return no text.
+        return [
+            (pypdf_pages[index] if index < len(pypdf_pages) else "")
+            or (pdfminer_pages[index] if index < len(pdfminer_pages) else "")
+            for index in range(count)
+        ]
     except Exception:
         return []
-    pages: list[str] = []
-    for page in reader.pages:
-        try:
-            pages.append(page.extract_text() or "")
-        except Exception:
-            pages.append("")
-    return pages
 
 
 def _page_token(value: Any) -> str:
@@ -91,7 +96,53 @@ def _source_issuer(text: str) -> str:
         flat,
         re.IGNORECASE,
     )
-    return _clean(match.group(1)) if match else ""
+    if match:
+        return _clean(match.group(1))
+    # Older TCH-style receipts print four labels first and their values below:
+    # ``ВЫДАН ОТ / НОМЕР БИЛЕТА / ... / : RYANAIR / : 1111484695``.
+    old_form = re.search(
+        r"ВЫДАН\s+ОТ\s+НОМЕР\s+БИЛЕТА\s+В\s+ОБМЕН\s+НА\s+"
+        r"ПЕРВОН\.?\s+ВЫДАН\s*:\s*(.+?)\s*:\s*(?:\d{3}\s+)?\d{10}\b",
+        flat,
+        re.IGNORECASE,
+    )
+    return _clean(old_form.group(1)).strip(":") if old_form else ""
+
+
+def _source_ticket_number(text: str) -> str:
+    flat = _clean(text)
+    old_form = re.search(
+        r"ВЫДАН\s+ОТ\s+НОМЕР\s+БИЛЕТА\s+В\s+ОБМЕН\s+НА\s+"
+        r"ПЕРВОН\.?\s+ВЫДАН\s*:\s*.+?\s*:\s*((?:\d{3}\s+)?\d{10})\b",
+        flat,
+        re.IGNORECASE,
+    )
+    if old_form:
+        return _clean(old_form.group(1))
+    labeled = re.search(
+        r"(?:НОМЕР\s+БИЛЕТА|TICKET\s+NUMBER)\s*:?\s*((?:\d{3}\s+)?\d{10})\b",
+        flat,
+        re.IGNORECASE,
+    )
+    return _clean(labeled.group(1)) if labeled else ""
+
+
+def _source_document_number(text: str) -> str:
+    flat = _clean(text)
+    old_form = re.search(
+        r"ФАМИЛИЯ\s*:.+?\b([A-ZА-ЯЁ]{1,4}\s*\d{6,14})\b.+?ОТПРВ/НАЗН",
+        flat,
+        re.IGNORECASE,
+    )
+    if old_form:
+        return re.sub(r"\s+", "", old_form.group(1))
+    labeled = re.search(
+        r"(?:ДОКУМЕНТ|ПАСПОРТ|DOCUMENT)\s*(?:№|NO|NUMBER)?\s*:?\s*"
+        r"([A-ZА-ЯЁ]{0,4}\s*\d{6,14})\b",
+        flat,
+        re.IGNORECASE,
+    )
+    return re.sub(r"\s+", "", labeled.group(1)) if labeled else ""
 
 
 def _clean_passenger_name(value: Any) -> str:
@@ -261,6 +312,66 @@ def _repair_finances(fields: dict, text: str) -> bool:
     return True
 
 
+def harden_rail_fields(fields: dict, text: str) -> set[str]:
+    """Read the printed ticket/reserved-seat split from modern RZD coupons."""
+
+    changed: set[str] = set()
+    if not isinstance(fields, dict) or str(fields.get("service_kind") or "").lower() != "rail":
+        return changed
+    flat = _clean(text)
+    ticket_match = re.search(
+        r"Тариф\s+билета\s*,?\s*руб\.?\s*"
+        r"(?:Fare\s+ticket\s*,?\s*RUB\s*)?(\d[\d ]*(?:[,.]\d{1,2})?)",
+        flat,
+        re.IGNORECASE,
+    )
+    reserved_match = re.search(
+        r"Тариф\s+плацкарт[аы]\s*,?\s*руб\.?\s*"
+        r"(?:Fare\s+reservation\s*,?\s*RUB\s*)?(\d[\d ]*(?:[,.]\d{1,2})?)",
+        flat,
+        re.IGNORECASE,
+    )
+    total_match = re.search(
+        r"Цена\s*,?\s*руб\.?\s*(?:Price\s*,?\s*RUB\s*)?"
+        r"(\d[\d ]*(?:[,.]\d{1,2})?)",
+        flat,
+        re.IGNORECASE,
+    )
+    combined_match = re.search(
+        r"Тариф\s*\(\s*билет\s*,\s*плацкарт[аы]?\s*\)"
+        r".{0,320}?(\d[\d ]*(?:[,.]\d{1,2})?)\s*/\s*"
+        r"(\d[\d ]*(?:[,.]\d{1,2})?)",
+        flat,
+        re.IGNORECASE,
+    )
+    ticket = _decimal(ticket_match.group(1)) if ticket_match else None
+    reserved = _decimal(reserved_match.group(1)) if reserved_match else None
+    if combined_match and (ticket is None or reserved is None):
+        ticket = _decimal(combined_match.group(1))
+        reserved = _decimal(combined_match.group(2))
+    total = _decimal(total_match.group(1)) if total_match else None
+    if ticket is None or reserved is None:
+        return changed
+    calculated = ticket + reserved
+    # Printed components are authoritative. Preserve a separately printed total
+    # only when it reconciles; otherwise surface the mathematically safe sum.
+    payable = total if total is not None and abs(total - calculated) <= Decimal("0.01") else calculated
+    values = {
+        "ticketCost": ticket,
+        "reservedSeatCost": reserved,
+        "fare": ticket,
+        "fees": reserved,
+        "total": payable,
+        "originalTotal": payable,
+        "currency": "RUB",
+    }
+    for key, value in values.items():
+        if fields.get(key) != value:
+            fields[key] = value
+            changed.add(key)
+    return changed
+
+
 def harden_avia_fields(fields: dict, text: str) -> set[str]:
     """Repair values by document labels, independently of passenger-specific data."""
 
@@ -273,17 +384,33 @@ def harden_avia_fields(fields: dict, text: str) -> set[str]:
         fields["issuer"] = issuer
         changed.add("issuer")
 
+    ticket_number = _source_ticket_number(text)
+    if ticket_number and ticket_number != fields.get("ticket_number"):
+        fields["ticket_number"] = ticket_number
+        changed.add("ticket_number")
+
+    document_number = _source_document_number(text)
+    if document_number and document_number != fields.get("document_number"):
+        fields["document_number"] = document_number
+        changed.add("document_number")
+
     passenger = _clean_passenger_name(fields.get("passenger_name"))
     if passenger and passenger != fields.get("passenger_name"):
         fields["passenger_name"] = passenger
         changed.add("passenger_name")
     passengers = fields.get("passengers") if isinstance(fields.get("passengers"), list) else []
-    for row in passengers:
+    for index, row in enumerate(passengers):
         if not isinstance(row, dict):
             continue
         clean_name = _clean_passenger_name(row.get("name"))
         if clean_name and clean_name != row.get("name"):
             row["name"] = clean_name
+            changed.add("passengers")
+        if index == 0 and ticket_number and row.get("ticketNo") != ticket_number:
+            row["ticketNo"] = ticket_number
+            changed.add("passengers")
+        if index == 0 and document_number and row.get("document") != document_number:
+            row["document"] = document_number
             changed.add("passengers")
 
     if not _is_bilingual_eticket(text):
@@ -328,6 +455,8 @@ def _sync_raw(result: dict, fields: dict, changed: set[str]) -> None:
         "issuer",
         "passenger_name",
         "passengers",
+        "ticket_number",
+        "document_number",
         "segments",
         "fare",
         "taxes",
@@ -338,6 +467,10 @@ def _sync_raw(result: dict, fields: dict, changed: set[str]) -> None:
         "fare_breakdown",
         "tax_breakdown",
         "fee_breakdown",
+        "ticketCost",
+        "reservedSeatCost",
+        "agencyServiceFee",
+        "additionalFees",
     ):
         if key in fields:
             raw[key] = _json_safe(fields[key])
@@ -355,13 +488,17 @@ def install_receipt_structural_hardening() -> None:
         if not isinstance(result, dict) or not (mime == "application/pdf" or content.startswith(b"%PDF")):
             return result
         fields = result.get("fields")
-        if not isinstance(fields, dict) or str(fields.get("service_kind") or "").lower() != "avia":
+        if not isinstance(fields, dict):
+            return result
+        service_kind = str(fields.get("service_kind") or "").lower()
+        if service_kind not in {"avia", "rail"}:
             return result
         pages = _pdf_pages(content)
         if not pages:
             return result
 
-        changed = harden_avia_fields(fields, "\n".join(pages))
+        hardener = harden_rail_fields if service_kind == "rail" else harden_avia_fields
+        changed = hardener(fields, "\n".join(pages))
         items = fields.get("receipt_items") or fields.get("receipts") or []
         if isinstance(items, list) and items:
             for index, item in enumerate(items):
@@ -375,7 +512,9 @@ def install_receipt_structural_hardening() -> None:
                 item["receiptPage"] = page_index + 1
                 item["receipt_page"] = page_index + 1
                 child_text = pages[page_index] if page_index < len(pages) else "\n".join(pages)
-                changed.update(harden_avia_fields(item, child_text))
+                item_kind = str(item.get("service_kind") or service_kind).lower()
+                item_hardener = harden_rail_fields if item_kind == "rail" else harden_avia_fields
+                changed.update(item_hardener(item, child_text))
 
         _sync_raw(result, fields, changed)
         return result

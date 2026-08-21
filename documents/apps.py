@@ -14,6 +14,7 @@ class DocumentsConfig(AppConfig):
         from documents.receipt_multiform_patch import install_receipt_multiform_patch
         from documents.receipt_ocr_fallback import install_receipt_ocr_fallback
         from documents.receipt_parser_patch_safe import install_receipt_parser_patch
+        from documents.receipt_pdf_grouping import install_receipt_pdf_grouping
         from documents.receipt_preflight_patch import install_receipt_preflight_patch
         from documents.receipt_problem_formats_patch import install_receipt_problem_formats_patch
         from documents.receipt_quality_guard import install_receipt_quality_guard
@@ -62,6 +63,11 @@ class DocumentsConfig(AppConfig):
         # supplier-specific parsers. This prevents a shared visual template
         # from inheriting the airline or amounts of the first known sample.
         install_receipt_structural_hardening()
+        # Canonical post-parser grouping is the final recognition layer. It
+        # splits both aviation and railway PDFs into independent child tickets,
+        # deduplicates continuation pages and corrects strong rail evidence
+        # before ticket-level persistence consumes the result.
+        install_receipt_pdf_grouping()
         # Ticket-level storage consumes the final parser result.
         install_receipt_ticket_level_patch()
         # Run after ticket-level storage so review status/progress is preserved

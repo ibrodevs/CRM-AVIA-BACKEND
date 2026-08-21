@@ -1,4 +1,5 @@
 import copy
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 
@@ -120,6 +121,25 @@ def test_grouped_rail_targets_ignore_parent_aggregates_and_child_aliases():
     assert not any(target.key.endswith(".fare") or target.key.endswith(".fees") for target in targets)
 
 
+def test_rail_printed_fee_components_are_updated_with_the_total():
+    before = _group_payload()
+    after = copy.deepcopy(before)
+    before["groupTickets"][0]["agencyServiceFee"] = "100"
+    before["groupTickets"][0]["additionalFees"] = "50"
+    before["groupTickets"][0]["total"] = "4969.20"
+    after["groupTickets"][0]["agencyServiceFee"] = "150"
+    after["groupTickets"][0]["additionalFees"] = "75"
+    after["groupTickets"][0]["total"] = "5044.20"
+
+    targets = supplier_pdf._collect_targets(before, after)
+
+    assert {target.key for target in targets} == {
+        "receipt[0].agencyServiceFee",
+        "receipt[0].additionalFees",
+        "receipt[0].total",
+    }
+
+
 def test_grouped_rail_supplier_pdf_changes_only_edited_ticket_page():
     source = _grouped_rail_pdf()
     before = _group_payload()
@@ -192,6 +212,13 @@ def test_equal_independent_breakdown_rows_are_not_collapsed():
         "taxBreakdown[0]",
         "taxBreakdown[1]",
     }
+
+
+def test_amount_variants_preserve_one_decimal_supplier_precision():
+    variants = supplier_pdf._amount_variants(Decimal("3324.9"))
+
+    assert "3 324.9" in variants
+    assert "3324.9" in variants
 
 
 def _client_pdf(name: str) -> Path | None:

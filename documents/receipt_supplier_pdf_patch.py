@@ -194,7 +194,11 @@ def _collect_targets(
 def _amount_variants(value: Decimal) -> list[str]:
     result: set[str] = set()
     absolute = abs(value)
-    for decimals in (0, 2):
+    source_decimals = max(-absolute.as_tuple().exponent, 0)
+    decimal_counts = {0, 2}
+    if 0 < source_decimals <= 4:
+        decimal_counts.add(source_decimals)
+    for decimals in sorted(decimal_counts):
         if decimals == 0 and absolute != absolute.to_integral_value():
             continue
         rendered = f"{absolute:.{decimals}f}"

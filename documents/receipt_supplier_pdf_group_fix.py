@@ -143,7 +143,17 @@ def install_receipt_supplier_pdf_group_fix() -> None:
 
             is_rail = _looks_like_rail_ticket(before) or _looks_like_rail_ticket(after)
             if is_rail:
-                allowed = {"ticketCost", "reservedSeatCost", "total"}
+                # Patch every printed rail component, not only the payable
+                # total. Zero-valued components are still skipped by the safe
+                # collector because inserting a field absent from the source
+                # layout would be ambiguous.
+                allowed = {
+                    "ticketCost",
+                    "reservedSeatCost",
+                    "agencyServiceFee",
+                    "additionalFees",
+                    "total",
+                }
                 financial_fields = [row for row in supplier_pdf._FINANCIAL_FIELDS if row[0] in allowed]
                 breakdowns = ()
             else:
@@ -157,6 +167,11 @@ def install_receipt_supplier_pdf_group_fix() -> None:
             output = _value(after, "output")
             price_mode = str(output.get("priceMode") or output.get("price_mode") or "").strip().lower() if isinstance(output, dict) else ""
             for key, aliases in financial_fields:
+                if is_rail and key == "total":
+                    # Railway coupons often print both ``Цена`` and ``Итого``.
+                    # Both are payable-total representations and must change in
+                    # the corrected copy together.
+                    aliases = tuple(dict.fromkeys((*aliases, "ЦЕНА")))
                 old = supplier_pdf._decimal(_value(before, key))
                 new = supplier_pdf._decimal(_value(after, key))
                 if key == "fare" and price_mode in {"it", "закрыть как it", "closed_it"}:
