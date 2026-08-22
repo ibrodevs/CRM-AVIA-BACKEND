@@ -3,6 +3,7 @@ import zlib
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 
 from documents.models import Document
 
@@ -527,6 +528,86 @@ class TestDocuments:
         assert job.status == BackgroundJob.Status.SUCCEEDED
         assert job.result["status"] == "unsupported"
         assert job.result["document_id"] == str(document.id)
+
+    def test_receipt_preview_pdf_sync_returns_inline_result_without_polling(
+        self,
+        admin_client,
+        tenant,
+        admin_user,
+    ):
+        from common.models import BackgroundJob
+        from documents.receipt_supplier_pdf_patch import SUPPLIER_PDF_SYNC_JOB
+
+        document = Document.objects.create(
+            tenant=tenant,
+            kind=Document.Kind.ITINERARY_RECEIPT,
+            title="Маршрут-квитанция",
+            created_by=admin_user,
+        )
+        with override_settings(SYNC_JOB_KINDS=(SUPPLIER_PDF_SYNC_JOB,)):
+            response = admin_client.post(
+                f"/api/v1/documents/{document.id}/receipt/",
+                {
+                    "draft": True,
+                    "preview_sync": True,
+                    "verified_data": {
+                        "service_kind": "avia",
+                        "fare": "100.00",
+                        "taxes": "20.00",
+                        "fees": "5.00",
+                        "total": "125.00",
+                        "currency": "USD",
+                    },
+                },
+                format="json",
+            )
+
+        assert response.status_code == 200, response.content
+        correction = response.json()["supplier_pdf_correction"]
+        assert correction["status"] == "unsupported"
+        assert "job_id" not in correction
+        job = BackgroundJob.objects.get(kind=SUPPLIER_PDF_SYNC_JOB)
+        assert job.status == BackgroundJob.Status.SUCCEEDED
+
+    def test_existing_receipt_uses_saved_import_snapshot_for_pdf_sync(
+        self,
+        tenant,
+        admin_user,
+    ):
+        from documents.models import ReceiptDraft, ReceiptImportJob
+        from documents.receipt_supplier_pdf_patch import _base_verified_from_document
+
+        document = Document.objects.create(
+            tenant=tenant,
+            kind=Document.Kind.ITINERARY_RECEIPT,
+            title="Существующая квитанция",
+            created_by=admin_user,
+        )
+        import_job = ReceiptImportJob.objects.create(
+            tenant=tenant,
+            guessed_type="avia",
+            parser_status="parsed",
+            raw_extraction={"service_kind": "avia", "fare": "100.00", "total": "125.00"},
+        )
+        ReceiptDraft.objects.create(
+            tenant=tenant,
+            import_job=import_job,
+            created_by=admin_user,
+            fare="100.00",
+            taxes="20.00",
+            fees="5.00",
+            total="125.00",
+            currency="USD",
+        )
+        document.metadata = {"receipt_import": {"import_id": str(import_job.id)}}
+        document.save(update_fields=["metadata"])
+
+        verified = _base_verified_from_document(document)
+
+        assert verified["fare"] == "100.00"
+        assert verified["taxes"] == "20.00"
+        assert verified["fees"] == "5.00"
+        assert verified["total"] == "125.00"
 
     def test_receipt_import_confirm_can_bind_directly_to_company(
         self,

@@ -574,6 +574,27 @@ def _base_verified_from_document(document) -> dict:
     cached = supplier.get("base_verified_data")
     if isinstance(cached, dict) and cached:
         return cached
+    receipt_import = metadata.get("receipt_import") or {}
+    import_id = receipt_import.get("import_id")
+    import_job = None
+    if import_id:
+        import_job = (
+            ReceiptImportJob.objects.select_related("draft")
+            .filter(pk=import_id, tenant_id=document.tenant_id)
+            .first()
+        )
+    if import_job is None:
+        import_job = (
+            ReceiptImportJob.objects.select_related("draft")
+            .filter(file_version__document_id=document.id, tenant_id=document.tenant_id)
+            .order_by("created_at")
+            .first()
+        )
+    draft = getattr(import_job, "draft", None) if import_job else None
+    if draft is not None:
+        verified = _draft_base_verified(draft, import_job.parser_status)
+        if verified:
+            return verified
     original = document.versions.filter(mime_type="application/pdf").order_by("version").first()
     if original is None:
         return {}
@@ -719,10 +740,11 @@ def install_receipt_supplier_pdf_patch() -> None:
                 from documents.serializers import DocumentSerializer
 
                 response.data = DocumentSerializer(document).data
-                response.data["supplier_pdf_correction"] = {
-                    "status": "queued",
-                    "job_id": str(job.id),
-                }
+                response.data["supplier_pdf_correction"] = (
+                    job.result
+                    if job.status == BackgroundJob.Status.SUCCEEDED and isinstance(job.result, dict)
+                    else {"status": "queued", "job_id": str(job.id)}
+                )
             except Exception:
                 pass
             return response

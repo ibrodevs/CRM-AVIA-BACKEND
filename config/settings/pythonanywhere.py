@@ -23,6 +23,11 @@ if DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3":
     SYNC_JOB_KINDS = (
         "services.search",
         "orders.cancel",
+        # PythonAnywhere free hosting has no persistent run_jobs worker. The
+        # receipt import stores its recognition snapshot up front, so this job
+        # only performs a local, short PDF text replacement and can safely run
+        # inside the request instead of remaining queued forever.
+        "documents.supplier_pdf.sync",
     )
 else:
     SYNC_JOB_KINDS = ()

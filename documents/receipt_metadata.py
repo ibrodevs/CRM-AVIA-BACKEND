@@ -286,6 +286,13 @@ def receipt_document_metadata(
         "mime": mime,
         "size": size,
         "verified_data": verified,
+        # Keep the immutable recognition snapshot next to the supplier source.
+        # PDF price corrections can then compare against the original values
+        # without running OCR again inside the preview request.
+        "base_verified_data": (
+            ((current or {}).get("supplier_original") or {}).get("base_verified_data")
+            or verified
+        ),
     }
     receipt_import = {
         **((current or {}).get("receipt_import") or {}),
