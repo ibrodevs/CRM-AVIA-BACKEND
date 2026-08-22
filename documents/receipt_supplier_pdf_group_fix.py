@@ -17,6 +17,25 @@ def _looks_like_rail_ticket(data: dict) -> bool:
     )
 
 
+def _service_kind(before: dict, after: dict) -> str:
+    raw = str(
+        _value(after, "serviceKind")
+        or _value(before, "serviceKind")
+        or _value(after, "serviceType")
+        or _value(before, "serviceType")
+        or ""
+    ).strip().casefold()
+    if raw in {"rail", "жд", "железнодорожный билет"}:
+        return "rail"
+    if raw in {"hotel", "гостиница", "отель"}:
+        return "hotel"
+    if raw in {"transfer", "трансфер"}:
+        return "transfer"
+    if raw in {"avia", "авиа", "авиабилет"}:
+        return "avia"
+    return "other"
+
+
 def _dedupe_source_targets(targets):
     """Collapse aggregate/detail aliases that point to one printed amount.
 
@@ -74,6 +93,7 @@ def _dedupe_source_targets(targets):
             aliases,
             existing.page_index,
             existing.page_markers,
+            existing.required or target.required,
         )
     return merged
 
@@ -141,7 +161,14 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 }
                 return list(deduped.values())
 
-            is_rail = _looks_like_rail_ticket(before) or _looks_like_rail_ticket(after)
+            kind = _service_kind(before, after)
+            # Hotel/transfer editors share service-fee field names with rail.
+            # Explicit recognition wins; use the field-shape fallback only for
+            # legacy payloads where the service kind is genuinely absent.
+            is_rail = kind == "rail" or (
+                kind == "other"
+                and (_looks_like_rail_ticket(before) or _looks_like_rail_ticket(after))
+            )
             if is_rail:
                 # Patch every printed rail component, not only the payable
                 # total. Zero-valued components are still skipped by the safe
@@ -156,6 +183,24 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 }
                 financial_fields = [row for row in supplier_pdf._FINANCIAL_FIELDS if row[0] in allowed]
                 breakdowns = ()
+            elif kind in {"hotel", "transfer"}:
+                # Hotel and transfer editors keep their supplier price in the
+                # compatibility ``fare`` field as well. Use that source value,
+                # but recognize the labels used by vouchers instead of treating
+                # every non-rail document as an airline ticket.
+                allowed = {
+                    "fare",
+                    "taxes",
+                    "fees",
+                    "agencyServiceFee",
+                    "additionalFees",
+                    "markup",
+                    "discount",
+                    "commission",
+                    "total",
+                }
+                financial_fields = [row for row in supplier_pdf._FINANCIAL_FIELDS if row[0] in allowed]
+                breakdowns = supplier_pdf._BREAKDOWNS
             else:
                 # Generic supplier PDFs (primarily aviation) use fare/tax/fee/total.
                 # Do not let rail-only compatibility fields become accidental targets.
@@ -166,12 +211,37 @@ def install_receipt_supplier_pdf_group_fix() -> None:
             targets = []
             output = _value(after, "output")
             price_mode = str(output.get("priceMode") or output.get("price_mode") or "").strip().lower() if isinstance(output, dict) else ""
+            aggregate_breakdowns = {
+                "fare": "fareBreakdown",
+                "taxes": "taxBreakdown",
+                "fees": "feeBreakdown",
+            }
+            service_component_keys = {
+                "agencyServiceFee",
+                "additionalFees",
+                "markup",
+                "discount",
+                "commission",
+            }
+            service_components_changed = any(
+                supplier_pdf._decimal(_value(before, component))
+                != supplier_pdf._decimal(_value(after, component))
+                for component in service_component_keys
+                if supplier_pdf._decimal(_value(before, component)) is not None
+                and supplier_pdf._decimal(_value(after, component)) is not None
+            )
             for key, aliases in financial_fields:
                 if is_rail and key == "total":
                     # Railway coupons often print both ``Цена`` and ``Итого``.
                     # Both are payable-total representations and must change in
                     # the corrected copy together.
                     aliases = tuple(dict.fromkeys((*aliases, "ЦЕНА")))
+                elif kind in {"hotel", "transfer"} and key == "fare":
+                    voucher_aliases = next(
+                        (field_aliases for field, field_aliases in supplier_pdf._FINANCIAL_FIELDS if field == "supplierCost"),
+                        (),
+                    )
+                    aliases = tuple(dict.fromkeys((*aliases, *voucher_aliases)))
                 old = supplier_pdf._decimal(_value(before, key))
                 new = supplier_pdf._decimal(_value(after, key))
                 if key == "fare" and price_mode in {"it", "закрыть как it", "closed_it"}:
@@ -184,8 +254,13 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                     continue
                 if old == 0 and key != "total":
                     continue
+                breakdown_key = aggregate_breakdowns.get(key)
+                required = not (
+                    (breakdown_key and supplier_pdf._breakdown_changed(before, after, breakdown_key))
+                    or (kind in {"hotel", "transfer"} and key == "fees" and service_components_changed)
+                )
                 targets.append(supplier_pdf.AmountTarget(
-                    f"{prefix}{key}", old, new, aliases, page_index, page_markers
+                    f"{prefix}{key}", old, new, aliases, page_index, page_markers, required
                 ))
 
             for breakdown_key, fallback_aliases in breakdowns:
@@ -193,11 +268,7 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 new_rows = _value(after, breakdown_key)
                 if not isinstance(old_rows, list) or not isinstance(new_rows, list):
                     continue
-                for index, (old_row, new_row) in enumerate(
-                    zip(old_rows, new_rows, strict=False)
-                ):
-                    if not isinstance(old_row, dict) or not isinstance(new_row, dict):
-                        continue
+                for index, old_row, new_row in supplier_pdf._paired_breakdown_rows(old_rows, new_rows):
                     old = supplier_pdf._decimal(old_row.get("amount"))
                     new = supplier_pdf._decimal(new_row.get("amount"))
                     if old is None or new is None or old == new:

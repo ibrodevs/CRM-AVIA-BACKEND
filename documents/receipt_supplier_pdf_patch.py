@@ -25,11 +25,24 @@ class AmountTarget:
     aliases: tuple[str, ...]
     page_index: int | None = None
     page_markers: tuple[str, ...] = ()
+    # Derived aggregate values (for example ``taxes`` when individual tax
+    # rows are present) are useful when the supplier prints an aggregate too,
+    # but their absence must not block safe updates of the real rows + total.
+    required: bool = True
 
 
 _FINANCIAL_FIELDS = (
     ("fare", ("ТАРИФ", "FARE")),
-    ("taxes", ("СБОР/TAX", "TAX", "ТАКС")),
+    ("taxes", (
+        "ТАКСЫ ПЕРЕВОЗЧИКА",
+        "СБОРЫ ПЕРЕВОЗЧИКА",
+        "CARRIER TAXES",
+        "CARRIER TAX",
+        "СБОР/TAX",
+        "TAXES",
+        "TAX",
+        "ТАКС",
+    )),
     ("fees", ("СБОР АСБ", "СБОР СА", "SERVICE FEE", "FEE", "СБОР")),
     ("total", (
         "ВСЕГО К ОПЛАТЕ",
@@ -44,6 +57,21 @@ _FINANCIAL_FIELDS = (
     ("reservedSeatCost", ("ПЛАЦКАРТА", "RESERVED SEAT")),
     ("agencyServiceFee", ("СЕРВИСНЫЙ СБОР", "SERVICE FEE", "СБОР")),
     ("additionalFees", ("ДОПОЛНИТЕЛЬНЫЕ СБОРЫ", "ADDITIONAL", "СБОР")),
+    ("supplierCost", (
+        "СТОИМОСТЬ ПОСТАВЩИКА",
+        "СТОИМОСТЬ ПРОЖИВАНИЯ",
+        "СТОИМОСТЬ ТРАНСФЕРА",
+        "СТОИМОСТЬ УСЛУГИ",
+        "БАЗОВАЯ СТОИМОСТЬ",
+        "SUPPLIER COST",
+        "ACCOMMODATION COST",
+        "ROOM RATE",
+        "TRANSFER PRICE",
+        "SERVICE PRICE",
+    )),
+    ("markup", ("НАДБАВКА", "НАЦЕНКА", "MARKUP")),
+    ("discount", ("СКИДКА", "DISCOUNT")),
+    ("commission", ("КОМИССИЯ", "COMMISSION")),
 )
 _BREAKDOWNS = (
     ("fareBreakdown", ("ТАРИФ", "FARE")),
@@ -67,6 +95,79 @@ def _decimal(value) -> Decimal | None:
 def _value(data: dict, key: str):
     snake = re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
     return data.get(key, data.get(snake))
+
+
+def _row_identity(row: dict) -> str:
+    """Stable identity for a fare/tax/fee row across editor reordering."""
+
+    if not isinstance(row, dict):
+        return ""
+    code = str(row.get("code") or "").strip().casefold()
+    label = str(row.get("label") or row.get("name") or "").strip().casefold()
+    source = code or label
+    return "".join(character for character in source if character.isalnum())
+
+
+def _paired_breakdown_rows(old_rows, new_rows):
+    """Pair financial rows by code/label and only then use safe position fallback.
+
+    The editor may reorder tax rows after correcting recognition. Pairing with
+    ``zip`` could then turn ``YR 100 -> XT 200`` into a false price edit. Known
+    identities are never paired with a different known identity.
+    """
+
+    if not isinstance(old_rows, list) or not isinstance(new_rows, list):
+        return []
+    old_by_identity: dict[str, list[tuple[int, dict]]] = {}
+    for index, row in enumerate(old_rows):
+        if not isinstance(row, dict):
+            continue
+        identity = _row_identity(row)
+        if identity:
+            old_by_identity.setdefault(identity, []).append((index, row))
+
+    used_old: set[int] = set()
+    pairs: list[tuple[int, dict, dict]] = []
+    unresolved_new: list[tuple[int, dict]] = []
+    for new_index, new_row in enumerate(new_rows):
+        if not isinstance(new_row, dict):
+            continue
+        identity = _row_identity(new_row)
+        candidates = old_by_identity.get(identity, []) if identity else []
+        match = next((item for item in candidates if item[0] not in used_old), None)
+        if match is None:
+            unresolved_new.append((new_index, new_row))
+            continue
+        old_index, old_row = match
+        used_old.add(old_index)
+        pairs.append((new_index, old_row, new_row))
+
+    # Rows without an identity are still safely pairable by their unchanged
+    # position. A known code/label is never paired with a different one.
+    for new_index, new_row in unresolved_new:
+        if new_index >= len(old_rows) or new_index in used_old:
+            continue
+        old_row = old_rows[new_index]
+        if not isinstance(old_row, dict):
+            continue
+        if _row_identity(old_row) or _row_identity(new_row):
+            continue
+        used_old.add(new_index)
+        pairs.append((new_index, old_row, new_row))
+    return sorted(pairs, key=lambda item: item[0])
+
+
+def _breakdown_changed(before: dict, after: dict, breakdown_key: str) -> bool:
+    old_rows = _value(before, breakdown_key)
+    new_rows = _value(after, breakdown_key)
+    if not isinstance(old_rows, list) or not isinstance(new_rows, list) or not old_rows or not new_rows:
+        return False
+    if {_row_identity(row) for row in old_rows} != {_row_identity(row) for row in new_rows}:
+        return True
+    return any(
+        _decimal(old_row.get("amount")) != _decimal(new_row.get("amount"))
+        for _index, old_row, new_row in _paired_breakdown_rows(old_rows, new_rows)
+    )
 
 
 def _first_group(data: dict) -> list:
@@ -131,6 +232,11 @@ def _collect_targets(
     after = after if isinstance(after, dict) else {}
     output = _value(after, "output")
     price_mode = str(output.get("priceMode") or output.get("price_mode") or "").strip().lower() if isinstance(output, dict) else ""
+    aggregate_breakdowns = {
+        "fare": "fareBreakdown",
+        "taxes": "taxBreakdown",
+        "fees": "feeBreakdown",
+    }
     for key, aliases in _FINANCIAL_FIELDS:
         old = _decimal(_value(before, key))
         new = _decimal(_value(after, key))
@@ -145,15 +251,22 @@ def _collect_targets(
         # still patched and reflects the new cost.
         if old == 0 and key != "total":
             continue
-        targets.append(AmountTarget(f"{prefix}{key}", old, new, aliases, page_index, page_markers))
+        # When individual rows changed, the top-level amount is a derived
+        # aggregate. Patch it when the supplier actually prints it, but do not
+        # reject an otherwise complete row + total correction when it does not.
+        breakdown_key = aggregate_breakdowns.get(key)
+        required = not (
+            breakdown_key and _breakdown_changed(before, after, breakdown_key)
+        )
+        targets.append(AmountTarget(
+            f"{prefix}{key}", old, new, aliases, page_index, page_markers, required
+        ))
     for breakdown_key, fallback_aliases in _BREAKDOWNS:
         old_rows = _value(before, breakdown_key)
         new_rows = _value(after, breakdown_key)
         if not isinstance(old_rows, list) or not isinstance(new_rows, list):
             continue
-        for index, (old_row, new_row) in enumerate(zip(old_rows, new_rows, strict=False)):
-            if not isinstance(old_row, dict) or not isinstance(new_row, dict):
-                continue
+        for index, old_row, new_row in _paired_breakdown_rows(old_rows, new_rows):
             old = _decimal(old_row.get("amount"))
             new = _decimal(new_row.get("amount"))
             if old is None or new is None or old == new:
@@ -421,7 +534,10 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
                     recent_text.append(updated)
         if page_changed:
             page.replace_contents(stream)
-    report["unapplied"] = [target.key for target in targets if target.key not in applied_keys]
+    missing = [target for target in targets if target.key not in applied_keys]
+    report["unapplied"] = [target.key for target in missing if target.required]
+    report["optional_unapplied"] = [target.key for target in missing if not target.required]
+    report["required"] = sum(1 for target in targets if target.required)
     if report["unapplied"]:
         return None, report
     writer = PdfWriter()
@@ -434,7 +550,9 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
 def _draft_base_verified(draft, parser_status: str) -> dict:
     if draft is None:
         return {}
+    raw_extraction = getattr(getattr(draft, "import_job", None), "raw_extraction", None)
     return receipt_verified_data({
+        **(raw_extraction if isinstance(raw_extraction, dict) else {}),
         "issuer": draft.issuer,
         "passenger_name": draft.passenger_name,
         "segments": draft.segments,

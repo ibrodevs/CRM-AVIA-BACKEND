@@ -304,3 +304,33 @@ def test_confirmed_client_total_is_printed_in_corrected_supplier_pdf():
     assert corrected["fare"] == "23720"
     assert corrected["fees"] == "550"
     assert corrected["total"] == "26020"
+
+
+def test_draft_base_keeps_service_specific_source_prices_from_extraction():
+    draft = SimpleNamespace(
+        import_job=SimpleNamespace(
+            raw_extraction={
+                "service_kind": "hotel",
+                "supplierCost": "180.00",
+                "agencyServiceFee": "10.00",
+            }
+        ),
+        issuer="Test Hotel",
+        passenger_name="Guest",
+        segments=[],
+        fare=Decimal("180.00"),
+        taxes=Decimal("0.00"),
+        fees=Decimal("10.00"),
+        total=Decimal("190.00"),
+        currency="USD",
+        fare_breakdown=[],
+        tax_breakdown=[],
+        fee_breakdown=[],
+        receipt_items=[],
+    )
+
+    verified = supplier_pdf._draft_base_verified(draft, "parsed")
+
+    assert verified["service_kind"] == "hotel"
+    assert verified["supplierCost"] == "180.00"
+    assert verified["agencyServiceFee"] == "10.00"

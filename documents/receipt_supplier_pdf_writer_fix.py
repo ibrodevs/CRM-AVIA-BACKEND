@@ -39,6 +39,16 @@ def _token(value) -> str:
     return "".join(character for character in str(value or "").casefold() if character.isalnum())
 
 
+def _set_unapplied(report: dict, targets, applied_keys: set[str]) -> bool:
+    """Record missing targets and return whether a required one is missing."""
+
+    missing = [target for target in targets if target.key not in applied_keys]
+    report["unapplied"] = [target.key for target in missing if target.required]
+    report["optional_unapplied"] = [target.key for target in missing if not target.required]
+    report["required"] = sum(1 for target in targets if target.required)
+    return bool(report["unapplied"])
+
+
 def _amount_boxes(line, target, supplier_pdf):
     characters = line["characters"]
     visible = "".join(character.get_text() for character in characters)
@@ -129,7 +139,7 @@ def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tu
         pages = _layout_lines(content)
     except Exception as exc:
         report["layout_error"] = type(exc).__name__
-        report["unapplied"] = [target.key for target in targets]
+        _set_unapplied(report, targets, set())
         return None, report
 
     claimed: dict[tuple[int, float, float, float, float], tuple[str, str]] = {}
@@ -192,8 +202,7 @@ def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tu
                 overlays[page_index].append(overlay)
         applied_keys.add(target.key)
 
-    report["unapplied"] = [target.key for target in targets if target.key not in applied_keys]
-    if report["unapplied"]:
+    if _set_unapplied(report, targets, applied_keys):
         return None, report
 
     reader = PdfReader(BytesIO(content), strict=False)
@@ -362,9 +371,7 @@ def _financial_pairs(before: dict, after: dict, supplier_pdf) -> list[tuple[obje
         new_rows = supplier_pdf._value(after, breakdown_key)
         if not isinstance(old_rows, list) or not isinstance(new_rows, list):
             continue
-        for old_row, new_row in zip(old_rows, new_rows, strict=False):
-            if not isinstance(old_row, dict) or not isinstance(new_row, dict):
-                continue
+        for _index, old_row, new_row in supplier_pdf._paired_breakdown_rows(old_rows, new_rows):
             old = supplier_pdf._decimal(old_row.get("amount"))
             new = supplier_pdf._decimal(new_row.get("amount"))
             if old is not None and new is not None:
@@ -630,8 +637,7 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
             report["applied"] += len(page_target_keys - applied_keys)
             applied_keys.update(page_target_keys)
 
-    report["unapplied"] = [target.key for target in targets if target.key not in applied_keys]
-    if report["unapplied"]:
+    if _set_unapplied(report, targets, applied_keys):
         return None, report
     return _write_reader_pages(reader), report
 
@@ -826,8 +832,7 @@ def _patch_supplier_pdf_raw(content: bytes, before: dict, after: dict) -> tuple[
         applied_keys.update(page_target_keys)
 
     report["applied"] = len(applied_keys)
-    report["unapplied"] = [target.key for target in targets if target.key not in applied_keys]
-    if report["unapplied"]:
+    if _set_unapplied(report, targets, applied_keys):
         return None, report
     return _write_reader_pages(reader), report
 

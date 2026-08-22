@@ -77,6 +77,29 @@ def _single_avia_pdf() -> bytes:
     return output.getvalue()
 
 
+def _single_line_pdf(text: str) -> bytes:
+    writer = PdfWriter()
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+            NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page = writer.add_blank_page(width=595, height=842)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+    stream = DecodedStreamObject()
+    stream.set_data(f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("latin1"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 def _group_payload(first_ticket="1439.60", first_total="4819.20"):
     first_fare = str(round(float(first_ticket) + 3379.60, 2))
     group_total = str(round(float(first_total) + 4536.70, 2))
@@ -212,6 +235,104 @@ def test_equal_independent_breakdown_rows_are_not_collapsed():
         "taxBreakdown[0]",
         "taxBreakdown[1]",
     }
+
+
+def test_carrier_taxes_and_payable_total_change_together():
+    source = _single_line_pdf("CARRIER TAXES 42.50 TOTAL 292.50")
+    before = {"service_kind": "avia", "taxes": "42.50", "total": "292.50"}
+    after = {"service_kind": "avia", "taxes": "45.00", "total": "295.00"}
+
+    corrected, report = supplier_pdf.patch_supplier_pdf(source, before, after)
+
+    assert corrected is not None
+    assert report["unapplied"] == []
+    assert source == _single_line_pdf("CARRIER TAXES 42.50 TOTAL 292.50")
+    text = PdfReader(BytesIO(corrected)).pages[0].extract_text()
+    assert "CARRIER TAXES 45.00" in text
+    assert "TOTAL 295.00" in text
+
+
+def test_reordered_tax_rows_patch_by_code_without_requiring_unprinted_aggregate():
+    source = _single_line_pdf("YR 12.50 XT 30.00 TOTAL 292.50")
+    before = {
+        "service_kind": "avia",
+        "taxes": "42.50",
+        "total": "292.50",
+        "taxBreakdown": [
+            {"code": "YR", "label": "Carrier surcharge", "amount": "12.50"},
+            {"code": "XT", "label": "Airport tax", "amount": "30.00"},
+        ],
+    }
+    after = {
+        "service_kind": "avia",
+        "taxes": "45.00",
+        "total": "295.00",
+        "taxBreakdown": [
+            {"code": "XT", "label": "Airport tax", "amount": "30.00"},
+            {"code": "YR", "label": "Carrier surcharge", "amount": "15.00"},
+        ],
+    }
+
+    targets = supplier_pdf._collect_targets(before, after)
+    corrected, report = supplier_pdf.patch_supplier_pdf(source, before, after)
+
+    assert {
+        target.key: (target.old, target.new) for target in targets
+    } == {
+        "taxes": (Decimal("42.50"), Decimal("45.00")),
+        "taxBreakdown[1]": (Decimal("12.50"), Decimal("15.00")),
+        "total": (Decimal("292.50"), Decimal("295.00")),
+    }
+    assert next(target for target in targets if target.key == "taxes").required is False
+    assert corrected is not None
+    assert report["unapplied"] == []
+    assert report["optional_unapplied"] == ["taxes"]
+    text = PdfReader(BytesIO(corrected)).pages[0].extract_text()
+    assert "YR 15.00" in text
+    assert "XT 30.00" in text
+    assert "TOTAL 295.00" in text
+
+
+@pytest.mark.parametrize(
+    ("service_kind", "source_text", "before", "after", "expected"),
+    [
+        (
+            "rail",
+            "TICKET 80.00 RESERVED SEAT 20.00 SERVICE FEE 5.00 ADDITIONAL 2.00 TOTAL 107.00",
+            {"ticketCost": "80", "reservedSeatCost": "20", "agencyServiceFee": "5", "additionalFees": "2", "total": "107"},
+            {"ticketCost": "85", "reservedSeatCost": "22", "agencyServiceFee": "6", "additionalFees": "3", "total": "116"},
+            ("TICKET 85.00", "RESERVED SEAT 22.00", "SERVICE FEE 6.00", "ADDITIONAL 3.00", "TOTAL 116.00"),
+        ),
+        (
+            "hotel",
+            "ROOM RATE 180.00 SERVICE FEE 10.00 TOTAL 190.00",
+            {"fare": "180", "supplierCost": "180", "fees": "10", "agencyServiceFee": "10", "total": "190"},
+            {"fare": "200", "supplierCost": "200", "fees": "12", "agencyServiceFee": "12", "total": "212"},
+            ("ROOM RATE 200.00", "SERVICE FEE 12.00", "TOTAL 212.00"),
+        ),
+        (
+            "transfer",
+            "TRANSFER PRICE 45.00 ADDITIONAL 5.00 TOTAL 50.00",
+            {"fare": "45", "supplierCost": "45", "fees": "5", "additionalFees": "5", "total": "50"},
+            {"fare": "47", "supplierCost": "47", "fees": "7", "additionalFees": "7", "total": "54"},
+            ("TRANSFER PRICE 47.00", "ADDITIONAL 7.00", "TOTAL 54.00"),
+        ),
+    ],
+)
+def test_each_service_kind_updates_printed_components_and_total(
+    service_kind, source_text, before, after, expected
+):
+    source = _single_line_pdf(source_text)
+    before = {"service_kind": service_kind, **before}
+    after = {"service_kind": service_kind, **after}
+
+    corrected, report = supplier_pdf.patch_supplier_pdf(source, before, after)
+
+    assert corrected is not None, report
+    assert report["unapplied"] == []
+    text = PdfReader(BytesIO(corrected)).pages[0].extract_text()
+    for fragment in expected:
+        assert fragment in text
 
 
 def test_amount_variants_preserve_one_decimal_supplier_precision():
