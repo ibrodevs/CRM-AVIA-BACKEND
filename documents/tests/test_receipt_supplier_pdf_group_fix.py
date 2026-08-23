@@ -189,6 +189,56 @@ def test_single_receipt_parent_price_edit_updates_its_source_ticket():
     }
 
 
+def test_single_receipt_parent_edit_survives_browser_number_normalization():
+    """String-to-number normalization is not an independent child edit."""
+
+    child = {
+        "service_kind": "rail",
+        "receiptPage": 1,
+        "ticketCost": "568.10",
+        "reservedSeatCost": "657.50",
+        "fare": "1225.60",
+        "fees": "0",
+        "total": "1225.60",
+    }
+    before = {**child, "receipts": [copy.deepcopy(child)]}
+    after = copy.deepcopy(before)
+    after.update({
+        "ticketCost": 668.1,
+        "reservedSeatCost": 707.5,
+        "fare": 1375.6,
+        "total": 1375.6,
+    })
+    after["receipts"][0].update({
+        "ticketCost": 568.1,
+        "reservedSeatCost": 657.5,
+        "fare": 1225.6,
+        "fees": 0,
+        "total": 1225.6,
+    })
+
+    targets = supplier_pdf._collect_targets(before, after)
+    corrected, report = supplier_pdf.patch_supplier_pdf(
+        _single_line_pdf("TICKET 568.10 RESERVED SEAT 657.50 TOTAL 1225.60"),
+        before,
+        after,
+    )
+
+    assert {
+        target.key: (target.old, target.new, target.page_index)
+        for target in targets
+    } == {
+        "receipt[0].ticketCost": (Decimal("568.10"), Decimal("668.10"), 0),
+        "receipt[0].reservedSeatCost": (Decimal("657.50"), Decimal("707.50"), 0),
+        "receipt[0].total": (Decimal("1225.60"), Decimal("1375.60"), 0),
+    }
+    assert corrected is not None
+    assert report["requested"] == report["applied"] == 3
+    assert "TICKET 668.10 RESERVED SEAT 707.50 TOTAL 1375.60" in (
+        PdfReader(BytesIO(corrected)).pages[0].extract_text()
+    )
+
+
 def test_rail_printed_fee_components_are_updated_with_the_total():
     before = _group_payload()
     after = copy.deepcopy(before)

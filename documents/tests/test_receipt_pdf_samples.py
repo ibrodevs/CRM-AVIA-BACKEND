@@ -267,6 +267,13 @@ def test_single_rail_receipt_parent_price_edit_is_served_as_corrected_pdf(admin_
     ticket_cost = Decimal(str(verified["ticketCost"]))
     reserved_seat = Decimal(str(verified["reservedSeatCost"]))
     total = Decimal(str(verified["total"]))
+    # The React editor serializes the unchanged hidden singleton child as
+    # JSON numbers. Its recognized snapshot still contains decimal strings.
+    # These are monetarily equal and must not suppress the visible parent edit.
+    for key in ("ticketCost", "reservedSeatCost", "fare", "fees", "total"):
+        value = verified["receipts"][0].get(key)
+        if value not in (None, ""):
+            verified["receipts"][0][key] = float(Decimal(str(value)))
     verified["ticketCost"] = str(ticket_cost + Decimal("10.00"))
     verified["reservedSeatCost"] = str(reserved_seat + Decimal("5.00"))
     verified["fare"] = str(Decimal(str(verified["fare"])) + Decimal("15.00"))

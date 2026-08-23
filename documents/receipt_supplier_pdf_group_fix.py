@@ -1,11 +1,40 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 
 
 def _value(data: dict, key: str):
     snake = re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
     return data.get(key, data.get(snake))
+
+
+def _money_equal(left, right) -> bool:
+    """Compare editor amounts by value, not by JSON representation.
+
+    Recognition keeps supplier precision as strings (``"568.10"``), while the
+    browser normalizes the same value to a JSON number (``568.1``).  A plain
+    Python comparison treats those values as different and falsely concludes
+    that the hidden one-item receipt was edited independently.
+    """
+
+    def parse(value):
+        if value in (None, ""):
+            return None
+        normalized = (
+            str(value)
+            .replace("\u00a0", "")
+            .replace("\u202f", "")
+            .replace(" ", "")
+            .replace(",", ".")
+            .strip()
+        )
+        try:
+            return Decimal(normalized)
+        except (InvalidOperation, ValueError):
+            return value
+
+    return parse(left) == parse(right)
 
 
 def _looks_like_rail_ticket(data: dict) -> bool:
@@ -76,8 +105,8 @@ def _reconcile_single_receipt_parent_edit(before: dict, after: dict, old_group, 
     ):
         old_parent_value = _value(before, key)
         new_parent_value = _value(after, key)
-        parent_changed = old_parent_value != new_parent_value
-        child_changed = _value(old_child, key) != _value(new_child, key)
+        parent_changed = not _money_equal(old_parent_value, new_parent_value)
+        child_changed = not _money_equal(_value(old_child, key), _value(new_child, key))
         if parent_changed and not child_changed:
             reconciled[key] = new_parent_value
     return [reconciled]
