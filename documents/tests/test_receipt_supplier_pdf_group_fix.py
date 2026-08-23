@@ -155,6 +155,40 @@ def test_recognized_receipt_page_overrides_group_ordinal():
     assert {target.page_index for target in targets} == {2}
 
 
+def test_single_receipt_parent_price_edit_updates_its_source_ticket():
+    child = {
+        "service_kind": "rail",
+        "receiptPage": 1,
+        "ticketCost": "1668.40",
+        "reservedSeatCost": "1279.10",
+        "fare": "2947.50",
+        "fees": "0",
+        "total": "2947.50",
+    }
+    before = {
+        **child,
+        "receipts": [copy.deepcopy(child)],
+    }
+    after = copy.deepcopy(before)
+    after.update({
+        "ticketCost": "1768.40",
+        "reservedSeatCost": "1329.10",
+        "fare": "3097.50",
+        "total": "3097.50",
+    })
+
+    targets = supplier_pdf._collect_targets(before, after)
+
+    assert {
+        target.key: (target.old, target.new, target.page_index)
+        for target in targets
+    } == {
+        "receipt[0].ticketCost": (Decimal("1668.40"), Decimal("1768.40"), 0),
+        "receipt[0].reservedSeatCost": (Decimal("1279.10"), Decimal("1329.10"), 0),
+        "receipt[0].total": (Decimal("2947.50"), Decimal("3097.50"), 0),
+    }
+
+
 def test_rail_printed_fee_components_are_updated_with_the_total():
     before = _group_payload()
     after = copy.deepcopy(before)

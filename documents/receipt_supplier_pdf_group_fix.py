@@ -49,6 +49,40 @@ def _source_page_index(data: dict, fallback: int) -> int:
     return fallback
 
 
+def _reconcile_single_receipt_parent_edit(before: dict, after: dict, old_group, new_group):
+    """Copy top-level editor changes into the only source receipt.
+
+    The editor intentionally hides the ticket switcher for a one-item
+    ``receipts`` array and edits the visible parent form. Keeping the untouched
+    compatibility child used to make the PDF writer conclude that nothing had
+    changed. Multi-ticket parents remain aggregates and are never reconciled.
+    """
+
+    if len(old_group) != 1 or len(new_group) != 1:
+        return new_group
+    old_child, new_child = old_group[0], new_group[0]
+    if not isinstance(old_child, dict) or not isinstance(new_child, dict):
+        return new_group
+
+    reconciled = dict(new_child)
+    for key in (
+        "ticketCost",
+        "reservedSeatCost",
+        "agencyServiceFee",
+        "additionalFees",
+        "fare",
+        "fees",
+        "total",
+    ):
+        old_parent_value = _value(before, key)
+        new_parent_value = _value(after, key)
+        parent_changed = old_parent_value != new_parent_value
+        child_changed = _value(old_child, key) != _value(new_child, key)
+        if parent_changed and not child_changed:
+            reconciled[key] = new_parent_value
+    return [reconciled]
+
+
 def _dedupe_source_targets(targets):
     """Collapse aggregate/detail aliases that point to one printed amount.
 
@@ -149,6 +183,12 @@ def install_receipt_supplier_pdf_group_fix() -> None:
             old_group = supplier_pdf._first_group(before)
             new_group = supplier_pdf._first_group(after)
             if old_group or new_group:
+                new_group = _reconcile_single_receipt_parent_edit(
+                    before,
+                    after,
+                    old_group,
+                    new_group,
+                )
                 # A grouped PDF has no real aggregate amount printed in the source.
                 # Patch only matching child tickets on their own pages.
                 targets = []
