@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+from collections import Counter, defaultdict
 from decimal import Decimal
 from io import BytesIO
+from statistics import median
 
 
 def _layout_lines(content: bytes):
@@ -121,21 +123,87 @@ def _amount_boxes(line, target, supplier_pdf):
             start = compact_positions[match.start()]
             end = compact_positions[match.end() - 1]
             selected = characters[start : end + 1]
-            boxes.append((
-                min(character.x0 for character in selected),
-                min(character.y0 for character in selected),
-                max(character.x1 for character in selected),
-                max(character.y1 for character in selected),
-                visible[start : end + 1],
-            ))
+            font_name = Counter(character.fontname for character in selected).most_common(1)[0][0]
+            font_characters = [character for character in selected if character.fontname == font_name]
+            boxes.append({
+                "x0": min(character.x0 for character in selected),
+                "y0": min(character.y0 for character in selected),
+                "x1": max(character.x1 for character in selected),
+                "y1": max(character.y1 for character in selected),
+                "template": visible[start : end + 1],
+                "font_name": font_name,
+                "font_size": median(character.size for character in font_characters),
+                "baseline": median(character.matrix[5] for character in font_characters),
+            })
         if boxes:
             break
     return boxes
 
 
-def _overlay_text_width(text: str, font_size: float) -> float:
+def _layout_font_widths(lines):
+    """Return observed glyph advances relative to size for embedded fonts."""
+
+    observed = defaultdict(lambda: defaultdict(list))
+    for line in lines:
+        for character in line["characters"]:
+            size = float(character.size or 0)
+            advance = float(getattr(character, "adv", 0) or 0)
+            if size > 0 and advance >= 0:
+                observed[character.fontname][character.get_text()].append(advance / size)
+    return {
+        font_name: {
+            character: median(ratios)
+            for character, ratios in characters.items()
+            if ratios
+        }
+        for font_name, characters in observed.items()
+    }
+
+
+def _overlay_text_width(text: str, font_size: float, font_name: str = "", font_widths=None) -> float:
+    measured = (font_widths or {}).get(font_name, {})
+    digit_widths = [width for character, width in measured.items() if character.isdigit()]
+    fallback_digit = median(digit_widths) if digit_widths else 0.56
     widths = {".": 0.28, ",": 0.28, " ": 0.28, "I": 0.28, "T": 0.61, "-": 0.33}
-    return sum(widths.get(character, 0.56) for character in text) * font_size
+    return sum(
+        measured.get(character, fallback_digit if character.isdigit() else widths.get(character, 0.56))
+        for character in text
+    ) * font_size
+
+
+def _font_resource_name(fonts, layout_font_name: str):
+    """Find the page resource that PDFMiner identified for an amount."""
+
+    wanted = str(layout_font_name or "").lstrip("/")
+    for resource_name, reference in fonts.items():
+        try:
+            base_font = str(reference.get_object().get("/BaseFont") or "").lstrip("/")
+        except Exception:
+            continue
+        if base_font == wanted:
+            return str(resource_name)
+        if "+" in base_font and "+" in wanted and base_font.split("+", 1)[1] == wanted.split("+", 1)[1]:
+            return str(resource_name)
+    return None
+
+
+def _overlapping_amount_boxes(primary, candidates):
+    """Keep co-located duplicate glyph runs used by suppliers for bold text."""
+
+    selected = [primary]
+    primary_width = max(primary["x1"] - primary["x0"], 0.01)
+    for candidate in candidates:
+        if candidate is primary:
+            continue
+        vertical_gap = abs(
+            ((candidate["y0"] + candidate["y1"]) / 2)
+            - ((primary["y0"] + primary["y1"]) / 2)
+        )
+        overlap = max(0, min(primary["x1"], candidate["x1"]) - max(primary["x0"], candidate["x0"]))
+        candidate_width = max(candidate["x1"] - candidate["x0"], 0.01)
+        if vertical_gap <= 0.75 and overlap / min(primary_width, candidate_width) >= 0.9:
+            selected.append(candidate)
+    return selected
 
 
 def _pdf_literal(text: str) -> str:
@@ -341,7 +409,11 @@ def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tu
         return None, report
 
     claimed: dict[tuple[int, float, float, float, float], tuple[str, str]] = {}
-    overlays: dict[int, list[tuple[float, float, float, float, str]]] = {}
+    overlays: dict[int, list[dict]] = {}
+    page_font_widths = {
+        page_index: _layout_font_widths(lines)
+        for page_index, lines in enumerate(pages)
+    }
     applied_keys: set[str] = set()
     for target in targets:
         target_matches = []
@@ -372,42 +444,52 @@ def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tu
                 nearby = sorted(
                     candidates,
                     key=lambda box: (
-                        abs(((box[1] + box[3]) / 2) - alias_y),
-                        abs(box[0] - alias_line["bbox"][2]),
+                        abs(((box["y0"] + box["y1"]) / 2) - alias_y),
+                        abs(box["x0"] - alias_line["bbox"][2]),
                     ),
                 )
-                if nearby and abs(((nearby[0][1] + nearby[0][3]) / 2) - alias_y) <= 35:
-                    selected.append(nearby[0])
+                if nearby and abs(((nearby[0]["y0"] + nearby[0]["y1"]) / 2) - alias_y) <= 35:
+                    for box in _overlapping_amount_boxes(nearby[0], nearby):
+                        selected.append({
+                            **box,
+                            "field_x0": min(box["x0"], alias_line["bbox"][2] + 2),
+                        })
             if not selected and len(candidates) == 1:
-                selected = candidates
+                selected = [{**candidates[0], "field_x0": 0}]
             for box in selected:
                 if box not in target_matches:
-                    target_matches.append((page_index, *box))
+                    target_matches.append({"page_index": page_index, **box})
 
         new_texts = []
         conflict = False
-        for page_index, x0, y0, x1, y1, template in target_matches:
-            new_text = supplier_pdf._format_like(template, target.new)
-            identity = (page_index, round(x0, 3), round(y0, 3), round(x1, 3), round(y1, 3))
+        for match in target_matches:
+            page_index = match["page_index"]
+            new_text = supplier_pdf._format_like(match["template"], target.new)
+            identity = (
+                page_index,
+                round(match["x0"], 3),
+                round(match["y0"], 3),
+                round(match["x1"], 3),
+                round(match["y1"], 3),
+            )
             previous = claimed.get(identity)
             if previous and previous[1] != new_text:
                 conflict = True
                 break
-            new_texts.append((identity, page_index, x0, y0, x1, y1, new_text))
+            new_texts.append((identity, {**match, "text": new_text}))
         if conflict or not new_texts:
             continue
-        for identity, page_index, x0, y0, x1, y1, new_text in new_texts:
-            claimed[identity] = (target.key, new_text)
-            overlay = (x0, y0, x1, y1, new_text)
-            if overlay not in overlays.setdefault(page_index, []):
-                overlays[page_index].append(overlay)
+        for identity, overlay in new_texts:
+            claimed[identity] = (target.key, overlay["text"])
+            page_overlays = overlays.setdefault(overlay["page_index"], [])
+            if overlay not in page_overlays:
+                page_overlays.append(overlay)
         applied_keys.add(target.key)
 
     if _set_unapplied(report, targets, applied_keys):
         return None, report
 
     reader = PdfReader(BytesIO(content), strict=False)
-    font_name = NameObject("/CRMCorrection")
     for page_index, page_overlays in overlays.items():
         page = reader.pages[page_index]
         resources = page.get("/Resources")
@@ -422,26 +504,70 @@ def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tu
             resources[NameObject("/Font")] = fonts
         else:
             fonts = fonts.get_object()
-        fonts[font_name] = DictionaryObject({
-            NameObject("/Type"): NameObject("/Font"),
-            NameObject("/Subtype"): NameObject("/Type1"),
-            NameObject("/BaseFont"): NameObject("/Helvetica"),
-        })
+        fallback_font_name = NameObject("/CRMCorrection")
+        cover_commands = []
+        text_commands = []
+        page_width = float(page.mediabox.width)
+        page_height = float(page.mediabox.height)
+        for overlay in page_overlays:
+            x0, y0, x1, y1 = (overlay[key] for key in ("x0", "y0", "x1", "y1"))
+            new_text = overlay["text"]
+            font_size = max(float(overlay.get("font_size") or 0), 1)
+            baseline = float(overlay.get("baseline") or (y0 + font_size * 0.2))
+            resource_name = _font_resource_name(fonts, overlay.get("font_name"))
+            encoded = None
+            if resource_name:
+                font = fonts[NameObject(resource_name)].get_object()
+                encoded = supplier_pdf._encode_text(new_text, supplier_pdf._font_codec(font))
+            if encoded is None:
+                if fallback_font_name not in fonts:
+                    fonts[fallback_font_name] = DictionaryObject({
+                        NameObject("/Type"): NameObject("/Font"),
+                        NameObject("/Subtype"): NameObject("/Type1"),
+                        NameObject("/BaseFont"): NameObject("/Helvetica"),
+                    })
+                resource_name = str(fallback_font_name)
+                report["font_preserved"] = False
 
-        commands = []
-        for x0, y0, x1, y1, new_text in page_overlays:
-            height = max(y1 - y0, 1)
-            font_size = max(height * 0.88, 5)
-            text_width = _overlay_text_width(new_text, font_size)
-            text_x = x1 - text_width
-            cover_x = min(x0, text_x) - 0.8
-            cover_width = max(x1, text_x + text_width) - cover_x + 0.8
-            commands.append(
-                f"q 1 1 1 rg {cover_x:.3f} {y0 - 0.8:.3f} {cover_width:.3f} {height + 1.6:.3f} re f Q\n"
-                f"BT /CRMCorrection {font_size:.3f} Tf 0 0 0 rg {text_x:.3f} {y0 + height * 0.10:.3f} Td "
-                f"({_pdf_literal(new_text)}) Tj ET\n"
+            text_width = _overlay_text_width(
+                new_text,
+                font_size,
+                overlay.get("font_name", ""),
+                page_font_widths.get(page_index),
             )
-        overlay_data = "".join(commands).encode("ascii")
+            field_x0 = max(float(overlay.get("field_x0") or 0), 0)
+            available_width = max(x1 - field_x0, 1)
+            if text_width > available_width:
+                font_size *= available_width / text_width
+                text_width = _overlay_text_width(
+                    new_text,
+                    font_size,
+                    overlay.get("font_name", ""),
+                    page_font_widths.get(page_index),
+                )
+            text_x = max(field_x0, min(x1 - text_width, page_width - text_width))
+            # Mask the precise glyph area only. The old +/-0.8pt vertical pad
+            # crossed into adjacent six-point rows and visibly clipped them.
+            cover_x0 = max(0, min(x0, text_x) - 0.05)
+            cover_y0 = max(0, y0 - 0.05)
+            cover_x1 = min(page_width, max(x1, text_x + text_width) + 0.05)
+            cover_y1 = min(page_height, y1 + 0.05)
+            cover_commands.append(
+                f"q 1 1 1 rg {cover_x0:.3f} {cover_y0:.3f} "
+                f"{cover_x1 - cover_x0:.3f} {cover_y1 - cover_y0:.3f} re f Q\n"
+            )
+            if encoded is not None:
+                operand = f"<{bytes(encoded).hex().upper()}>"
+            else:
+                operand = f"({_pdf_literal(new_text)})"
+            text_commands.append(
+                f"BT {resource_name} {font_size:.3f} Tf 0 0 0 rg "
+                f"{text_x:.3f} {baseline:.3f} Td {operand} Tj ET\n"
+            )
+        # Clear every original duplicate before drawing any replacement. Some
+        # supplier forms paint the same total twice with a tiny offset to make
+        # it bold; interleaving cover/draw erased one of the new layers.
+        overlay_data = "".join(cover_commands + text_commands).encode("ascii")
         contents = page.get_contents()
         if contents is None:
             original_data = b""
