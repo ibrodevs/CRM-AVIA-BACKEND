@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -15,6 +16,8 @@ from common.models import BackgroundJob
 from documents.models import ReceiptImportJob
 from documents.receipt_metadata import json_safe, receipt_verified_data
 from documents.selectors import get_document_or_404
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -680,6 +683,17 @@ def _sync_supplier_pdf(document, base_verified: dict, corrected_verified: dict, 
     metadata = {**metadata, "supplier_pdf_correction": json_safe(result)}
     document.metadata = metadata
     document.save(update_fields=["metadata"])
+    logger.info(
+        "supplier_pdf_sync document_id=%s status=%s requested=%s applied=%s "
+        "strategy=%s source_version=%s corrected_version=%s",
+        document.id,
+        result.get("status"),
+        result.get("requested", 0),
+        result.get("applied", 0),
+        result.get("strategy", ""),
+        result.get("source_version"),
+        result.get("corrected_version"),
+    )
     return result
 
 
@@ -820,6 +834,9 @@ def install_receipt_supplier_pdf_patch() -> None:
             response["X-Supplier-PDF-Mode"] = "source" if version.version == source.version else "corrected"
             response["X-Supplier-Source-Version"] = str(source.version)
             response["X-Supplier-Display-Version"] = str(version.version)
+            response["X-Supplier-Correction-Status"] = str(
+                (document.metadata or {}).get("supplier_pdf_correction", {}).get("status") or "source"
+            )
             return response
 
     views.DocumentSupplierPdfView = DocumentSupplierPdfView

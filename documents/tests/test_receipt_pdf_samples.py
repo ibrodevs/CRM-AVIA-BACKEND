@@ -1,7 +1,13 @@
+from copy import deepcopy
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+
+from documents.models import Document
+from documents.receipt_supplier_pdf_patch import SUPPLIER_PDF_SYNC_JOB
 
 pytestmark = pytest.mark.django_db
 
@@ -215,3 +221,74 @@ def test_every_client_pdf_is_recognized_on_receipt_import_api(
         assert verified["transferTerms"]["supportContacts"] == "88007751454"
         assert verified["transferTerms"]["meetAndGreet"]
         assert verified["transferTerms"]["baggageHelp"]
+
+
+def test_single_rail_receipt_parent_price_edit_is_served_as_corrected_pdf(admin_client):
+    """Cover the exact import -> editor preview -> supplier PDF sequence.
+
+    A one-ticket RZD file keeps a compatibility child in ``receipts`` while
+    the editor shows and changes the parent form. The preview endpoint must
+    reconcile that parent edit, create a new version and serve it instead of
+    silently falling back to the upload.
+    """
+
+    name = "ЖД - Кутуков Сергей Алексеевич.pdf"
+    path = SAMPLES_ROOT / "ЖД" / name
+    imported = admin_client.post(
+        "/api/v1/receipt-imports/",
+        {"file": SimpleUploadedFile(name, path.read_bytes(), content_type="application/pdf")},
+        format="multipart",
+    )
+    assert imported.status_code == 201, imported.content
+
+    result = admin_client.get(f"/api/v1/receipt-imports/{imported.json()['id']}/result/")
+    assert result.status_code == 200, result.content
+    body = result.json()
+    verified = deepcopy(body["verified_data"])
+    child = {
+        **verified,
+        "groupTickets": [],
+        "receiptItems": [],
+        "receipt_items": [],
+        "receipts": [],
+        "railTickets": [],
+        "receiptCount": 1,
+        "receiptPage": 1,
+    }
+    verified["receipts"] = [child]
+    document = Document.objects.get(pk=body["source_document_id"])
+    metadata = deepcopy(document.metadata)
+    metadata["supplier_original"]["base_verified_data"] = deepcopy(verified)
+    metadata["supplier_original"]["verified_data"] = deepcopy(verified)
+    metadata["receipt_import"]["verified_data"] = deepcopy(verified)
+    document.metadata = metadata
+    document.save(update_fields=["metadata"])
+
+    ticket_cost = Decimal(str(verified["ticketCost"]))
+    reserved_seat = Decimal(str(verified["reservedSeatCost"]))
+    total = Decimal(str(verified["total"]))
+    verified["ticketCost"] = str(ticket_cost + Decimal("10.00"))
+    verified["reservedSeatCost"] = str(reserved_seat + Decimal("5.00"))
+    verified["fare"] = str(Decimal(str(verified["fare"])) + Decimal("15.00"))
+    verified["total"] = str(total + Decimal("15.00"))
+
+    with override_settings(SYNC_JOB_KINDS=(SUPPLIER_PDF_SYNC_JOB,)):
+        updated = admin_client.post(
+            f"/api/v1/documents/{body['source_document_id']}/receipt/",
+            {"draft": True, "preview_sync": True, "verified_data": verified},
+            format="json",
+        )
+    assert updated.status_code == 200, updated.content
+    correction = updated.json()["supplier_pdf_correction"]
+    assert correction["status"] == "corrected", correction
+    assert correction["requested"] == correction["applied"]
+    assert correction["requested"] >= 2
+    assert correction["corrected_version"] > correction["source_version"]
+
+    preview = admin_client.get(
+        f"/api/v1/documents/{body['source_document_id']}/supplier-pdf/?disposition=inline"
+    )
+    assert preview.status_code == 200
+    assert preview["X-Supplier-PDF-Mode"] == "corrected"
+    assert preview["X-Supplier-Correction-Status"] == "corrected"
+    assert preview["Cache-Control"].startswith("private, no-store")
