@@ -490,6 +490,7 @@ class TestDocuments:
         payload = {
             "draft": True,
             "preview_sync": True,
+            "pdf_financial_edit": True,
             "verified_data": {
                 "service_kind": "avia",
                 "fare": "100.00",
@@ -524,6 +525,7 @@ class TestDocuments:
         ).count() == 1
         queued = BackgroundJob.objects.get(pk=first_correction["job_id"])
         assert queued.payload["corrected_verified"]["total"] == "130.00"
+        assert queued.payload["financial_edit"] is True
 
         call_command("run_jobs", "--once", "--worker-id", "receipt-pdf-test")
         job = BackgroundJob.objects.get(pk=first_correction["job_id"])
@@ -570,6 +572,73 @@ class TestDocuments:
         assert "job_id" not in correction
         job = BackgroundJob.objects.get(kind=SUPPLIER_PDF_SYNC_JOB)
         assert job.status == BackgroundJob.Status.SUCCEEDED
+
+    def test_receipt_preview_pdf_sync_keeps_exact_grouped_rail_request_snapshot(
+        self,
+        admin_client,
+        tenant,
+        admin_user,
+    ):
+        from common.models import BackgroundJob
+        from documents.receipt_supplier_pdf_patch import SUPPLIER_PDF_SYNC_JOB
+
+        document = Document.objects.create(
+            tenant=tenant,
+            kind=Document.Kind.ITINERARY_RECEIPT,
+            title="Групповой ЖД-билет",
+            created_by=admin_user,
+        )
+        first = {
+            "service_kind": "rail",
+            "ticketNo": "76315000645871",
+            "ticketCost": "4217.10",
+            "reservedSeatCost": "1937.00",
+            "agencyServiceFee": "0",
+            "additionalFees": "0",
+            "fare": "6154.10",
+            "fees": "0",
+            "total": "6154.10",
+            "currency": "RUB",
+        }
+        second = {
+            **first,
+            "ticketNo": "76315000645882",
+            "ticketCost": "2217.10",
+            "fare": "4154.10",
+            "total": "4154.10",
+        }
+
+        response = admin_client.post(
+            f"/api/v1/documents/{document.id}/receipt/",
+            {
+                "draft": True,
+                "preview_sync": True,
+                "pdf_financial_edit": True,
+                "verified_data": {
+                    "service_kind": "rail",
+                    "fare": "10308.20",
+                    "fees": "0",
+                    "total": "10308.20",
+                    "currency": "RUB",
+                    "groupTickets": [first, second],
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.content
+        job = BackgroundJob.objects.get(kind=SUPPLIER_PDF_SYNC_JOB)
+        snapshot = job.payload["corrected_verified"]
+        assert job.payload["financial_edit"] is True
+        assert snapshot["total"] == "10308.20"
+        assert [row["ticketCost"] for row in snapshot["groupTickets"]] == [
+            "4217.10",
+            "2217.10",
+        ]
+        assert [row["total"] for row in snapshot["groupTickets"]] == [
+            "6154.10",
+            "4154.10",
+        ]
 
     def test_existing_receipt_uses_saved_import_snapshot_for_pdf_sync(
         self,

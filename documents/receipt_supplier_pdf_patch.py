@@ -809,6 +809,57 @@ def _sync_supplier_pdf(document, base_verified: dict, corrected_verified: dict, 
 SUPPLIER_PDF_SYNC_JOB = "documents.supplier_pdf.sync"
 
 
+def _request_financial_snapshot(stored: dict, submitted: dict, parser_status: str) -> dict:
+    """Overlay exact editor amounts on the canonical saved receipt shape.
+
+    Ticket-level compatibility code supplies stable page/ticket markers in the
+    saved metadata. The request supplies the newest prices. Keeping the saved
+    structure while copying only financial values avoids both stale grouped
+    totals and legacy one-ticket wrappers that point the patcher at the wrong
+    PDF scope.
+    """
+
+    canonical = json_safe(stored if isinstance(stored, dict) else {})
+    current = receipt_verified_data(submitted, parser_status=parser_status)
+    if not isinstance(canonical, dict) or not canonical:
+        return current
+
+    def overlay(target: dict, source: dict) -> dict:
+        merged = {**target}
+        for key, _aliases in _FINANCIAL_FIELDS:
+            snake = re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
+            if key in source:
+                merged[key] = source[key]
+            if snake in source:
+                merged[snake] = source[snake]
+        for key, _aliases in _BREAKDOWNS:
+            snake = re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
+            if key in source:
+                merged[key] = source[key]
+            if snake in source:
+                merged[snake] = source[snake]
+        return merged
+
+    corrected = overlay(canonical, current)
+    submitted_group = _first_group(current)
+    stored_group = _first_group(canonical)
+    if len(submitted_group) > 1:
+        merged_group = []
+        for index, submitted_child in enumerate(submitted_group):
+            stored_child = stored_group[index] if index < len(stored_group) else {}
+            merged_group.append(
+                overlay(
+                    stored_child if isinstance(stored_child, dict) else {},
+                    submitted_child if isinstance(submitted_child, dict) else {},
+                )
+            )
+        for key in _GROUP_KEYS:
+            corrected[key] = merged_group
+        corrected["receiptCount"] = len(merged_group)
+        corrected["receipt_count"] = len(merged_group)
+    return corrected
+
+
 def _enqueue_supplier_pdf_sync(document, request) -> BackgroundJob:
     """Keep at most one queued follow-up behind a currently running PDF job.
 
@@ -819,10 +870,24 @@ def _enqueue_supplier_pdf_sync(document, request) -> BackgroundJob:
     metadata = document.metadata or {}
     supplier_original = metadata.get("supplier_original") or {}
     receipt_import = metadata.get("receipt_import") or {}
-    corrected_snapshot = (
+    submitted = request.data.get("verified_data") if hasattr(request.data, "get") else None
+    # The request body is the only unambiguous snapshot of the values visible
+    # in the editor. Metadata is also updated by ticket-level compatibility
+    # wrappers and can briefly contain a previous group aggregate. Capturing
+    # that older value made a real edit arrive at the patcher as requested=0.
+    stored_snapshot = (
         supplier_original.get("verified_data")
         or receipt_import.get("verified_data")
         or {}
+    )
+    corrected_snapshot = (
+        _request_financial_snapshot(
+            stored_snapshot,
+            submitted,
+            "manual_review" if request.data.get("draft") else "parsed",
+        )
+        if isinstance(submitted, dict)
+        else stored_snapshot
     )
     payload = {
         "document_id": str(document.id),
@@ -830,6 +895,7 @@ def _enqueue_supplier_pdf_sync(document, request) -> BackgroundJob:
         # waiting. Keep the verified prices that caused this exact PDF sync so
         # an unrelated/stale request cannot turn a real edit into requested=0.
         "corrected_verified": json_safe(corrected_snapshot),
+        "financial_edit": bool(request.data.get("pdf_financial_edit")),
     }
     queued = BackgroundJob.objects.filter(
         tenant_id=document.tenant_id,
@@ -866,6 +932,25 @@ def sync_supplier_pdf_job(job: BackgroundJob) -> dict:
         or supplier_original.get("verified_data")
         or receipt_import.get("verified_data")
         or {}
+    )
+    corrected_group = []
+    if isinstance(corrected, dict):
+        corrected_group = next(
+            (
+                rows
+                for key in ("groupTickets", "receiptItems", "receipt_items", "receipts", "railTickets")
+                if isinstance((rows := corrected.get(key)), list) and rows
+            ),
+            [],
+        )
+    logger.info(
+        "supplier_pdf_job_input document_id=%s financial_edit=%s total=%s "
+        "group_count=%s group_totals=%s",
+        document.id,
+        bool(job.payload.get("financial_edit")),
+        corrected.get("total") if isinstance(corrected, dict) else None,
+        len(corrected_group),
+        [row.get("total") for row in corrected_group if isinstance(row, dict)],
     )
     base_verified = _base_verified_from_document(document)
     result = _sync_supplier_pdf(
