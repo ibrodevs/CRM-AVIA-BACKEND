@@ -522,6 +522,8 @@ class TestDocuments:
             kind=SUPPLIER_PDF_SYNC_JOB,
             payload__document_id=str(document.id),
         ).count() == 1
+        queued = BackgroundJob.objects.get(pk=first_correction["job_id"])
+        assert queued.payload["corrected_verified"]["total"] == "130.00"
 
         call_command("run_jobs", "--once", "--worker-id", "receipt-pdf-test")
         job = BackgroundJob.objects.get(pk=first_correction["job_id"])

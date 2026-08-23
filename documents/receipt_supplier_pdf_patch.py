@@ -816,6 +816,21 @@ def _enqueue_supplier_pdf_sync(document, request) -> BackgroundJob:
     job coalesces rapid editor changes without losing the final state.
     """
 
+    metadata = document.metadata or {}
+    supplier_original = metadata.get("supplier_original") or {}
+    receipt_import = metadata.get("receipt_import") or {}
+    corrected_snapshot = (
+        supplier_original.get("verified_data")
+        or receipt_import.get("verified_data")
+        or {}
+    )
+    payload = {
+        "document_id": str(document.id),
+        # A later editor request can update document metadata while this job is
+        # waiting. Keep the verified prices that caused this exact PDF sync so
+        # an unrelated/stale request cannot turn a real edit into requested=0.
+        "corrected_verified": json_safe(corrected_snapshot),
+    }
     queued = BackgroundJob.objects.filter(
         tenant_id=document.tenant_id,
         kind=SUPPLIER_PDF_SYNC_JOB,
@@ -823,10 +838,12 @@ def _enqueue_supplier_pdf_sync(document, request) -> BackgroundJob:
         payload__document_id=str(document.id),
     ).order_by("created_at").first()
     if queued is not None:
+        queued.payload = payload
+        queued.save(update_fields=["payload"])
         return queued
     return enqueue(
         SUPPLIER_PDF_SYNC_JOB,
-        {"document_id": str(document.id)},
+        payload,
         priority=40,
         request=request,
         tenant_id=document.tenant_id,
@@ -844,7 +861,12 @@ def sync_supplier_pdf_job(job: BackgroundJob) -> dict:
     metadata = document.metadata or {}
     supplier_original = metadata.get("supplier_original") or {}
     receipt_import = metadata.get("receipt_import") or {}
-    corrected = supplier_original.get("verified_data") or receipt_import.get("verified_data") or {}
+    corrected = (
+        job.payload.get("corrected_verified")
+        or supplier_original.get("verified_data")
+        or receipt_import.get("verified_data")
+        or {}
+    )
     base_verified = _base_verified_from_document(document)
     result = _sync_supplier_pdf(
         document,
