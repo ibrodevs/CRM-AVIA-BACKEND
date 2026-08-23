@@ -9,7 +9,6 @@ from pypdf import PdfReader
 from documents.receipt_multiform_patch import _aggregate_rail_receipts
 from documents.receipt_parser_patch_safe import _json_safe, _rail
 
-
 RU_MONTHS = {
     "января": 1,
     "февраля": 2,
@@ -339,6 +338,7 @@ def _parse_azimuth_ticket(text: str) -> dict | None:
         "booking_class": cabin, "fare_basis": fare_basis, "baggage": baggage,
         "hand_baggage": "", "booking_status": status,
         "fare": fare, "taxes": Decimal("0"), "fees": fees, "total": total,
+        "derived_financial_fields": ["fare"],
         "originalTotal": total, "currency": "RUB", "segments": [segment],
         "service_kind": "avia", "service_type": "Авиа", "trip_type": "oneway",
         "fare_breakdown": [{"code": "FARE", "label": "Тариф", "amount": str(fare), "currency": "RUB"}],

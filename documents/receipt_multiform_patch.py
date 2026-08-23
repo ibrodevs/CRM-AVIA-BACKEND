@@ -11,7 +11,6 @@ from pypdf import PdfReader
 
 from documents.receipt_parser_patch_safe import _json_safe, _rail
 
-
 RU_MONTHS = {
     "января": 1,
     "февраля": 2,
@@ -272,6 +271,7 @@ def _parse_psc_air(text: str) -> dict | None:
         "fees": service_fee,
         "total": total,
         "currency": "RUB",
+        "derived_financial_fields": (["fare"] if "Стоимость:" in lines else []),
         "fare_breakdown": [
             {
                 "code": "FARE",

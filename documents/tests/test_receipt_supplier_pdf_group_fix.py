@@ -144,6 +144,17 @@ def test_grouped_rail_targets_ignore_parent_aggregates_and_child_aliases():
     assert not any(target.key.endswith(".fare") or target.key.endswith(".fees") for target in targets)
 
 
+def test_recognized_receipt_page_overrides_group_ordinal():
+    before = _group_payload()
+    after = _group_payload(first_ticket="1539.60", first_total="4919.20")
+    before["groupTickets"][0]["receiptPage"] = 3
+    after["groupTickets"][0]["receiptPage"] = 3
+
+    targets = supplier_pdf._collect_targets(before, after)
+
+    assert {target.page_index for target in targets} == {2}
+
+
 def test_rail_printed_fee_components_are_updated_with_the_total():
     before = _group_payload()
     after = copy.deepcopy(before)

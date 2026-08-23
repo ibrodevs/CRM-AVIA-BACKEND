@@ -36,6 +36,19 @@ def _service_kind(before: dict, after: dict) -> str:
     return "other"
 
 
+def _source_page_index(data: dict, fallback: int) -> int:
+    """Resolve the actual zero-based source page recorded by recognition."""
+
+    for key in ("receiptPage", "receipt_page", "sourcePage", "source_page"):
+        try:
+            page = int(data.get(key))
+        except (TypeError, ValueError):
+            continue
+        if page > 0:
+            return page - 1
+    return fallback
+
+
 def _dedupe_source_targets(targets):
     """Collapse aggregate/detail aliases that point to one printed amount.
 
@@ -147,7 +160,7 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                             collect_targets(
                                 old_child,
                                 new_child,
-                                page_index=index,
+                                page_index=_source_page_index(old_child, index),
                                 prefix=f"{prefix}receipt[{index}].",
                                 page_markers=(
                                     supplier_pdf._ticket_page_markers(old_child)
@@ -216,6 +229,7 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 "taxes": "taxBreakdown",
                 "fees": "feeBreakdown",
             }
+            derived_fields = set(_value(before, "derivedFinancialFields") or ())
             service_component_keys = {
                 "agencyServiceFee",
                 "additionalFees",
@@ -258,6 +272,7 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                 required = not (
                     (breakdown_key and supplier_pdf._breakdown_changed(before, after, breakdown_key))
                     or (kind in {"hotel", "transfer"} and key == "fees" and service_components_changed)
+                    or key in derived_fields
                 )
                 targets.append(supplier_pdf.AmountTarget(
                     f"{prefix}{key}", old, new, aliases, page_index, page_markers, required
@@ -293,6 +308,10 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                             row_aliases or fallback_aliases,
                             page_index,
                             page_markers,
+                            not (
+                                breakdown_key == "fareBreakdown"
+                                and "fare" in derived_fields
+                            ),
                         )
                     )
 

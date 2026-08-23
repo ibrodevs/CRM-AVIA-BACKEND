@@ -236,7 +236,7 @@ def test_malformed_identity_h_supplier_pdf_uses_raw_stream_same_font_fallback():
     assert source_font["/Subtype"] == corrected_font["/Subtype"] == "/Type0"
 
 
-def test_no_partial_supplier_pdf_is_published_when_a_requested_amount_is_missing():
+def test_missing_source_amount_publishes_complete_correction_appendix():
     source = _simple_supplier_pdf()
     corrected, report = supplier_pdf.patch_supplier_pdf(
         source,
@@ -244,10 +244,35 @@ def test_no_partial_supplier_pdf_is_published_when_a_requested_amount_is_missing
         {"total": "25520", "fees": "550"},
     )
 
-    assert corrected is None
+    assert corrected is not None
+    assert report["strategy"] == "financial_correction_appendix"
     assert report["requested"] == 2
-    assert report["applied"] == 1
-    assert report["unapplied"]
+    assert report["applied"] == 2
+    assert report["unapplied"] == []
+    reader = PdfReader(BytesIO(corrected))
+    assert len(reader.pages) == 2
+    appendix = reader.pages[-1].extract_text()
+    assert "CRM PRICE CORRECTION" in appendix
+    assert "fees | 500 | 550" in appendix
+    assert "total | 25470 | 25520" in appendix
+
+
+def test_new_price_is_visible_when_supplier_voucher_contains_no_price():
+    source = _simple_supplier_pdf()
+    corrected, report = supplier_pdf.patch_supplier_pdf(
+        source,
+        {"service_kind": "hotel", "fare": None, "supplierCost": None, "total": None},
+        {"service_kind": "hotel", "fare": "200", "supplierCost": "200", "total": "200"},
+    )
+
+    assert corrected is not None
+    assert report["strategy"] == "financial_correction_appendix"
+    assert report["applied"] == 3
+    appendix = PdfReader(BytesIO(corrected)).pages[-1].extract_text()
+    assert "SERVICE: HOTEL" in appendix
+    assert "fare | NOT SET | 200" in appendix
+    assert "supplierCost | NOT SET | 200" in appendix
+    assert "total | NOT SET | 200" in appendix
 
 
 def test_confirmed_pricing_values_override_stale_supplier_snapshot():

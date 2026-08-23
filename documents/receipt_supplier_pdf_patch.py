@@ -197,26 +197,34 @@ def _page_marker_token(value) -> str:
     return "".join(character for character in str(value or "").casefold() if character.isalnum())
 
 
-def _target_matches_page(target: AmountTarget, page_index: int, page) -> bool:
-    """Match grouped tickets by their identity, not by their ordinal position.
+def _target_matches_page(
+    target: AmountTarget,
+    page_index: int,
+    page,
+    page_text_token: str | None = None,
+) -> bool:
+    """Match grouped tickets to the recognized physical source page.
 
     A single ticket can span several physical PDF pages. The editor's second
     blank is therefore not necessarily PDF page two (Aeroflot commonly uses
-    pages 1–2 for ticket one and 3–4 for ticket two). Ticket/document markers
-    locate the actual financial page; the ordinal index remains a fallback for
-    older payloads that do not contain identity fields.
+    pages 1–2 for ticket one and 3–4 for ticket two). Recognition records that
+    physical page explicitly. Ticket/document markers remain the fallback for
+    older payloads that do not contain a page number.
     """
 
+    if target.page_index is not None:
+        return target.page_index == page_index
     if target.page_markers:
-        try:
-            page_text = _page_marker_token(page.extract_text() or "")
-        except Exception:
-            page_text = ""
+        if page_text_token is None:
+            try:
+                page_text_token = _page_marker_token(page.extract_text() or "")
+            except Exception:
+                page_text_token = ""
         return any(
-            marker and marker in page_text
+            marker and marker in page_text_token
             for marker in (_page_marker_token(value) for value in target.page_markers)
         )
-    return target.page_index is None or target.page_index == page_index
+    return True
 
 
 def _collect_targets(

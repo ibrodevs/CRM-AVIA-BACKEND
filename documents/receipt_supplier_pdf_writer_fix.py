@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from io import BytesIO
 
 
@@ -18,6 +19,39 @@ def _layout_lines(content: bytes):
             for child in node:
                 yield from walk(child)
 
+    def walk_characters(node):
+        if isinstance(node, LTChar):
+            yield node
+            return
+        if isinstance(node, LTContainer):
+            for child in node:
+                yield from walk_characters(child)
+
+    def group_characters(characters):
+        """Build visual lines for PDFs that wrap all text in an LTFigure.
+
+        Some supplier generators expose thousands of valid LTChar objects but
+        no LTTextLine objects at all. Grouping by baseline keeps the same box
+        based replacement path available for those PDFs.
+        """
+
+        rows = []
+        for character in sorted(characters, key=lambda item: (-item.y0, item.x0)):
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if abs(candidate["baseline"] - character.y0)
+                    <= max(1.5, character.height * 0.18)
+                ),
+                None,
+            )
+            if row is None:
+                row = {"baseline": character.y0, "characters": []}
+                rows.append(row)
+            row["characters"].append(character)
+        return rows
+
     pages = []
     for page_index, layout in enumerate(extract_pages(BytesIO(content))):
         lines = []
@@ -31,6 +65,20 @@ def _layout_lines(content: bytes):
                 "characters": characters,
                 "bbox": line.bbox,
             })
+        if not lines:
+            for row in group_characters(list(walk_characters(layout))):
+                characters = sorted(row["characters"], key=lambda character: character.x0)
+                lines.append({
+                    "page": page_index,
+                    "text": "".join(character.get_text() for character in characters),
+                    "characters": characters,
+                    "bbox": (
+                        min(character.x0 for character in characters),
+                        min(character.y0 for character in characters),
+                        max(character.x1 for character in characters),
+                        max(character.y1 for character in characters),
+                    ),
+                })
         pages.append(lines)
     return pages
 
@@ -94,6 +142,156 @@ def _pdf_literal(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
+def _financial_differences(before: dict, after: dict, *, prefix: str = ""):
+    """Return every user-visible price change, including newly entered values."""
+
+    from documents import receipt_supplier_pdf_patch as supplier_pdf
+
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    old_group = supplier_pdf._first_group(before)
+    new_group = supplier_pdf._first_group(after)
+    if old_group or new_group:
+        differences = []
+        for index, (old_child, new_child) in enumerate(
+            zip(old_group, new_group, strict=False)
+        ):
+            differences.extend(
+                _financial_differences(
+                    old_child,
+                    new_child,
+                    prefix=f"{prefix}receipt[{index}].",
+                )
+            )
+        return differences
+
+    keys = (
+        "fare",
+        "taxes",
+        "fees",
+        "ticketCost",
+        "reservedSeatCost",
+        "supplierCost",
+        "agencyServiceFee",
+        "additionalFees",
+        "markup",
+        "discount",
+        "commission",
+        "total",
+    )
+    differences = []
+    for key in keys:
+        old = supplier_pdf._decimal(supplier_pdf._value(before, key))
+        new = supplier_pdf._decimal(supplier_pdf._value(after, key))
+        if new is None or old == new:
+            continue
+        differences.append((f"{prefix}{key}", old, new))
+
+    old_output = supplier_pdf._value(before, "output")
+    new_output = supplier_pdf._value(after, "output")
+    old_mode = old_output.get("priceMode") if isinstance(old_output, dict) else None
+    new_mode = new_output.get("priceMode") if isinstance(new_output, dict) else None
+    if new_mode and old_mode != new_mode:
+        differences.append((f"{prefix}priceMode", old_mode, new_mode))
+    return differences
+
+
+def _append_financial_correction_page(
+    content: bytes,
+    before: dict,
+    after: dict,
+) -> tuple[bytes | None, dict]:
+    """Append an explicit correction sheet when source glyphs cannot be edited.
+
+    Image-only PDFs and PDFs with path-rendered text do not have a safe amount
+    box to replace. Publishing the unchanged file would be misleading, so the
+    working copy receives a compact, machine-readable correction page. The
+    supplier pages and the separately stored source version remain untouched.
+    """
+
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    differences = _financial_differences(before, after)
+    report = {
+        "requested": len(differences),
+        "applied": 0,
+        "replacements": 0,
+        "unapplied": [],
+        "optional_unapplied": [],
+        "font_preserved": True,
+        "source_immutable": True,
+        "strategy": "financial_correction_appendix",
+        "fallback": True,
+    }
+    if not differences:
+        return None, report
+
+    def rendered(value) -> str:
+        if value is None:
+            return "NOT SET"
+        if isinstance(value, Decimal):
+            return format(value, "f")
+        return str(value).upper()
+
+    service = str(
+        after.get("service_kind")
+        or after.get("service_type")
+        or before.get("service_kind")
+        or before.get("service_type")
+        or "OTHER"
+    ).upper()
+    lines = [
+        "CRM PRICE CORRECTION - WORKING COPY",
+        "Supplier source pages are preserved without changes.",
+        f"SERVICE: {service}",
+        "",
+        "FIELD | BEFORE | AFTER",
+        *(
+            f"{key} | {rendered(old)} | {rendered(new)}"
+            for key, old, new in differences
+        ),
+    ]
+
+    reader = PdfReader(BytesIO(content), strict=False)
+    writer = PdfWriter()
+    writer.clone_document_from_reader(reader)
+    font_name = NameObject("/CRMCorrection")
+    page_width = 595.28
+    page_height = 841.89
+    lines_per_page = 42
+    for start in range(0, len(lines), lines_per_page):
+        page = writer.add_blank_page(width=page_width, height=page_height)
+        resources = DictionaryObject()
+        resources[NameObject("/Font")] = DictionaryObject({
+            font_name: DictionaryObject({
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            })
+        })
+        page[NameObject("/Resources")] = resources
+        commands = []
+        for row_index, line in enumerate(lines[start : start + lines_per_page]):
+            font_size = 15 if start == 0 and row_index == 0 else 9
+            y = 792 - row_index * 17
+            safe_line = line.encode("ascii", errors="replace").decode("ascii")
+            commands.append(
+                f"BT /CRMCorrection {font_size} Tf 45 {y} Td "
+                f"({_pdf_literal(safe_line)}) Tj ET\n"
+            )
+        stream = DecodedStreamObject()
+        stream.set_data("".join(commands).encode("ascii"))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+
+    output = BytesIO()
+    writer.write(output)
+    report["applied"] = len(differences)
+    report["replacements"] = len(differences)
+    report["appended_pages"] = (len(lines) + lines_per_page - 1) // lines_per_page
+    return output.getvalue(), report
+
+
 def _is_financial_alias_line(target, line_text: str) -> bool:
     key = target.key.rsplit(".", 1)[-1]
     token = _token(line_text)
@@ -149,9 +347,12 @@ def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tu
         target_matches = []
         for page_index, lines in enumerate(pages):
             page_text = _token(" ".join(line["text"] for line in lines))
-            if target.page_markers and not any(_token(marker) in page_text for marker in target.page_markers):
-                continue
-            if not target.page_markers and target.page_index is not None and target.page_index != page_index:
+            if not supplier_pdf._target_matches_page(
+                target,
+                page_index,
+                None,
+                page_text,
+            ):
                 continue
             candidates = [
                 box
@@ -513,7 +714,13 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
     """Use pypdf's parsed operators when the supplier stream is valid."""
 
     from pypdf import PdfReader
-    from pypdf.generic import ArrayObject, ByteStringObject, ContentStream, TextStringObject
+    from pypdf.generic import (
+        ArrayObject,
+        ByteStringObject,
+        ContentStream,
+        NameObject,
+        TextStringObject,
+    )
 
     from documents import receipt_supplier_pdf_patch as supplier_pdf
 
@@ -544,6 +751,15 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
         }
         stream = ContentStream(page.get_contents(), reader)
         operation_contexts = _operation_text_contexts(stream, codecs, supplier_pdf)
+        page_text_token = None
+        if any(
+            target.page_markers and target.page_index is None
+            for target in targets
+        ):
+            try:
+                page_text_token = supplier_pdf._page_marker_token(page.extract_text() or "")
+            except Exception:
+                page_text_token = ""
         active_font = None
         page_changed = False
         page_target_keys: set[str] = set()
@@ -565,7 +781,9 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
                 for target in targets:
                     if target.key in applied_keys:
                         continue
-                    if not supplier_pdf._target_matches_page(target, page_index, page):
+                    if not supplier_pdf._target_matches_page(
+                        target, page_index, page, page_text_token
+                    ):
                         continue
                     replacements = _replace_combined_text_all(
                         array,
@@ -605,7 +823,9 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
             for target in targets:
                 if target.key in applied_keys:
                     continue
-                if not supplier_pdf._target_matches_page(target, page_index, page):
+                if not supplier_pdf._target_matches_page(
+                    target, page_index, page, page_text_token
+                ):
                     continue
                 replacement_item, replacements = _replace_text_operand(
                     updated_item,
@@ -633,7 +853,7 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
                         page_target_keys.add(key)
 
         if page_changed:
-            page.replace_contents(stream)
+            page[NameObject("/Contents")] = stream
             report["applied"] += len(page_target_keys - applied_keys)
             applied_keys.update(page_target_keys)
 
@@ -793,13 +1013,24 @@ def _patch_supplier_pdf_raw(content: bytes, before: dict, after: dict) -> tuple[
         codecs = _page_codecs(page, supplier_pdf)
         if not codecs:
             continue
+        page_text_token = None
+        if any(
+            target.page_markers and target.page_index is None
+            for target in targets
+        ):
+            try:
+                page_text_token = supplier_pdf._page_marker_token(page.extract_text() or "")
+            except Exception:
+                page_text_token = ""
 
         page_replacements: dict[tuple[int, int], bytes] = {}
         page_target_keys: set[str] = set()
         for target in targets:
             if target.key in applied_keys or target.key in page_target_keys:
                 continue
-            if not supplier_pdf._target_matches_page(target, page_index, page):
+            if not supplier_pdf._target_matches_page(
+                target, page_index, page, page_text_token
+            ):
                 continue
             replacements = _find_raw_replacements(
                 data,
@@ -858,6 +1089,19 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
             if report.get("unapplied"):
                 overlay_report["raw_unapplied"] = report["unapplied"]
             return overlay_corrected, overlay_report
+        appendix_corrected, appendix_report = _append_financial_correction_page(
+            content,
+            before,
+            after,
+        )
+        if appendix_corrected is not None:
+            if structured_error:
+                appendix_report["structured_error"] = structured_error
+            if report.get("unapplied"):
+                appendix_report["raw_unapplied"] = report["unapplied"]
+            if overlay_report.get("unapplied"):
+                appendix_report["overlay_unapplied"] = overlay_report["unapplied"]
+            return appendix_corrected, appendix_report
     if structured_error:
         report["structured_error"] = structured_error
     elif structured_report and structured_report.get("unapplied"):
