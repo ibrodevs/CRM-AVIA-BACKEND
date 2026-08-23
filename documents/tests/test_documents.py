@@ -609,6 +609,118 @@ class TestDocuments:
         assert verified["fees"] == "5.00"
         assert verified["total"] == "125.00"
 
+    def test_legacy_mutated_pdf_baseline_is_rebuilt_from_immutable_source(
+        self,
+        tenant,
+        admin_user,
+        monkeypatch,
+    ):
+        """A legacy requested=0 failure must repair itself from PDF v1."""
+
+        from documents import receipt_supplier_pdf_patch as supplier_pdf
+        from documents.services import add_document_version
+
+        original_fields = {
+            "service_kind": "rail",
+            "service_type": "ЖД",
+            "fare": "8308.20",
+            "total": "8308.20",
+            "groupTickets": [
+                {
+                    "service_kind": "rail",
+                    "receiptPage": 1,
+                    "ticketCost": "2217.10",
+                    "reservedSeatCost": "1937.00",
+                    "fare": "4154.10",
+                    "total": "4154.10",
+                },
+                {
+                    "service_kind": "rail",
+                    "receiptPage": 2,
+                    "ticketCost": "2217.10",
+                    "reservedSeatCost": "1937.00",
+                    "fare": "4154.10",
+                    "total": "4154.10",
+                },
+            ],
+        }
+        corrected_fields = json.loads(json.dumps(original_fields))
+        corrected_fields["groupTickets"][0]["ticketCost"] = "3217.10"
+        corrected_fields["groupTickets"][0]["fare"] = "5154.10"
+        corrected_fields["groupTickets"][0]["total"] = "5154.10"
+        corrected_fields["fare"] = "9308.20"
+        corrected_fields["total"] = "9308.20"
+
+        document = Document.objects.create(
+            tenant=tenant,
+            kind=Document.Kind.ITINERARY_RECEIPT,
+            title="legacy-grouped-rail.pdf",
+            created_by=admin_user,
+            metadata={
+                "supplier_original": {
+                    # Reproduce the corrupt legacy state: the cached source was
+                    # populated from the already edited document and has no v1
+                    # checksum proving its origin.
+                    "base_verified_data": corrected_fields,
+                    "verified_data": corrected_fields,
+                },
+                "receipt_import": {"verified_data": corrected_fields},
+            },
+        )
+        original = add_document_version(
+            document,
+            content=b"%PDF-1.4\n% immutable supplier source\n%%EOF\n",
+            mime="application/pdf",
+            name="legacy-grouped-rail.pdf",
+            user=admin_user,
+            origin="uploaded",
+        )
+        monkeypatch.setattr(
+            "documents.services.extract_receipt_fields",
+            lambda *_args, **_kwargs: {
+                "status": "parsed",
+                "fields": original_fields,
+            },
+        )
+
+        rebuilt = supplier_pdf._base_verified_from_document(document)
+        targets = supplier_pdf._collect_targets(rebuilt, corrected_fields)
+
+        assert rebuilt["groupTickets"][0]["ticketCost"] == "2217.10"
+        assert {(target.key, target.page_index) for target in targets} == {
+            ("receipt[0].ticketCost", 0),
+            ("receipt[0].total", 0),
+        }
+
+        monkeypatch.setattr(
+            supplier_pdf,
+            "patch_supplier_pdf",
+            lambda _content, before, after: (
+                None,
+                {
+                    "requested": len(supplier_pdf._collect_targets(before, after)),
+                    "applied": 0,
+                    "unapplied": ["test"],
+                    "strategy": "test",
+                    "font_preserved": True,
+                    "source_immutable": True,
+                },
+            ),
+        )
+        result = supplier_pdf._sync_supplier_pdf(
+            document,
+            rebuilt,
+            corrected_fields,
+            admin_user,
+        )
+        document.refresh_from_db()
+
+        assert result["requested"] == 2
+        supplier = document.metadata["supplier_original"]
+        assert supplier["base_verified_data"]["groupTickets"][0]["ticketCost"] == "2217.10"
+        assert supplier["base_source_checksum_sha256"] == original.checksum_sha256
+        assert supplier["base_source_version"] == 1
+
     def test_receipt_import_confirm_can_bind_directly_to_company(
         self,
         admin_client,

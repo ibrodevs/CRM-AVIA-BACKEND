@@ -181,6 +181,47 @@ def _first_group(data: dict) -> list:
     return []
 
 
+def _source_financial_signature(data: dict) -> tuple:
+    """Compare legacy snapshots with a fresh immutable-source extraction.
+
+    Old records do not have a source checksum.  Some of those snapshots are
+    valid but contain an editor-only singleton ``receipts`` wrapper; others
+    were accidentally captured *after* a price edit.  Comparing the monetary
+    content lets us keep the richer valid wrapper while rejecting a mutated
+    baseline.  Multi-ticket documents are compared per ticket so an edit to
+    only one passenger cannot be hidden by an unchanged parent aggregate.
+    """
+
+    if not isinstance(data, dict):
+        return ()
+    group = _first_group(data)
+    scopes = group if len(group) > 1 else [data]
+    financial_keys = tuple(key for key, _aliases in _FINANCIAL_FIELDS)
+
+    def amount(value):
+        parsed = _decimal(value)
+        return str(parsed.normalize()) if parsed is not None else None
+
+    def breakdown(scope: dict, key: str) -> tuple:
+        rows = _value(scope, key)
+        if not isinstance(rows, list):
+            return ()
+        return tuple(sorted(
+            (_row_identity(row), amount(row.get("amount")))
+            for row in rows
+            if isinstance(row, dict)
+        ))
+
+    return tuple(
+        (
+            tuple(amount(_value(scope, key)) for key in financial_keys),
+            tuple(breakdown(scope, key) for key, _aliases in _BREAKDOWNS),
+        )
+        for scope in scopes
+        if isinstance(scope, dict)
+    )
+
+
 def _ticket_page_markers(data: dict) -> tuple[str, ...]:
     if not isinstance(data, dict):
         return ()
@@ -583,6 +624,74 @@ def _base_verified_from_document(document) -> dict:
     metadata = document.metadata or {}
     supplier = metadata.get("supplier_original") or {}
     cached = supplier.get("base_verified_data")
+    original = document.versions.filter(mime_type="application/pdf").order_by("version").first()
+    source_checksum = str(getattr(original, "checksum_sha256", "") or "")
+    cached_checksum = str(supplier.get("base_source_checksum_sha256") or "")
+    # Only trust a cached baseline when it is explicitly tied to the immutable
+    # source PDF. Legacy documents may have a `base_verified_data` value that
+    # was first populated after an editor update; treating that mutable value
+    # as the supplier source makes every edit compare equal and yields
+    # requested=0. Re-extract v1 once and stamp its checksum to self-heal those
+    # documents without a data migration.
+    if (
+        isinstance(cached, dict)
+        and cached
+        and original is not None
+        and source_checksum
+        and cached_checksum == source_checksum
+    ):
+        return cached
+
+    if original is not None:
+        try:
+            from documents.services import extract_receipt_fields
+
+            with original.file.open("rb") as source:
+                extraction = extract_receipt_fields(
+                    source.read(),
+                    mime=original.mime_type,
+                    name=original.original_name or document.title,
+                )
+            verified = receipt_verified_data(
+                extraction.get("fields") or {},
+                parser_status=extraction.get("status") or "parsed",
+            )
+            if verified:
+                # Preserve a financially identical legacy snapshot because it
+                # can contain editor compatibility structure (notably a
+                # singleton receipts wrapper) absent from a fresh parser run.
+                # A financially different cache is the broken mutable
+                # baseline responsible for requested=0 and must be replaced.
+                if (
+                    isinstance(cached, dict)
+                    and cached
+                    and _source_financial_signature(cached)
+                    == _source_financial_signature(verified)
+                ):
+                    logger.info(
+                        "supplier_pdf_base_validated document_id=%s source_version=%s "
+                        "source_checksum=%s",
+                        document.id,
+                        original.version,
+                        source_checksum,
+                    )
+                    return cached
+                logger.info(
+                    "supplier_pdf_base_rebuilt document_id=%s source_version=%s source_checksum=%s",
+                    document.id,
+                    original.version,
+                    source_checksum,
+                )
+                return verified
+        except Exception:
+            logger.exception(
+                "supplier_pdf_base_rebuild_failed document_id=%s source_version=%s",
+                document.id,
+                original.version,
+            )
+
+    # A checksum-less cached snapshot remains a better fallback than no
+    # financial source at all when the immutable PDF cannot be parsed.
     if isinstance(cached, dict) and cached:
         return cached
     receipt_import = metadata.get("receipt_import") or {}
@@ -606,16 +715,9 @@ def _base_verified_from_document(document) -> dict:
         verified = _draft_base_verified(draft, import_job.parser_status)
         if verified:
             return verified
-    original = document.versions.filter(mime_type="application/pdf").order_by("version").first()
     if original is None:
         return {}
-    try:
-        from documents.services import extract_receipt_fields
-        with original.file.open("rb") as source:
-            extraction = extract_receipt_fields(source.read(), mime=original.mime_type, name=original.original_name or document.title)
-        return receipt_verified_data(extraction.get("fields") or {}, parser_status=extraction.get("status") or "parsed")
-    except Exception:
-        return {}
+    return {}
 
 
 def _confirmed_verified_data(document, submitted: dict, parser_status: str) -> dict:
@@ -647,9 +749,16 @@ def _confirmed_verified_data(document, submitted: dict, parser_status: str) -> d
 def _sync_supplier_pdf(document, base_verified: dict, corrected_verified: dict, user) -> dict:
     metadata = document.metadata or {}
     supplier = {**(metadata.get("supplier_original") or {})}
-    if base_verified:
-        supplier.setdefault("base_verified_data", json_safe(base_verified))
     original = document.versions.filter(mime_type="application/pdf").order_by("version").first()
+    if base_verified:
+        # The value returned by `_base_verified_from_document` is either tied
+        # to this immutable source checksum or rebuilt directly from v1. Always
+        # replace a legacy/unverified cache so one successful retry repairs the
+        # document permanently.
+        supplier["base_verified_data"] = json_safe(base_verified)
+        if original is not None and original.checksum_sha256:
+            supplier["base_source_checksum_sha256"] = original.checksum_sha256
+            supplier["base_source_version"] = original.version
     result = {"status": "source", "source_version": original.version if original else None, "corrected_version": None, "requested": 0, "applied": 0, "font_preserved": True}
     if original is None or not base_verified:
         result["status"] = "unsupported"
