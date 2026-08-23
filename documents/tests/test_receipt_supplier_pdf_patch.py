@@ -5,8 +5,10 @@ from types import SimpleNamespace
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
     ArrayObject,
+    ByteStringObject,
     DecodedStreamObject,
     DictionaryObject,
+    FloatObject,
     NameObject,
     NumberObject,
     TextStringObject,
@@ -19,6 +21,7 @@ install_receipt_supplier_pdf_font_codec()
 install_receipt_supplier_pdf_writer_fix()
 
 from documents import receipt_supplier_pdf_patch as supplier_pdf  # noqa: E402
+from documents import receipt_supplier_pdf_writer_fix as writer_fix  # noqa: E402
 
 
 def _simple_supplier_pdf() -> bytes:
@@ -60,6 +63,75 @@ def _simple_fare_pdf() -> bytes:
     stream = DecodedStreamObject()
     stream.set_data(b"BT /F1 12 Tf 72 720 Td (FARE 23720 RUB TAX 1250 RUB TOTAL 25470 RUB) Tj ET")
     page[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def _fragmented_amount_pdf() -> bytes:
+    """Supplier-style stream with one independently positioned glyph per Tj."""
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=595, height=842)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+        NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+    })
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+    commands = [b"BT /F1 12 Tf 72 720 Td (TOTAL ) Tj\n"]
+    for character in "875.00":
+        commands.append(f"({character}) Tj\n".encode("ascii"))
+    commands.append(b"ET")
+    stream = DecodedStreamObject()
+    stream.set_data(b"".join(commands))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def _nested_mixed_font_amount_pdf() -> bytes:
+    """Amount split across equivalent font subsets inside a Form XObject."""
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=595, height=842)
+
+    def font(base_font: str):
+        return writer._add_object(DictionaryObject({
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject(base_font),
+            NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+        }))
+
+    form = DecodedStreamObject()
+    form[NameObject("/Type")] = NameObject("/XObject")
+    form[NameObject("/Subtype")] = NameObject("/Form")
+    form[NameObject("/BBox")] = ArrayObject(
+        [NumberObject(0), NumberObject(0), NumberObject(500), NumberObject(500)]
+    )
+    form[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({
+            NameObject("/ArialFull"): font("/ArialMT"),
+            NameObject("/ArialSubset"): font("/Arial"),
+        })
+    })
+    form.set_data(
+        b"BT /ArialFull 12 Tf 72 400 Td (TOTAL 8) Tj "
+        b"/ArialSubset 12 Tf (75.0) Tj /ArialFull 12 Tf (0) Tj ET"
+    )
+    form_ref = writer._add_object(form)
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/XObject"): DictionaryObject({NameObject("/Receipt"): form_ref})
+    })
+    page_stream = DecodedStreamObject()
+    page_stream.set_data(b"q /Receipt Do Q")
+    page[NameObject("/Contents")] = writer._add_object(page_stream)
     output = BytesIO()
     writer.write(output)
     return output.getvalue()
@@ -159,6 +231,43 @@ def test_group_ticket_target_keeps_its_source_page_index():
     assert targets[0].new == Decimal("3372.10")
 
 
+def test_page_wide_group_price_uses_child_index_when_ticket_starts_on_page_three():
+    first = {
+        "receiptPage": 1,
+        "fare": "6400",
+        "total": "6400",
+        "fareBreakdown": [{"code": "FARE", "amount": "6400"}],
+    }
+    second = {
+        "receiptPage": 3,
+        "fare": "6400",
+        "total": "6400",
+        "fareBreakdown": [{"code": "FARE", "amount": "6400"}],
+    }
+    before = {"receipts": [first, second]}
+    after = {
+        "receipts": [
+            first,
+            {
+                **second,
+                "fare": "6500",
+                "total": "6500",
+                "fareBreakdown": [{"code": "FARE", "amount": "6500"}],
+            },
+        ]
+    }
+
+    targets = supplier_pdf._collect_targets(before, after)
+    safe = writer_fix._page_wide_target_keys(before, after, targets, supplier_pdf)
+
+    assert safe == {
+        "receipt[1].fare",
+        "receipt[1].total",
+        "receipt[1].fareBreakdown[0]",
+    }
+    assert {target.page_index for target in targets} == {2}
+
+
 def test_type1_supplier_pdf_amount_changes_in_place_with_same_font_resource():
     source = _simple_supplier_pdf()
     corrected, report = supplier_pdf.patch_supplier_pdf(
@@ -183,6 +292,92 @@ def test_type1_supplier_pdf_amount_changes_in_place_with_same_font_resource():
     corrected_font = corrected_reader.pages[0]["/Resources"]["/Font"]["/F1"].get_object()
     assert source_font["/BaseFont"] == corrected_font["/BaseFont"] == "/Helvetica"
     assert source_font["/Subtype"] == corrected_font["/Subtype"] == "/Type1"
+
+
+def test_fragmented_supplier_amount_replaces_each_original_glyph_without_overlay():
+    source = _fragmented_amount_pdf()
+    corrected, report = supplier_pdf.patch_supplier_pdf(
+        source,
+        {"total": "875.00"},
+        {"total": "976.01"},
+    )
+
+    assert corrected is not None
+    assert report["strategy"] == "content_stream"
+    assert report["font_preserved"] is True
+    assert report["requested"] == report["applied"] == 1
+    reader = PdfReader(BytesIO(corrected), strict=False)
+    text = reader.pages[0].extract_text()
+    assert "TOTAL 976.01" in text
+    assert "875.00" not in text
+    assert "/CRMCorrection" not in reader.pages[0]["/Resources"]["/Font"]
+
+
+def test_nested_mixed_font_amount_uses_one_equivalent_face_without_overlay():
+    source = _nested_mixed_font_amount_pdf()
+    corrected, report = supplier_pdf.patch_supplier_pdf(
+        source,
+        {"total": "875.00"},
+        {"total": "976.01"},
+    )
+
+    assert corrected is not None
+    assert report["strategy"] == "content_stream"
+    assert report["font_preserved"] is True
+    assert report["requested"] == report["applied"] == 1
+    reader = PdfReader(BytesIO(corrected), strict=False)
+    assert "TOTAL 976.01" in reader.pages[0].extract_text()
+    assert "875.00" not in reader.pages[0].extract_text()
+    form = reader.pages[0]["/Resources"]["/XObject"]["/Receipt"].get_object()
+    assert b"/ArialFull 12 Tf\n<37362e30> Tj" in form.get_data()
+
+
+def test_duplicate_bold_total_updates_its_overprint_reset_for_new_glyph_widths():
+    old_text = "4 819,20 ₽"
+    codec = {
+        "kind": "single-byte",
+        "byte_map": {**{code: chr(code) for code in range(32, 127)}, 128: "₽"},
+        "inverse": {**{chr(code): code for code in range(32, 127)}, "₽": 128},
+        "widths": {
+            **{str(digit): 600 for digit in range(10)},
+            "1": 300,
+            " ": 250,
+            ",": 250,
+            "₽": 600,
+        },
+        "default_width": 600,
+    }
+
+    def operand(character: str):
+        return ByteStringObject(bytes([codec["inverse"][character]]))
+
+    array = ArrayObject(
+        [*(operand(character) for character in old_text), FloatObject(4000)]
+        + [operand(character) for character in old_text]
+    )
+    target = SimpleNamespace(
+        old=Decimal("4819.20"),
+        new=Decimal("5021.31"),
+        aliases=(),
+    )
+
+    replaced = writer_fix._replace_combined_text_all(
+        array,
+        codec,
+        target,
+        "Итого",
+        supplier_pdf,
+    )
+
+    visible = "".join(
+        supplier_pdf._decode_text(item, codec)
+        for item in array
+        if isinstance(item, ByteStringObject)
+    )
+    reset = next(float(item) for item in array if not isinstance(item, ByteStringObject))
+    assert replaced == 2
+    assert visible == "5 021,31 ₽5 021,31 ₽"
+    assert reset == 3700
 
 
 def test_supplier_pdf_can_close_fare_as_it_without_hiding_taxes_or_total():

@@ -605,7 +605,7 @@ def _replace_combined_text_all(
     it without asking pypdf to parse the malformed text object.
     """
 
-    from pypdf.generic import ByteStringObject, TextStringObject
+    from pypdf.generic import ByteStringObject, FloatObject, TextStringObject
 
     positions = [
         index
@@ -632,6 +632,59 @@ def _replace_combined_text_all(
         updated = pattern.sub(lambda match: supplier_pdf._format_like(match.group(0), target.new), combined)
         if len(updated) != len(combined):
             return 0
+
+        # Some RZD generators create bold totals by painting the same amount
+        # twice and jumping backwards inside one TJ array. The jump was
+        # calculated for the original glyph widths. When different digits have
+        # different widths, keeping that old jump makes the two new copies drift
+        # apart even though both strings were replaced correctly.
+        chunk_ranges = []
+        chunk_offset = 0
+        for array_index, chunk in zip(positions, chunks, strict=True):
+            chunk_ranges.append((chunk_offset, chunk_offset + len(chunk), array_index))
+            chunk_offset += len(chunk)
+
+        widths = codec.get("widths") if isinstance(codec, dict) else None
+        default_width = codec.get("default_width", 1000) if isinstance(codec, dict) else 1000
+        if widths and len(matches) > 1:
+            for current, following in zip(matches, matches[1:], strict=False):
+                current_end = next(
+                    (
+                        array_index
+                        for start, end, array_index in chunk_ranges
+                        if start <= current.end() - 1 < end
+                    ),
+                    None,
+                )
+                following_start = next(
+                    (
+                        array_index
+                        for start, end, array_index in chunk_ranges
+                        if start <= following.start() < end
+                    ),
+                    None,
+                )
+                if current_end is None or following_start is None:
+                    continue
+                numeric_items = []
+                for array_index in range(current_end + 1, following_start):
+                    item = array[array_index]
+                    if isinstance(item, (TextStringObject, ByteStringObject)):
+                        continue
+                    try:
+                        numeric_items.append((array_index, float(item)))
+                    except (TypeError, ValueError):
+                        continue
+                if not numeric_items:
+                    continue
+                reset_index, reset_value = max(numeric_items, key=lambda pair: abs(pair[1]))
+                if abs(reset_value) < 1000:
+                    continue
+                replacement_text = supplier_pdf._format_like(current.group(0), target.new)
+                old_width = sum(float(widths.get(char, default_width)) for char in current.group(0))
+                new_width = sum(float(widths.get(char, default_width)) for char in replacement_text)
+                array[reset_index] = FloatObject(reset_value + new_width - old_width)
+
         offset = 0
         encoded_chunks = []
         for chunk in chunks:
@@ -729,7 +782,12 @@ def _page_wide_target_keys(before: dict, after: dict, targets, supplier_pdf) -> 
     for target in targets:
         if isinstance(target.new, str):
             continue
-        pairs = scope_pairs.get(target.page_index, scope_pairs.get(None, []))
+        # ``page_index`` is the physical PDF page. A grouped receipt can span
+        # multiple pages (for example tickets on pages 0 and 2), so it is not
+        # interchangeable with the child index used by ``scope_pairs``.
+        child_match = re.match(r"receipt\[(\d+)\]\.", target.key)
+        scope_index = int(child_match.group(1)) if child_match else None
+        pairs = scope_pairs.get(scope_index, scope_pairs.get(None, []))
         equal_source = [new for old, new in pairs if old == target.old]
         if equal_source and all(new == target.new for new in equal_source):
             safe.add(target.key)
@@ -836,6 +894,476 @@ def _replace_text_operand(
     return None, 0
 
 
+def _replace_operand_characters(value, codec, replacements: dict[int, str], supplier_pdf):
+    """Replace selected characters without rebuilding an entire PDF string.
+
+    A number of railway and voucher generators emit every visible glyph in a
+    separate ``Tj`` operation.  Re-encoding the whole operand is unnecessary
+    and can fail when the adjacent currency suffix is absent from ToUnicode.
+    Updating only the known character byte spans preserves the supplier font,
+    text matrix, kerning and baseline exactly.
+    """
+
+    from pypdf.generic import ByteStringObject
+
+    if not replacements:
+        return value
+    raw = supplier_pdf._original_bytes(value)
+    visible = supplier_pdf._decode_text(value, codec)
+    spans: list[tuple[int, int]] = []
+    if isinstance(codec, dict) and codec.get("kind") == "single-byte":
+        spans = [(index, index + 1) for index in range(len(raw))]
+    elif isinstance(codec, dict) and codec.get("kind") == "multibyte":
+        encoding = codec.get("encoding")
+        try:
+            decoded = raw.decode(encoding)
+            cursor = 0
+            for character in decoded:
+                chunk = character.encode(encoding)
+                spans.append((cursor, cursor + len(chunk)))
+                cursor += len(chunk)
+        except Exception:
+            spans = []
+    if len(spans) != len(visible):
+        return None
+
+    updated = raw
+    for character_index, replacement in sorted(replacements.items(), reverse=True):
+        if character_index < 0 or character_index >= len(spans):
+            return None
+        encoded = supplier_pdf._encode_text(replacement, codec)
+        if encoded is None:
+            return None
+        start, end = spans[character_index]
+        if len(encoded) != end - start:
+            return None
+        updated = updated[:start] + bytes(encoded) + updated[end:]
+    return ByteStringObject(updated)
+
+
+def _fragmented_text_entries(stream, codecs, supplier_pdf):
+    """Return one searchable string plus exact operand/character mappings."""
+
+    from pypdf.generic import ArrayObject, ByteStringObject, TextStringObject
+
+    active_font = None
+    active_font_size = None
+    combined: list[str] = []
+    entries: list[dict] = []
+    offset = 0
+    for operation_index, (operands, operator) in enumerate(stream.operations):
+        if operator == b"Tf" and operands:
+            active_font = str(operands[0])
+            active_font_size = operands[1] if len(operands) > 1 else None
+            continue
+        values = []
+        if operator == b"TJ" and operands and isinstance(operands[0], ArrayObject):
+            values = [
+                (array_index, value)
+                for array_index, value in enumerate(operands[0])
+                if isinstance(value, (TextStringObject, ByteStringObject))
+            ]
+        elif operator in (b"Tj", b"'", b'"') and operands:
+            value = operands[-1]
+            if isinstance(value, (TextStringObject, ByteStringObject)):
+                values = [(None, value)]
+        codec = codecs.get(active_font)
+        for array_index, value in values:
+            visible = supplier_pdf._decode_text(value, codec)
+            if not visible:
+                continue
+            entries.append({
+                "operation_index": operation_index,
+                "array_index": array_index,
+                "value": value,
+                "codec": codec,
+                "font_name": active_font,
+                "font_size": active_font_size,
+                "start": offset,
+                "end": offset + len(visible),
+                "visible": visible,
+            })
+            combined.append(visible)
+            offset += len(visible)
+    return "".join(combined), entries
+
+
+def _replace_fragmented_text_all(
+    stream,
+    codecs,
+    target,
+    supplier_pdf,
+    *,
+    allow_unlabeled: bool = False,
+) -> int:
+    """Replace amounts split into one-glyph text operations in place.
+
+    The replacement must keep the supplier's printed character count.  This is
+    normally guaranteed by ``_format_like`` (grouping and decimal precision are
+    copied from the source).  Keeping one glyph per original slot is what makes
+    the result stable in Acrobat/Infix: there is no overlay, no new font and no
+    recalculated baseline.
+    """
+
+    combined, entries = _fragmented_text_entries(stream, codecs, supplier_pdf)
+    if not combined or not entries:
+        return 0
+
+    selected_matches: list[tuple[int, int, str]] = []
+    for variant in supplier_pdf._amount_variants(target.old):
+        pattern = re.compile(r"(?<!\d)" + re.escape(variant) + r"(?!\d)")
+        for match in pattern.finditer(combined):
+            replacement = supplier_pdf._format_like(match.group(0), target.new)
+            if len(replacement) != len(match.group(0)):
+                continue
+            context = combined[max(0, match.start() - 120): match.end() + 120].upper()
+            if (
+                target.aliases
+                and not allow_unlabeled
+                and not any(alias.upper() in context for alias in target.aliases)
+            ):
+                continue
+            selected_matches.append((match.start(), match.end(), replacement))
+        if selected_matches:
+            break
+    if not selected_matches:
+        return 0
+
+    entry_replacements: dict[int, dict[int, str]] = defaultdict(dict)
+    preferred_fonts: dict[int, str] = {}
+
+    def font_family(font_name: str | None) -> str:
+        codec = codecs.get(font_name) or {}
+        base_font = str(codec.get("base_font") or "").lstrip("/")
+        base_font = re.sub(r"^[A-Z]{6}\+", "", base_font)
+        # ArialMT and Arial are the same regular face. Keep style markers such
+        # as Bold/Italic so genuinely different faces are never unified.
+        return re.sub(r"MT$", "", base_font, flags=re.IGNORECASE).casefold()
+
+    for start, end, replacement in selected_matches:
+        match_entry_indices: list[int] = []
+        for combined_index, new_character in zip(range(start, end), replacement, strict=True):
+            for entry_index, entry in enumerate(entries):
+                if entry["start"] <= combined_index < entry["end"]:
+                    entry_replacements[entry_index][combined_index - entry["start"]] = new_character
+                    if entry_index not in match_entry_indices:
+                        match_entry_indices.append(entry_index)
+                    break
+        match_fonts = [entries[index]["font_name"] for index in match_entry_indices]
+        distinct_fonts = {font for font in match_fonts if font is not None}
+        families = {font_family(font) for font in distinct_fonts}
+        if len(distinct_fonts) > 1 and len(families) == 1 and "" not in families:
+            canonical_font = match_fonts[0]
+            if canonical_font is not None:
+                for entry_index in match_entry_indices:
+                    preferred_fonts[entry_index] = canonical_font
+
+    updated_values = {}
+    font_switches: dict[int, tuple[str, object, str, object]] = {}
+    for entry_index, replacements in entry_replacements.items():
+        entry = entries[entry_index]
+        desired = "".join(
+            replacements.get(index, character)
+            for index, character in enumerate(entry["visible"])
+        )
+        target_font = entry["font_name"]
+        target_codec = entry["codec"]
+        preferred_font = preferred_fonts.get(entry_index)
+        if preferred_font is not None and preferred_font != target_font:
+            # A local font switch is safe only for a standalone text operand;
+            # otherwise unchanged TJ chunks would still use the old encoding.
+            same_operation = [
+                candidate
+                for candidate in entries
+                if candidate["operation_index"] == entry["operation_index"]
+            ]
+            if len(same_operation) != 1:
+                return 0
+            target_font = preferred_font
+            target_codec = codecs[target_font]
+            encoded = supplier_pdf._encode_text(desired, target_codec)
+            if encoded is None:
+                return 0
+            from pypdf.generic import ByteStringObject
+
+            updated = ByteStringObject(bytes(encoded))
+            font_switches[entry["operation_index"]] = (
+                target_font,
+                entry["font_size"],
+                entry["font_name"],
+                entry["font_size"],
+            )
+        else:
+            updated = _replace_operand_characters(
+                entry["value"], target_codec, replacements, supplier_pdf
+            )
+        if updated is None:
+            return 0
+        updated_values[entry_index] = updated
+
+    for entry_index, updated in updated_values.items():
+        entry = entries[entry_index]
+        operands, _operator = stream.operations[entry["operation_index"]]
+        if entry["array_index"] is None:
+            operands[-1] = updated
+        else:
+            operands[0][entry["array_index"]] = updated
+    if font_switches:
+        from pypdf.generic import FloatObject, NameObject
+
+        for operation_index, switch in sorted(font_switches.items(), reverse=True):
+            target_font, target_size, original_font, original_size = switch
+            size = FloatObject(float(target_size or original_size or 1))
+            stream.operations.insert(
+                operation_index,
+                ([NameObject(target_font), size], b"Tf"),
+            )
+            stream.operations.insert(
+                operation_index + 2,
+                ([NameObject(original_font), FloatObject(float(original_size or size))], b"Tf"),
+            )
+    return len(selected_matches)
+
+
+def _replace_targets_in_nested_stream(
+    stream,
+    codecs,
+    targets,
+    page_index,
+    page,
+    page_text_token,
+    page_wide_keys,
+    applied_keys,
+    supplier_pdf,
+):
+    """Apply the structured replacement rules inside a Form XObject."""
+
+    from pypdf.generic import ArrayObject, ByteStringObject, TextStringObject
+
+    operation_contexts = _operation_text_contexts(stream, codecs, supplier_pdf)
+    active_font = None
+    changed = False
+    target_keys: set[str] = set()
+    replacements_total = 0
+
+    for operation_index, (operands, operator) in enumerate(stream.operations):
+        if operator == b"Tf" and operands:
+            active_font = str(operands[0])
+            continue
+        codec = codecs.get(active_font)
+        if operator == b"TJ" and operands and isinstance(operands[0], ArrayObject):
+            array = operands[0]
+            visible = "".join(
+                supplier_pdf._decode_text(item, codec)
+                for item in array
+                if isinstance(item, (TextStringObject, ByteStringObject))
+            )
+            context = operation_contexts.get(operation_index, visible)
+            for target in targets:
+                if target.key in applied_keys or target.key in target_keys:
+                    continue
+                if not supplier_pdf._target_matches_page(
+                    target, page_index, page, page_text_token
+                ):
+                    continue
+                replacements = 0
+                for array_index, value in enumerate(list(array)):
+                    if not isinstance(value, (TextStringObject, ByteStringObject)):
+                        continue
+                    replacement_item, item_replacements = _replace_text_operand(
+                        value,
+                        codec,
+                        target,
+                        context,
+                        supplier_pdf,
+                        allow_unlabeled=target.key in page_wide_keys,
+                    )
+                    if replacement_item is not None:
+                        array[array_index] = replacement_item
+                        replacements += item_replacements
+                if not replacements:
+                    replacements = _replace_combined_text_all(
+                        array,
+                        codec,
+                        target,
+                        context,
+                        supplier_pdf,
+                        allow_unlabeled=target.key in page_wide_keys,
+                    )
+                if replacements:
+                    replacements_total += replacements
+                    changed = True
+                    if target.key in page_wide_keys:
+                        target_keys.update(
+                            _equivalent_target_keys(target, targets) & page_wide_keys
+                        )
+                    else:
+                        target_keys.add(target.key)
+            continue
+
+        if operator not in (b"Tj", b"'", b'"') or not operands:
+            continue
+        item = operands[-1]
+        if not isinstance(item, (TextStringObject, ByteStringObject)):
+            continue
+        visible = supplier_pdf._decode_text(item, codec)
+        context = operation_contexts.get(operation_index, visible)
+        updated_item = item
+        changed_targets = []
+        for target in targets:
+            if target.key in applied_keys or target.key in target_keys:
+                continue
+            if not supplier_pdf._target_matches_page(
+                target, page_index, page, page_text_token
+            ):
+                continue
+            replacement_item, replacements = _replace_text_operand(
+                updated_item,
+                codec,
+                target,
+                context,
+                supplier_pdf,
+                allow_unlabeled=target.key in page_wide_keys,
+            )
+            if replacement_item is not None:
+                updated_item = replacement_item
+                changed_targets.append(target)
+                replacements_total += replacements
+        if changed_targets:
+            operands[-1] = updated_item
+            changed = True
+            for target in changed_targets:
+                if target.key in page_wide_keys:
+                    target_keys.update(
+                        _equivalent_target_keys(target, targets) & page_wide_keys
+                    )
+                else:
+                    target_keys.add(target.key)
+
+    for target in targets:
+        if target.key in applied_keys or target.key in target_keys:
+            continue
+        if not supplier_pdf._target_matches_page(
+            target, page_index, page, page_text_token
+        ):
+            continue
+        replacements = _replace_fragmented_text_all(
+            stream,
+            codecs,
+            target,
+            supplier_pdf,
+            allow_unlabeled=target.key in page_wide_keys,
+        )
+        if not replacements:
+            continue
+        replacements_total += replacements
+        changed = True
+        if target.key in page_wide_keys:
+            target_keys.update(
+                _equivalent_target_keys(target, targets) & page_wide_keys
+            )
+        else:
+            target_keys.add(target.key)
+    return changed, target_keys, replacements_total
+
+
+def _clone_form_stream(form):
+    """Clone a Form and its resource dictionaries before page-local edits."""
+
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    clone = DecodedStreamObject()
+    for key, value in form.items():
+        if str(key) not in {"/Length", "/Filter", "/DecodeParms", "/Resources"}:
+            clone[key] = value
+    resources = form.get("/Resources")
+    if resources is not None:
+        resources = resources.get_object()
+        cloned_resources = DictionaryObject()
+        for key, value in resources.items():
+            if str(key) == "/XObject":
+                cloned_resources[NameObject("/XObject")] = DictionaryObject({
+                    nested_name: nested_reference
+                    for nested_name, nested_reference in value.get_object().items()
+                })
+            else:
+                cloned_resources[key] = value
+        clone[NameObject("/Resources")] = cloned_resources
+    clone.set_data(form.get_data())
+    return clone
+
+
+def _patch_page_form_xobjects(
+    resources,
+    reader,
+    targets,
+    page_index,
+    page,
+    page_text_token,
+    page_wide_keys,
+    applied_keys,
+    supplier_pdf,
+):
+    """Patch page-local clones of nested Form XObjects recursively."""
+
+    from pypdf.generic import ContentStream, NameObject
+
+    xobject_resources = resources.get("/XObject") if resources else None
+    if xobject_resources is None:
+        return False, set(), 0
+    xobjects = xobject_resources.get_object()
+    changed_any = False
+    all_keys: set[str] = set()
+    replacements_total = 0
+
+    for resource_name, reference in list(xobjects.items()):
+        original = reference.get_object()
+        if str(original.get("/Subtype")) != "/Form":
+            continue
+        form = _clone_form_stream(original)
+        form_resources = form.get("/Resources") or resources
+        form_resources = form_resources.get_object()
+        fonts = form_resources.get("/Font") or {}
+        fonts = fonts.get_object()
+        codecs = {
+            str(name): supplier_pdf._font_codec(font_reference.get_object())
+            for name, font_reference in fonts.items()
+        }
+        stream = ContentStream(form, reader)
+        changed, keys, replacements = _replace_targets_in_nested_stream(
+            stream,
+            codecs,
+            targets,
+            page_index,
+            page,
+            page_text_token,
+            page_wide_keys,
+            applied_keys | all_keys,
+            supplier_pdf,
+        )
+        nested_changed, nested_keys, nested_replacements = _patch_page_form_xobjects(
+            form_resources,
+            reader,
+            targets,
+            page_index,
+            page,
+            page_text_token,
+            page_wide_keys,
+            applied_keys | all_keys | keys,
+            supplier_pdf,
+        )
+        if not changed and not nested_changed:
+            continue
+        if changed:
+            form.set_data(stream.get_data())
+        xobjects[NameObject(str(resource_name))] = form
+        changed_any = True
+        all_keys.update(keys)
+        all_keys.update(nested_keys)
+        replacements_total += replacements + nested_replacements
+    return changed_any, all_keys, replacements_total
+
+
 def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
     """Use pypdf's parsed operators when the supplier stream is valid."""
 
@@ -911,14 +1439,34 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
                         target, page_index, page, page_text_token
                     ):
                         continue
-                    replacements = _replace_combined_text_all(
-                        array,
-                        codec,
-                        target,
-                        context,
-                        supplier_pdf,
-                        allow_unlabeled=target.key in page_wide_keys,
-                    )
+                    replacements = 0
+                    # Prefer replacing a complete amount inside its existing
+                    # string item. Unlike the combined TJ fallback this safely
+                    # supports a different byte/character length while keeping
+                    # the original text matrix and font resource.
+                    for array_index, value in enumerate(list(array)):
+                        if not isinstance(value, (TextStringObject, ByteStringObject)):
+                            continue
+                        replacement_item, item_replacements = _replace_text_operand(
+                            value,
+                            codec,
+                            target,
+                            context,
+                            supplier_pdf,
+                            allow_unlabeled=target.key in page_wide_keys,
+                        )
+                        if replacement_item is not None:
+                            array[array_index] = replacement_item
+                            replacements += item_replacements
+                    if not replacements:
+                        replacements = _replace_combined_text_all(
+                            array,
+                            codec,
+                            target,
+                            context,
+                            supplier_pdf,
+                            allow_unlabeled=target.key in page_wide_keys,
+                        )
                     if replacements:
                         if target.key in page_wide_keys:
                             page_target_keys.update(
@@ -977,6 +1525,52 @@ def _patch_supplier_pdf_structured(content: bytes, before: dict, after: dict) ->
                         )
                     else:
                         page_target_keys.add(key)
+
+        # Some wkhtmltopdf/Ghostscript supplier files draw every amount glyph
+        # using a separate Tj plus an absolute text position. The per-operator
+        # loop above cannot see a complete number in those files. Patch the
+        # remaining page-scoped targets character-for-character so every
+        # original glyph slot, baseline and embedded font stays untouched.
+        for target in targets:
+            if target.key in applied_keys or target.key in page_target_keys:
+                continue
+            if not supplier_pdf._target_matches_page(
+                target, page_index, page, page_text_token
+            ):
+                continue
+            replacements = _replace_fragmented_text_all(
+                stream,
+                codecs,
+                target,
+                supplier_pdf,
+                allow_unlabeled=target.key in page_wide_keys,
+            )
+            if not replacements:
+                continue
+            report["replacements"] += replacements
+            page_changed = True
+            if target.key in page_wide_keys:
+                page_target_keys.update(
+                    _equivalent_target_keys(target, targets) & page_wide_keys
+                )
+            else:
+                page_target_keys.add(target.key)
+
+        form_changed, form_target_keys, form_replacements = _patch_page_form_xobjects(
+            resources,
+            reader,
+            targets,
+            page_index,
+            page,
+            page_text_token,
+            page_wide_keys,
+            applied_keys | page_target_keys,
+            supplier_pdf,
+        )
+        if form_changed:
+            page_changed = True
+            page_target_keys.update(form_target_keys)
+            report["replacements"] += form_replacements
 
         if page_changed:
             page[NameObject("/Contents")] = stream

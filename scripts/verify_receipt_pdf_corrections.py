@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Exercise every editable source-price field against real supplier PDFs.
 
-The verifier uses the same parser and PDF writer as production.  Every
+The verifier uses the same parser and PDF writer as production. Every
 recognized non-zero component is changed independently together with its
-dependent aggregate and payable total.  A corrected sample per source PDF can
-optionally be written for render/visual checks.
+dependent aggregate and payable total. It rejects visual text overlays because
+they can leave the old amount underneath, change the font or shift the
+baseline. A corrected sample per source PDF can optionally be written for
+render/visual checks.
 """
 
 from __future__ import annotations
@@ -255,12 +257,17 @@ def main() -> int:
                     )
                 elif corrected == content:
                     errors.append("output bytes unchanged")
+                elif report.get("strategy") == "labeled_visual_overlay":
+                    errors.append("unsafe visual overlay was used")
                 elif report.get("strategy") == "financial_correction_appendix":
                     expected_pages = pdf_page_count(content) + report.get("appended_pages", 0)
                     if pdf_page_count(corrected) != expected_pages:
                         errors.append("correction appendix page count is invalid")
-                elif pdf_page_count(corrected) != pdf_page_count(content):
-                    errors.append("page count changed")
+                else:
+                    if report.get("font_preserved") is not True:
+                        errors.append("supplier font was not preserved")
+                    if pdf_page_count(corrected) != pdf_page_count(content):
+                        errors.append("page count changed")
                 if not errors:
                     representative = corrected
                     representative_report = report

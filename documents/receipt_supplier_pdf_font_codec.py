@@ -1,6 +1,47 @@
 from __future__ import annotations
 
 
+def _font_widths(font, inverse):
+    """Return Unicode glyph widths in the PDF's 1000-unit text space."""
+
+    widths_by_code = {}
+    default_width = 1000.0
+    try:
+        if str(font.get("/Subtype")) == "/Type0":
+            descendants = font.get("/DescendantFonts") or []
+            descendant = descendants[0].get_object() if descendants else {}
+            default_width = float(descendant.get("/DW", 1000))
+            values = list(descendant.get("/W") or [])
+            index = 0
+            while index < len(values):
+                first = int(values[index])
+                second = values[index + 1]
+                if isinstance(second, list):
+                    for offset, width in enumerate(second):
+                        widths_by_code[first + offset] = float(width)
+                    index += 2
+                    continue
+                last = int(second)
+                width = float(values[index + 2])
+                for code in range(first, last + 1):
+                    widths_by_code[code] = width
+                index += 3
+        else:
+            first = int(font.get("/FirstChar", 0))
+            for offset, width in enumerate(font.get("/Widths") or []):
+                widths_by_code[first + offset] = float(width)
+    except (AttributeError, IndexError, TypeError, ValueError):
+        # Width data is optional and malformed vendor PDFs are common. Text
+        # replacement remains safe without the overprint adjustment below.
+        widths_by_code = {}
+
+    widths = {}
+    for character, encoded in inverse.items():
+        code = ord(encoded) if isinstance(encoded, str) else int(encoded)
+        widths[character] = widths_by_code.get(code, default_width)
+    return widths, default_width
+
+
 def _font_maps(font):
     """Return the font encoding and ToUnicode map across supported pypdf APIs."""
 
@@ -43,11 +84,15 @@ def _font_codec(font):
             and isinstance(unicode_char, str)
             and len(unicode_char) == 1
         }
+        widths, default_width = _font_widths(font, inverse)
         return {
             "kind": "multibyte",
             "encoding": encoding,
             "char_map": char_map,
             "inverse": inverse,
+            "base_font": str(font.get("/BaseFont") or ""),
+            "widths": widths,
+            "default_width": default_width,
         }
 
     if isinstance(encoding, dict):
@@ -72,10 +117,14 @@ def _font_codec(font):
         inverse = {}
         for code, unicode_char in byte_map.items():
             inverse.setdefault(unicode_char, code)
+        widths, default_width = _font_widths(font, inverse)
         return {
             "kind": "single-byte",
             "byte_map": byte_map,
             "inverse": inverse,
+            "base_font": str(font.get("/BaseFont") or ""),
+            "widths": widths,
+            "default_width": default_width,
         }
 
     return None
