@@ -172,7 +172,7 @@ def _encode_text(text: str, codec):
         output = bytearray()
         for char in text:
             code = inverse.get(char)
-            if code is None and ord(char) < 128:
+            if code is None and not inverse and ord(char) < 128:
                 code = ord(char)
             if code is None or not 0 <= int(code) <= 255:
                 return None
@@ -185,7 +185,7 @@ def _encode_text(text: str, codec):
         for char in text:
             encoded = inverse.get(char)
             if encoded is None:
-                if ord(char) < 128:
+                if not inverse and ord(char) < 128:
                     encoded = char
                 else:
                     return None

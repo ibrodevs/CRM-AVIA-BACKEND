@@ -1040,6 +1040,20 @@ def _replace_fragmented_text_all(
         # as Bold/Italic so genuinely different faces are never unified.
         return re.sub(r"MT$", "", base_font, flags=re.IGNORECASE).casefold()
 
+    def font_style(font_name: str | None) -> str:
+        family = font_family(font_name)
+        if "bold" in family:
+            return "bold"
+        if "italic" in family or "oblique" in family:
+            return "italic"
+        if "medium" in family:
+            return "medium"
+        return "regular"
+
+    observed_by_font: dict[str | None, set[str]] = defaultdict(set)
+    for entry in entries:
+        observed_by_font[entry["font_name"]].update(entry["visible"])
+
     for start, end, replacement in selected_matches:
         match_entry_indices: list[int] = []
         for combined_index, new_character in zip(range(start, end), replacement, strict=True):
@@ -1052,9 +1066,44 @@ def _replace_fragmented_text_all(
         match_fonts = [entries[index]["font_name"] for index in match_entry_indices]
         distinct_fonts = {font for font in match_fonts if font is not None}
         families = {font_family(font) for font in distinct_fonts}
-        if len(distinct_fonts) > 1 and len(families) == 1 and "" not in families:
-            canonical_font = match_fonts[0]
-            if canonical_font is not None:
+        if distinct_fonts and len(families) == 1 and "" not in families:
+            family = next(iter(families))
+            compatible_fonts = [
+                font
+                for font in sorted(codecs)
+                if font_family(font) == family
+                if supplier_pdf._encode_text(replacement, codecs.get(font)) is not None
+            ]
+            if not compatible_fonts:
+                target_style = font_style(match_fonts[0])
+                compatible_fonts = [
+                    font
+                    for font in sorted(codecs)
+                    if set(replacement).issubset(observed_by_font[font])
+                    and supplier_pdf._encode_text(replacement, codecs.get(font)) is not None
+                ]
+                compatible_fonts.sort(
+                    key=lambda font: (
+                        font_style(font) == target_style,
+                        len(observed_by_font[font]),
+                    ),
+                    reverse=True,
+                )
+            if compatible_fonts:
+                # Prefer the broadest embedded subset. A narrow subset can
+                # advertise Identity-H while physically omitting new digits,
+                # which renders them as squares despite correct extraction.
+                same_family_fonts = [
+                    font for font in compatible_fonts if font_family(font) == family
+                ]
+                canonical_font = (
+                    max(
+                        same_family_fonts,
+                        key=lambda font: len((codecs.get(font) or {}).get("inverse") or {}),
+                    )
+                    if same_family_fonts
+                    else compatible_fonts[0]
+                )
                 for entry_index in match_entry_indices:
                     preferred_fonts[entry_index] = canonical_font
 
@@ -1073,11 +1122,16 @@ def _replace_fragmented_text_all(
             # A local font switch is safe only for a standalone text operand;
             # otherwise unchanged TJ chunks would still use the old encoding.
             same_operation = [
-                candidate
-                for candidate in entries
+                (candidate_index, candidate)
+                for candidate_index, candidate in enumerate(entries)
                 if candidate["operation_index"] == entry["operation_index"]
             ]
-            if len(same_operation) != 1:
+            operation_fully_targeted = all(
+                candidate_index in entry_replacements
+                and preferred_fonts.get(candidate_index) == preferred_font
+                for candidate_index, _candidate in same_operation
+            )
+            if len(same_operation) != 1 and not operation_fully_targeted:
                 return 0
             target_font = preferred_font
             target_codec = codecs[target_font]

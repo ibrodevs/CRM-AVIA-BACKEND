@@ -6,6 +6,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
     ArrayObject,
     ByteStringObject,
+    ContentStream,
     DecodedStreamObject,
     DictionaryObject,
     FloatObject,
@@ -330,6 +331,91 @@ def test_nested_mixed_font_amount_uses_one_equivalent_face_without_overlay():
     assert "875.00" not in reader.pages[0].extract_text()
     form = reader.pages[0]["/Resources"]["/XObject"]["/Receipt"].get_object()
     assert b"/ArialFull 12 Tf\n<37362e30> Tj" in form.get_data()
+
+
+def test_fragmented_amount_rejects_missing_subset_digits_and_uses_full_face():
+    raw_stream = DecodedStreamObject()
+    raw_stream.set_data(
+        b"BT /Subset 12 Tf <00310030> Tj /Full 12 Tf <0020> Tj "
+        b"/Subset 12 Tf <00380030> Tj /Full 12 Tf <0038002e00300030> Tj ET"
+    )
+    stream = ContentStream(raw_stream, PdfReader(BytesIO(_simple_supplier_pdf())))
+    ascii_map = {code: chr(code) for code in range(32, 127)}
+    subset = {
+        "kind": "multibyte",
+        "encoding": "utf-16-be",
+        "char_map": {character: character for character in "018"},
+        "inverse": {character: character for character in "018"},
+        "base_font": "/ABCDEF+Arial",
+    }
+    full = {
+        "kind": "multibyte",
+        "encoding": "utf-16-be",
+        "char_map": {chr(code): chr(code) for code in ascii_map},
+        "inverse": {chr(code): chr(code) for code in ascii_map},
+        "base_font": "/ArialMT",
+    }
+    target = SimpleNamespace(
+        old=Decimal("10808.00"),
+        new=Decimal("20308.00"),
+        aliases=(),
+    )
+
+    assert supplier_pdf._encode_text("20", subset) is None
+    replaced = writer_fix._replace_fragmented_text_all(
+        stream,
+        {"/Subset": subset, "/Full": full},
+        target,
+        supplier_pdf,
+    )
+
+    assert replaced == 1
+    assert b"/Full 12 Tf\n<00320030> Tj" in stream.get_data()
+    assert b"/Full 12 Tf\n<00330030> Tj" in stream.get_data()
+
+
+def test_fragmented_amount_uses_observed_regular_face_when_vendor_subset_is_too_narrow():
+    raw_stream = DecodedStreamObject()
+    raw_stream.set_data(
+        b"BT /Regular 12 Tf <00300031003200330034003500360037003800390020002e> Tj "
+        b"/Subset 12 Tf [<0031> 0 <0031003700320032>] TJ ET"
+    )
+    stream = ContentStream(raw_stream, PdfReader(BytesIO(_simple_supplier_pdf())))
+    subset = {
+        "kind": "multibyte",
+        "encoding": "utf-16-be",
+        "char_map": {character: character for character in "127"},
+        "inverse": {character: character for character in "127"},
+        "base_font": "/ABCDEF+Verdana",
+    }
+    regular = {
+        "kind": "multibyte",
+        "encoding": "utf-16-be",
+        "char_map": {chr(code): chr(code) for code in range(32, 127)},
+        "inverse": {},
+        "base_font": "/ABCDEF+WixMadeforText-Regular",
+    }
+    target = SimpleNamespace(
+        old=Decimal("11722"),
+        new=Decimal("12025"),
+        aliases=(),
+    )
+
+    replaced = writer_fix._replace_fragmented_text_all(
+        stream,
+        {"/Subset": subset, "/Regular": regular},
+        target,
+        supplier_pdf,
+    )
+
+    combined, _entries = writer_fix._fragmented_text_entries(
+        stream,
+        {"/Subset": subset, "/Regular": regular},
+        supplier_pdf,
+    )
+    assert replaced == 1
+    assert combined.endswith("12025")
+    assert b"/Regular 12 Tf\n[ <0031> 0 <0032003000320035> ] TJ" in stream.get_data()
 
 
 def test_duplicate_bold_total_updates_its_overprint_reset_for_new_glyph_widths():
