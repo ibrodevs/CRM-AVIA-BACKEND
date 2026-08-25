@@ -18,6 +18,7 @@ from documents.models import (
     ReceiptImportJob,
 )
 from documents.receipt_metadata import json_safe, receipt_document_metadata, receipt_verified_data
+from documents.receipt_service_fee import confirm_service_fee_metadata
 from documents.selectors import documents_visible_to, get_document_or_404
 from documents.serializers import DocumentSerializer, DocumentVersionSerializer
 from documents.services import add_document_version, extract_receipt_fields, validate_upload
@@ -674,6 +675,13 @@ class ReceiptImportConfirmView(APIView):
                     "client_total": str(data.get("client_total", total)),
                     "markup": str(data.get("markup", 0)),
                     "commission": str(data.get("commission", 0)),
+                    "service_fee": confirm_service_fee_metadata(
+                        user=request.user,
+                        company=company,
+                        order=order,
+                        submitted=data.get("service_fee"),
+                        service_kind=normalized_service_kind,
+                    ),
                     "corrected_fields": {
                         "issuer": draft.issuer,
                         "passenger_name": draft.passenger_name,

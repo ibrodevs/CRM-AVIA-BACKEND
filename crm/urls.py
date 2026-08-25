@@ -2,6 +2,7 @@ from django.urls import path
 
 from crm import views as v
 from crm.company_finance_safe_view import CompanyFinancialConditionsView
+from crm.fee_resolution_views import ServiceFeeResolveView
 
 urlpatterns = [
     path("persons/", v.PersonListCreateView.as_view(), name="person-list"),
@@ -52,4 +53,5 @@ urlpatterns = [
         name="company-settlement",
     ),
     path("fee-templates/", v.FeeTemplateListCreateView.as_view(), name="fee-templates"),
+    path("service-fee/resolve/", ServiceFeeResolveView.as_view(), name="service-fee-resolve"),
 ]
