@@ -105,7 +105,7 @@ def _amount_boxes(line, target, supplier_pdf):
     boxes = []
     for variant in supplier_pdf._amount_variants(target.old):
         compact_variant = variant.replace(" ", "")
-        pattern = re.compile(r"(?<!\d)" + re.escape(compact_variant) + r"(?!\d)")
+        pattern = supplier_pdf._target_amount_pattern(compact_variant, target)
         for match in pattern.finditer(visible.replace(" ", "")):
             compact_visible = visible.replace(" ", "")
             if match.end() < len(compact_visible) and re.match(
@@ -625,11 +625,11 @@ def _replace_combined_text_all(
         return 0
 
     for variant in supplier_pdf._amount_variants(target.old):
-        pattern = re.compile(r"(?<!\d)" + re.escape(variant) + r"(?!\d)")
+        pattern = supplier_pdf._target_amount_pattern(variant, target)
         matches = list(pattern.finditer(combined))
         if not matches:
             continue
-        updated = pattern.sub(lambda match: supplier_pdf._format_like(match.group(0), target.new), combined)
+        updated = pattern.sub(lambda match: supplier_pdf._target_replacement(match.group(0), target), combined)
         if len(updated) != len(combined):
             return 0
 
@@ -680,7 +680,7 @@ def _replace_combined_text_all(
                 reset_index, reset_value = max(numeric_items, key=lambda pair: abs(pair[1]))
                 if abs(reset_value) < 1000:
                     continue
-                replacement_text = supplier_pdf._format_like(current.group(0), target.new)
+                replacement_text = supplier_pdf._target_replacement(current.group(0), target)
                 old_width = sum(float(widths.get(char, default_width)) for char in current.group(0))
                 new_width = sum(float(widths.get(char, default_width)) for char in replacement_text)
                 array[reset_index] = FloatObject(reset_value + new_width - old_width)
@@ -875,14 +875,14 @@ def _replace_text_operand(
         return None, 0
 
     for variant in supplier_pdf._amount_variants(target.old):
-        pattern = re.compile(r"(?<!\d)" + re.escape(variant) + r"(?!\d)")
+        pattern = supplier_pdf._target_amount_pattern(variant, target)
         matches = list(pattern.finditer(visible))
         if not matches:
             continue
         updated = raw
         replacements = 0
         for match in reversed(matches):
-            replacement_text = supplier_pdf._format_like(match.group(0), target.new)
+            replacement_text = supplier_pdf._target_replacement(match.group(0), target)
             encoded = supplier_pdf._encode_text(replacement_text, codec)
             if encoded is None:
                 return None, 0
@@ -1011,9 +1011,9 @@ def _replace_fragmented_text_all(
 
     selected_matches: list[tuple[int, int, str]] = []
     for variant in supplier_pdf._amount_variants(target.old):
-        pattern = re.compile(r"(?<!\d)" + re.escape(variant) + r"(?!\d)")
+        pattern = supplier_pdf._target_amount_pattern(variant, target)
         for match in pattern.finditer(combined):
-            replacement = supplier_pdf._format_like(match.group(0), target.new)
+            replacement = supplier_pdf._target_replacement(match.group(0), target)
             if len(replacement) != len(match.group(0)):
                 continue
             context = combined[max(0, match.start() - 120): match.end() + 120].upper()
@@ -1727,28 +1727,28 @@ def _find_raw_replacements(
     for codec in codecs:
         digit_patterns = _digit_patterns(codec, supplier_pdf)
         for variant in supplier_pdf._amount_variants(target.old):
-            old_bytes = _encoded_bytes(variant, codec, supplier_pdf)
-            if not old_bytes:
-                continue
-            replacement_text = supplier_pdf._format_like(variant, target.new)
-            new_bytes = _encoded_bytes(replacement_text, codec, supplier_pdf)
-            if new_bytes is None:
-                continue
-
-            offset = 0
-            while True:
-                index = data.find(old_bytes, offset)
-                if index < 0:
-                    break
-                end = index + len(old_bytes)
-                offset = index + 1
-                if not _has_digit_boundary(data, index, end, digit_patterns):
+            for source_text, replacement_text in supplier_pdf._target_source_variants(variant, target):
+                old_bytes = _encoded_bytes(source_text, codec, supplier_pdf)
+                if not old_bytes:
                     continue
-                if aliases:
-                    context = data[max(0, index - 1400): min(len(data), end + 700)]
-                    if not any(alias in context for alias in aliases) and not allow_unlabeled:
+                new_bytes = _encoded_bytes(replacement_text, codec, supplier_pdf)
+                if new_bytes is None:
+                    continue
+
+                offset = 0
+                while True:
+                    index = data.find(old_bytes, offset)
+                    if index < 0:
+                        break
+                    end = index + len(old_bytes)
+                    offset = index + 1
+                    if not _has_digit_boundary(data, index, end, digit_patterns):
                         continue
-                found[(index, end)] = new_bytes
+                    if aliases:
+                        context = data[max(0, index - 1400): min(len(data), end + 700)]
+                        if not any(alias in context for alias in aliases) and not allow_unlabeled:
+                            continue
+                    found[(index, end)] = new_bytes
 
     return [(start, end, replacement) for (start, end), replacement in sorted(found.items())]
 

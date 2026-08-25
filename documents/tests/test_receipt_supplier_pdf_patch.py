@@ -504,7 +504,9 @@ def test_supplier_pdf_can_close_fare_as_it_without_hiding_taxes_or_total():
     assert corrected is not None
     assert report["requested"] == report["applied"] == 1
     text = PdfReader(BytesIO(corrected)).pages[0].extract_text()
-    assert "FARE IT RUB" in text
+    assert "FARE IT" in text
+    assert "IT RUB" not in text
+    assert "RUB IT" not in text
     assert "TAX 1250 RUB" in text
     assert "TOTAL 25470 RUB" in text
 
@@ -532,8 +534,10 @@ def test_supplier_pdf_closes_published_and_equivalent_air_fares_as_it():
     assert corrected is not None
     assert report["requested"] == report["applied"] == 2
     text = PdfReader(BytesIO(corrected)).pages[0].extract_text()
-    assert "FARE EURIT" in text
-    assert "EQUIVALENT FARE PAID RUBIT" in text
+    assert "FARE IT" in text
+    assert "EQUIVALENT FARE PAID IT" in text
+    assert "EURIT" not in text
+    assert "RUBIT" not in text
     assert "TAX RUB3690" in text
     assert "TOTAL RUB16800" in text
 

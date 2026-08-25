@@ -97,6 +97,7 @@ _BREAKDOWNS = (
 _GROUP_KEYS = ("groupTickets", "receiptItems", "receipt_items", "receipts", "railTickets")
 _IT_PRICE_MODES = {"it", "itfare", "fareit", "закрыть как it", "closed_it"}
 _IT_FARE_FIELDS = ("fare", "publishedFare", "equivalentFare")
+_FARE_CURRENCIES = ("RUB", "РУБ.", "РУБ", "EUR", "USD", "KGS", "KZT", "CNY", "₽", "$", "€")
 
 
 def _decimal(value) -> Decimal | None:
@@ -141,6 +142,42 @@ def _it_fare_fields(before: dict) -> set[str]:
     if precise:
         return precise
     return {"fare"} if _decimal(_value(before, "fare")) is not None else set()
+
+
+def _target_amount_pattern(variant: str, target) -> re.Pattern:
+    """Match an IT fare together with its adjacent currency marker."""
+
+    amount = re.escape(variant)
+    if str(target.new).strip().upper() != "IT":
+        return re.compile(r"(?<!\d)" + amount + r"(?!\d)")
+    currency = "(?:" + "|".join(re.escape(value) for value in _FARE_CURRENCIES) + ")"
+    return re.compile(
+        rf"(?:{currency}\s*{amount}(?!\d)|(?<!\d){amount}\s*{currency}|(?<!\d){amount}(?!\d))",
+        flags=re.IGNORECASE,
+    )
+
+
+def _target_replacement(template: str, target) -> str:
+    if str(target.new).strip().upper() == "IT":
+        return "IT"
+    return _format_like(template, target.new)
+
+
+def _target_source_variants(variant: str, target) -> list[tuple[str, str]]:
+    """Encoded-stream candidates, longest currency-bearing forms first."""
+
+    if str(target.new).strip().upper() != "IT":
+        return [(variant, _format_like(variant, target.new))]
+    candidates = []
+    for currency in _FARE_CURRENCIES:
+        candidates.extend((
+            (f"{currency} {variant}", "IT"),
+            (f"{currency}{variant}", "IT"),
+            (f"{variant} {currency}", "IT"),
+            (f"{variant}{currency}", "IT"),
+        ))
+    candidates.append((variant, "IT"))
+    return candidates
 
 
 def _row_identity(row: dict) -> str:
@@ -511,10 +548,10 @@ def _replace_combined_text(array, codec, target: AmountTarget, context: str) -> 
     if target.aliases and not any(alias.upper() in upper_context for alias in target.aliases):
         return 0
     for variant in _amount_variants(target.old):
-        match = re.search(r"(?<!\d)" + re.escape(variant) + r"(?!\d)", combined)
+        match = _target_amount_pattern(variant, target).search(combined)
         if not match:
             continue
-        replacement = _format_like(match.group(0), target.new)
+        replacement = _target_replacement(match.group(0), target)
         updated = combined[: match.start()] + replacement + combined[match.end() :]
         if len(updated) == len(combined):
             offset = 0
@@ -611,9 +648,9 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
                     if target.aliases and not any(alias.upper() in context.upper() for alias in target.aliases):
                         continue
                     for variant in _amount_variants(target.old):
-                        match = re.search(r"(?<!\d)" + re.escape(variant) + r"(?!\d)", updated)
+                        match = _target_amount_pattern(variant, target).search(updated)
                         if match:
-                            replacement = _format_like(match.group(0), target.new)
+                            replacement = _target_replacement(match.group(0), target)
                             updated = updated[: match.start()] + replacement + updated[match.end() :]
                             changed_targets.append(target.key)
                             break
