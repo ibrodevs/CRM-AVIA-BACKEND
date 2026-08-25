@@ -123,6 +123,7 @@ SYSTEM_ROLES: dict[str, dict] = {
             "offers.send",
             "offers.approve",
             "documents.view",
+            "documents.upload",
             "communications.view_internal",
             "communications.view_client",
             "communications.send",

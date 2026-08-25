@@ -36,7 +36,10 @@ def plausible_avia_location(value: Any, code: Any = "") -> bool:
 
     location = re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip(" ,;:")
     iata = str(code or "").strip().upper()
-    if iata and not re.fullmatch(r"[A-Z]{3}", iata):
+    # Supplier forms commonly append a terminal to the IATA code (``SVO B``,
+    # ``LED 1``).  The airport is still unambiguous and must not turn an
+    # otherwise complete ticket into a manual-review result.
+    if iata and not re.fullmatch(r"[A-Z]{3}(?:\s+[A-Z0-9]{1,3})?", iata):
         return False
     if not location:
         return bool(iata)

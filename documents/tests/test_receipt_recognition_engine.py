@@ -1,6 +1,8 @@
 from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
 
-from documents.receipt_ocr_fallback import _should_ocr
+from documents.receipt_ocr_fallback import _ocr_one_image, _should_ocr
 from documents.receipt_quality_guard import apply_receipt_quality_guard
 from documents.receipt_recognition_engine import (
     _compact_route_recovery,
@@ -42,6 +44,33 @@ def test_merge_keeps_good_primary_values_and_fills_missing_fields():
     assert result["reference"] == "ABC123"
     assert result["segments"][0]["date"] == "29.01.2026"
     assert result["segments"][0]["dep"] == "10:10"
+
+
+def test_merge_accepts_complete_hotel_stay_from_secondary_extractor():
+    primary = {
+        "service_kind": "hotel",
+        "passenger_name": "АЛЕКСАНДР ЧИЧЕВ",
+        "segments": [],
+    }
+    secondary = {
+        "service_kind": "hotel",
+        "segments": [{
+            "from": "",
+            "fromCode": "",
+            "to": "Лесная Сафмар",
+            "toCode": "",
+            "date": "28.01.2026",
+            "endDate": "29.01.2026",
+            "dep": "14:00",
+            "arr": "12:00",
+            "flightNo": "Представительский номер",
+        }],
+    }
+
+    result = _merge_dict(primary, secondary)
+
+    assert result["segments"][0]["date"] == "28.01.2026"
+    assert result["segments"][0]["endDate"] == "29.01.2026"
 
 
 def test_compact_airline_endorsement_recovers_route_and_flight():
@@ -243,6 +272,36 @@ def test_ocr_runs_only_for_weak_manual_review_results():
 
     assert _should_ocr(weak) is True
     assert _should_ocr(strong) is False
+
+
+def test_ocr_keeps_receipt_columns_for_russian_and_english_text(monkeypatch, tmp_path):
+    observed = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="Passenger Иванов", stderr="")
+
+    monkeypatch.setattr("documents.receipt_ocr_fallback.subprocess.run", fake_run)
+
+    result = _ocr_one_image(
+        "/usr/bin/tesseract",
+        tmp_path / "receipt.png",
+        language="rus+eng",
+    )
+
+    assert result == "Passenger Иванов"
+    assert observed["command"][-2:] == ["-c", "preserve_interword_spaces=1"]
+    assert observed["command"][observed["command"].index("-l") + 1] == "rus+eng"
+
+
+def test_production_image_contains_pdf_and_bilingual_ocr_runtime():
+    dockerfile = Path(__file__).resolve().parents[2] / "Dockerfile"
+    source = dockerfile.read_text(encoding="utf-8")
+
+    assert "poppler-utils" in source
+    assert "tesseract-ocr-eng" in source
+    assert "tesseract-ocr-rus" in source
 
 
 def test_valid_airports_win_over_supplier_details_during_candidate_merge():

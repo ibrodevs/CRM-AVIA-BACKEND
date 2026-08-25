@@ -283,14 +283,17 @@ def _merge_passengers(primary: list, secondary: list) -> list:
     return result
 
 
-def _segment_completeness(segment: dict) -> int:
+def _segment_completeness(segment: dict, *, service_kind: str = "") -> int:
     keys = ("from", "fromCode", "to", "toCode", "date", "dep", "arr", "flightNo", "coach", "seat", "status")
     score = sum(_present(segment.get(key)) for key in keys)
     origin = segment.get("from") or segment.get("fromCode")
     destination = segment.get("to") or segment.get("toCode")
-    # Only penalize an existing but semantically invalid route. Empty route
-    # fields are valid for non-transport services that share the merge helper.
-    if (origin or destination) and not (
+    # Only apply aviation semantics to aviation data. Hotel stays reuse the
+    # same segment shape, but an empty origin and a hotel name as destination
+    # are perfectly valid there.
+    has_airport_code = _present(segment.get("fromCode")) or _present(segment.get("toCode"))
+    validate_as_avia = service_kind == "avia" or has_airport_code
+    if validate_as_avia and (origin or destination) and not (
         plausible_avia_location(segment.get("from"), segment.get("fromCode"))
         and plausible_avia_location(segment.get("to"), segment.get("toCode"))
     ):
@@ -298,12 +301,22 @@ def _segment_completeness(segment: dict) -> int:
     return score
 
 
-def _segments_score(rows: list) -> int:
-    return sum(_segment_completeness(row) for row in rows if isinstance(row, dict)) + len(rows) * 3
+def _segments_score(rows: list, *, service_kind: str = "") -> int:
+    return sum(
+        _segment_completeness(row, service_kind=service_kind)
+        for row in rows
+        if isinstance(row, dict)
+    ) + len(rows) * 3
 
 
-def _merge_dict(primary: dict, secondary: dict) -> dict:
+def _merge_dict(primary: dict, secondary: dict, *, service_kind: str = "") -> dict:
     result = deepcopy(primary)
+    active_service_kind = str(
+        primary.get("service_kind")
+        or secondary.get("service_kind")
+        or service_kind
+        or "other"
+    ).lower()
     for key, value in secondary.items():
         current = result.get(key)
         if key == "passengers" and isinstance(value, list):
@@ -311,7 +324,10 @@ def _merge_dict(primary: dict, secondary: dict) -> dict:
             continue
         if key in {"segments", "legs"} and isinstance(value, list):
             current_rows = current if isinstance(current, list) else []
-            if _segments_score(value) > _segments_score(current_rows):
+            if _segments_score(value, service_kind=active_service_kind) > _segments_score(
+                current_rows,
+                service_kind=active_service_kind,
+            ):
                 result[key] = deepcopy(value)
             continue
         if key in {"receipts", "railTickets", "groupTickets"} and isinstance(value, list):
@@ -325,7 +341,11 @@ def _merge_dict(primary: dict, secondary: dict) -> dict:
                 result[key] = deepcopy(value)
             continue
         if isinstance(value, dict):
-            result[key] = _merge_dict(current if isinstance(current, dict) else {}, value)
+            result[key] = _merge_dict(
+                current if isinstance(current, dict) else {},
+                value,
+                service_kind=active_service_kind,
+            )
             continue
         if not _present(current) and _present(value):
             result[key] = deepcopy(value)
@@ -464,7 +484,11 @@ def _repair_fields(fields: dict, text: str, warnings: list[str]) -> None:
             and plausible_avia_location(row.get("to"), row.get("toCode"))
             for row in current
         ) if current else False
-        if recovered and (not current_is_plausible or _segments_score(recovered) > _segments_score(current)):
+        if recovered and (
+            not current_is_plausible
+            or _segments_score(recovered, service_kind="avia")
+            > _segments_score(current, service_kind="avia")
+        ):
             # Preserve dates/times from existing rows when route recovery only
             # contributes flight and airport identities.
             if len(recovered) == len(current):

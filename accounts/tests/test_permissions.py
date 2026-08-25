@@ -26,12 +26,39 @@ class TestRBAC:
 
     def test_manager_cannot_pay_or_refund(self, manager_user):
         codes = user_permission_codes(manager_user)
+        assert "documents.upload" in codes
         assert "finance.create_payment" not in codes
         assert "finance.refund" not in codes
         assert "services.refund" not in codes
 
 
 class TestEndpointAccess:
+    def test_manager_can_upload_and_read_receipt_result(self, manager_user):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        client = auth_client(manager_user)
+        receipt = SimpleUploadedFile(
+            "rail-receipt.txt",
+            (
+                "Электронный проездной документ РЖД\n"
+                "Пассажир: ТЕСТОВ ИВАН\n"
+                "Номер билета: 12345678901234\n"
+                "Москва - Казань\n"
+                "Итого: 5000 RUB\n"
+            ).encode("utf-8"),
+            content_type="text/plain",
+        )
+
+        imported = client.post(
+            "/api/v1/receipt-imports/",
+            {"file": receipt},
+            format="multipart",
+        )
+
+        assert imported.status_code == 201, imported.content
+        result = client.get(f"/api/v1/receipt-imports/{imported.json()['id']}/result/")
+        assert result.status_code == 200, result.content
+
     def test_operator_cannot_manage_users(self, operator_client):
         assert operator_client.get("/api/v1/users/").status_code == 403
 

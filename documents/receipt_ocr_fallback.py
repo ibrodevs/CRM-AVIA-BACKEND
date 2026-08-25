@@ -11,7 +11,6 @@ from pathlib import Path
 from documents.receipt_quality_guard import apply_receipt_quality_guard
 from documents.receipt_recognition_engine import _merge_dict, _repair_fields, _result_score
 
-
 MAX_OCR_PAGES = 10
 
 
@@ -52,7 +51,17 @@ def _tesseract_languages(binary: str) -> str:
 def _ocr_one_image(tesseract: str, path: Path, *, language: str) -> str:
     try:
         proc = subprocess.run(
-            [tesseract, str(path), "stdout", "-l", language, "--psm", "6"],
+            [
+                tesseract,
+                str(path),
+                "stdout",
+                "-l",
+                language,
+                "--psm",
+                "6",
+                "-c",
+                "preserve_interword_spaces=1",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -113,7 +122,7 @@ def _ocr_content(content: bytes, *, mime: str) -> tuple[str, dict]:
                     "-l",
                     str(page_count),
                     "-r",
-                    "180",
+                    "220",
                     "-png",
                     str(source),
                     str(prefix),

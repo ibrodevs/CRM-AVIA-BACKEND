@@ -123,6 +123,8 @@ def test_avia_legal_entity_and_tax_number_are_not_accepted_as_route():
 
     assert plausible_avia_location("Nizhny Novgorod") is True
     assert plausible_avia_location("Tbilisi", "TBS") is True
+    assert plausible_avia_location("Москва, Шереметьево", "SVO B") is True
+    assert plausible_avia_location("Санкт-Петербург, Пулково", "LED 1") is True
     assert plausible_avia_location("TRANS SERVICE GROUP, LLC") is False
     assert plausible_avia_location("TIN 3907209514") is False
     assert result["status"] == "manual_review"
