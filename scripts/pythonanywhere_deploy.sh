@@ -14,9 +14,11 @@ git pull --ff-only origin "$BRANCH"
 source "$VENV_PATH/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install .
+python scripts/setup_pythonanywhere_ocr.py
 
 export DJANGO_SETTINGS_MODULE="$SETTINGS_MODULE"
 python manage.py check
+python manage.py check_receipt_ocr
 python manage.py migrate
 python manage.py collectstatic --noinput
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import os
 import shutil
 import subprocess
 import tempfile
@@ -12,10 +14,26 @@ from documents.receipt_quality_guard import apply_receipt_quality_guard
 from documents.receipt_recognition_engine import _merge_dict, _repair_fields, _result_score
 
 MAX_OCR_PAGES = 10
+OCR_DPI = 220
+DEFAULT_TESSDATA_DIR = Path(__file__).resolve().parents[1] / ".runtime" / "tessdata"
 
 
 def _ocr_tools() -> tuple[str | None, str | None]:
-    return shutil.which("tesseract"), shutil.which("pdftoppm")
+    configured_tesseract = os.getenv("RECEIPT_OCR_TESSERACT", "").strip()
+    configured_pdftoppm = os.getenv("RECEIPT_OCR_PDFTOPPM", "").strip()
+    tesseract = shutil.which(configured_tesseract or "tesseract")
+    pdftoppm = shutil.which(configured_pdftoppm or "pdftoppm")
+    if not tesseract and not configured_tesseract and Path("/usr/bin/tesseract").is_file():
+        tesseract = "/usr/bin/tesseract"
+    return tesseract, pdftoppm
+
+
+def _tessdata_dir() -> Path | None:
+    configured = os.getenv("RECEIPT_OCR_TESSDATA_DIR", "").strip()
+    candidate = Path(configured).expanduser() if configured else DEFAULT_TESSDATA_DIR
+    if candidate.is_dir() and any(candidate.glob("*.traineddata")):
+        return candidate
+    return None
 
 
 def _should_ocr(result: dict) -> bool:
@@ -28,19 +46,31 @@ def _should_ocr(result: dict) -> bool:
     return _result_score(result) < 70
 
 
-def _tesseract_languages(binary: str) -> str:
+def _available_tesseract_languages(binary: str, *, tessdata_dir: Path | None = None) -> set[str]:
+    command = [binary]
+    if tessdata_dir:
+        command.extend(["--tessdata-dir", str(tessdata_dir)])
+    command.append("--list-langs")
     try:
         proc = subprocess.run(
-            [binary, "--list-langs"],
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             timeout=4,
             check=False,
         )
-        available = set(proc.stdout.split())
+        return {
+            value.strip()
+            for value in proc.stdout.splitlines()
+            if value.strip() and " " not in value.strip()
+        }
     except Exception:
-        available = set()
+        return set()
+
+
+def _tesseract_languages(binary: str, *, tessdata_dir: Path | None = None) -> str:
+    available = _available_tesseract_languages(binary, tessdata_dir=tessdata_dir)
     if {"rus", "eng"}.issubset(available):
         return "rus+eng"
     if "rus" in available:
@@ -48,20 +78,47 @@ def _tesseract_languages(binary: str) -> str:
     return "eng"
 
 
-def _ocr_one_image(tesseract: str, path: Path, *, language: str) -> str:
+def receipt_ocr_runtime_status() -> dict:
+    tesseract, pdftoppm = _ocr_tools()
+    tessdata_dir = _tessdata_dir()
+    languages = (
+        _available_tesseract_languages(tesseract, tessdata_dir=tessdata_dir)
+        if tesseract
+        else set()
+    )
+    pdfium_available = importlib.util.find_spec("pypdfium2") is not None
+    return {
+        "ready": bool(tesseract and {"rus", "eng"}.issubset(languages) and (pdfium_available or pdftoppm)),
+        "tesseract": tesseract or "",
+        "tessdata_dir": str(tessdata_dir or ""),
+        "languages": sorted(languages),
+        "pdf_renderer": "pypdfium2" if pdfium_available else ("pdftoppm" if pdftoppm else ""),
+    }
+
+
+def _ocr_one_image(
+    tesseract: str,
+    path: Path,
+    *,
+    language: str,
+    tessdata_dir: Path | None = None,
+) -> str:
+    command = [
+        tesseract,
+        str(path),
+        "stdout",
+        "-l",
+        language,
+        "--psm",
+        "6",
+        "-c",
+        "preserve_interword_spaces=1",
+    ]
+    if tessdata_dir:
+        command.extend(["--tessdata-dir", str(tessdata_dir)])
     try:
         proc = subprocess.run(
-            [
-                tesseract,
-                str(path),
-                "stdout",
-                "-l",
-                language,
-                "--psm",
-                "6",
-                "-c",
-                "preserve_interword_spaces=1",
-            ],
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -73,17 +130,89 @@ def _ocr_one_image(tesseract: str, path: Path, *, language: str) -> str:
     return proc.stdout if proc.returncode == 0 else ""
 
 
+def _render_pdf_with_pdfium(content: bytes, target: Path, page_limit: int) -> list[Path]:
+    try:
+        import pypdfium2 as pdfium
+    except Exception:
+        return []
+
+    paths: list[Path] = []
+    pdf = None
+    try:
+        pdf = pdfium.PdfDocument(content)
+        for index in range(min(len(pdf), page_limit)):
+            page = bitmap = image = None
+            try:
+                page = pdf[index]
+                bitmap = page.render(scale=OCR_DPI / 72)
+                image = bitmap.to_pil()
+                image_path = target / f"page-{index + 1:02d}.png"
+                image.save(image_path, format="PNG")
+                paths.append(image_path)
+            finally:
+                if image is not None:
+                    image.close()
+                if bitmap is not None:
+                    bitmap.close()
+                if page is not None:
+                    page.close()
+    except Exception:
+        return paths
+    finally:
+        if pdf is not None:
+            pdf.close()
+    return paths
+
+
+def _render_pdf_with_pdftoppm(
+    content: bytes,
+    target: Path,
+    page_limit: int,
+    pdftoppm: str | None,
+) -> list[Path]:
+    if not pdftoppm:
+        return []
+    source = target / "source.pdf"
+    source.write_bytes(content)
+    prefix = target / "page"
+    try:
+        proc = subprocess.run(
+            [
+                pdftoppm,
+                "-f",
+                "1",
+                "-l",
+                str(page_limit),
+                "-r",
+                str(OCR_DPI),
+                "-png",
+                str(source),
+                str(prefix),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=40,
+            check=False,
+        )
+    except Exception:
+        return []
+    return sorted(target.glob("page-*.png"))[:page_limit] if proc.returncode == 0 else []
+
+
 def _ocr_content(content: bytes, *, mime: str) -> tuple[str, dict]:
     tesseract, pdftoppm = _ocr_tools()
     diagnostics = {
         "ocr_tesseract_available": bool(tesseract),
         "ocr_pdftoppm_available": bool(pdftoppm),
+        "ocr_pdfium_available": importlib.util.find_spec("pypdfium2") is not None,
         "ocr_pages": 0,
     }
     if not tesseract:
         return "", diagnostics
-    language = _tesseract_languages(tesseract)
+    tessdata_dir = _tessdata_dir()
+    language = _tesseract_languages(tesseract, tessdata_dir=tessdata_dir)
     diagnostics["ocr_language"] = language
+    diagnostics["ocr_tessdata_dir"] = str(tessdata_dir or "")
 
     with tempfile.TemporaryDirectory(prefix="receipt-ocr-") as tmp:
         tmpdir = Path(tmp)
@@ -91,57 +220,52 @@ def _ocr_content(content: bytes, *, mime: str) -> tuple[str, dict]:
             suffix = ".jpg" if mime == "image/jpeg" else ".png"
             image_path = tmpdir / f"source{suffix}"
             image_path.write_bytes(content)
-            text = _ocr_one_image(tesseract, image_path, language=language)
+            text = _ocr_one_image(
+                tesseract,
+                image_path,
+                language=language,
+                tessdata_dir=tessdata_dir,
+            )
             diagnostics["ocr_pages"] = 1 if text.strip() else 0
+            diagnostics["ocr_pdf_renderer"] = "direct_image"
             return text, diagnostics
 
         if mime != "application/pdf" and not content.startswith(b"%PDF"):
             return "", diagnostics
-        if not pdftoppm:
-            return "", diagnostics
-
-        source = tmpdir / "source.pdf"
-        source.write_bytes(content)
         page_count = MAX_OCR_PAGES
+        source_page_count = None
         try:
             from pypdf import PdfReader
 
-            page_count = min(len(PdfReader(BytesIO(content), strict=False).pages), MAX_OCR_PAGES)
+            source_page_count = len(PdfReader(BytesIO(content), strict=False).pages)
+            page_count = min(source_page_count, MAX_OCR_PAGES)
         except Exception:
             pass
         if page_count <= 0:
             return "", diagnostics
 
-        prefix = tmpdir / "page"
-        try:
-            subprocess.run(
-                [
-                    pdftoppm,
-                    "-f",
-                    "1",
-                    "-l",
-                    str(page_count),
-                    "-r",
-                    "220",
-                    "-png",
-                    str(source),
-                    str(prefix),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=40,
-                check=False,
-            )
-        except Exception:
+        image_paths = _render_pdf_with_pdfium(content, tmpdir, page_count)
+        diagnostics["ocr_pdf_renderer"] = "pypdfium2" if image_paths else ""
+        if not image_paths:
+            image_paths = _render_pdf_with_pdftoppm(content, tmpdir, page_count, pdftoppm)
+            diagnostics["ocr_pdf_renderer"] = "pdftoppm" if image_paths else ""
+        if not image_paths:
             return "", diagnostics
 
         chunks: list[str] = []
-        for image_path in sorted(tmpdir.glob("page-*.png"))[:MAX_OCR_PAGES]:
-            text = _ocr_one_image(tesseract, image_path, language=language)
+        for image_path in image_paths:
+            text = _ocr_one_image(
+                tesseract,
+                image_path,
+                language=language,
+                tessdata_dir=tessdata_dir,
+            )
             if text.strip():
                 chunks.append(text)
         diagnostics["ocr_pages"] = len(chunks)
-        diagnostics["ocr_truncated"] = page_count >= MAX_OCR_PAGES
+        diagnostics["ocr_truncated"] = bool(
+            source_page_count is not None and source_page_count > MAX_OCR_PAGES
+        )
         return "\n".join(chunks), diagnostics
 
 

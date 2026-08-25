@@ -5,12 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl \
-        poppler-utils \
-        tesseract-ocr \
-        tesseract-ocr-eng \
-        tesseract-ocr-rus \
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -29,4 +24,4 @@ USER appuser
 
 EXPOSE 8000
 # web-сервис; job runner запускается тем же образом с командой run_jobs
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "180"]
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "60"]

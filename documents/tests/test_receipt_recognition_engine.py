@@ -1,8 +1,15 @@
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
-from documents.receipt_ocr_fallback import _ocr_one_image, _should_ocr
+from pypdf import PdfWriter
+
+from documents.receipt_ocr_fallback import (
+    _ocr_one_image,
+    _render_pdf_with_pdfium,
+    _should_ocr,
+)
 from documents.receipt_quality_guard import apply_receipt_quality_guard
 from documents.receipt_recognition_engine import (
     _compact_route_recovery,
@@ -295,13 +302,28 @@ def test_ocr_keeps_receipt_columns_for_russian_and_english_text(monkeypatch, tmp
     assert observed["command"][observed["command"].index("-l") + 1] == "rus+eng"
 
 
-def test_production_image_contains_pdf_and_bilingual_ocr_runtime():
-    dockerfile = Path(__file__).resolve().parents[2] / "Dockerfile"
-    source = dockerfile.read_text(encoding="utf-8")
+def test_pdfium_renders_pdf_without_system_pdftoppm(tmp_path):
+    source = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=100)
+    writer.write(source)
 
-    assert "poppler-utils" in source
-    assert "tesseract-ocr-eng" in source
-    assert "tesseract-ocr-rus" in source
+    pages = _render_pdf_with_pdfium(source.getvalue(), tmp_path, 1)
+
+    assert len(pages) == 1
+    assert pages[0].is_file()
+    assert pages[0].stat().st_size > 0
+
+
+def test_pythonanywhere_deploy_prepares_and_checks_ocr_runtime():
+    project_root = Path(__file__).resolve().parents[2]
+    pyproject = (project_root / "pyproject.toml").read_text(encoding="utf-8")
+    deploy = (project_root / "scripts" / "pythonanywhere_deploy.sh").read_text(encoding="utf-8")
+
+    assert '"pillow>=10.4"' in pyproject
+    assert '"pypdfium2>=4.30"' in pyproject
+    assert "python scripts/setup_pythonanywhere_ocr.py" in deploy
+    assert "python manage.py check_receipt_ocr" in deploy
 
 
 def test_valid_airports_win_over_supplier_details_during_candidate_merge():

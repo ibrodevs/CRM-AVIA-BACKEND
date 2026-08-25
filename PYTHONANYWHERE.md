@@ -48,10 +48,38 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ```bash
 export DJANGO_SETTINGS_MODULE=config.settings.pythonanywhere
+python scripts/setup_pythonanywhere_ocr.py
 python manage.py check --deploy
+python manage.py check_receipt_ocr
 python manage.py migrate
 python manage.py collectstatic --noinput
 ```
+
+### OCR квитанций без Docker
+
+PythonAnywhere запускает backend напрямую из virtualenv, поэтому Dockerfile для OCR не используется.
+Скрипт `setup_pythonanywhere_ocr.py`:
+
+- находит системный `/usr/bin/tesseract`;
+- устанавливает русскую и английскую модели в `.runtime/tessdata` внутри проекта;
+- проверяет, что версия Tesseract не ниже 4;
+- использует установленный через `pip` пакет `pypdfium2` для преобразования страниц PDF в изображения, поэтому `apt install poppler-utils` не требуется.
+
+Проверить production-окружение можно в Bash-консоли PythonAnywhere:
+
+```bash
+cd ~/CRM-AVIA-BACKEND
+source ~/.virtualenvs/travelhub/bin/activate
+which tesseract
+tesseract --version
+python manage.py check_receipt_ocr
+```
+
+Ожидаемый результат содержит `"ready": true`, языки `eng` и `rus`, а также renderer
+`pypdfium2`. Каталог `.runtime/` не хранится в Git и сохраняется между обычными обновлениями проекта.
+
+Если на старом system image доступен Tesseract ниже версии 4, сначала обновите system image в
+настройках аккаунта PythonAnywhere, затем заново создайте virtualenv и повторите установку.
 
 Создание администратора и организации:
 
@@ -67,7 +95,9 @@ python manage.py bootstrap_tenant \
 bash scripts/pythonanywhere_deploy.sh
 ```
 
-Скрипт делает `git pull`, обновляет пакет в virtualenv, запускает `check`, `migrate` и `collectstatic`. После него всё равно нужно нажать **Reload** на вкладке Web в PythonAnywhere.
+Скрипт делает `git pull`, обновляет пакет в virtualenv, устанавливает и проверяет OCR,
+запускает `check`, `migrate` и `collectstatic`. После него всё равно нужно нажать **Reload**
+на вкладке Web в PythonAnywhere.
 
 ## 4. Web App
 
