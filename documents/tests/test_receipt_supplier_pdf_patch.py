@@ -230,6 +230,63 @@ def _malformed_identity_h_supplier_pdf() -> bytes:
     return output.getvalue()
 
 
+def _cpdf_null_spaced_it_pdf() -> bytes:
+    """Minimal dompdf/CPDF stream with UTF-16 NULs between TJ operands."""
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=595.28, height=841.89)
+    cid_info = DictionaryObject({
+        NameObject("/Registry"): TextStringObject("Adobe"),
+        NameObject("/Ordering"): TextStringObject("Identity"),
+        NameObject("/Supplement"): NumberObject(0),
+    })
+    cid_font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/CIDFontType2"),
+        NameObject("/BaseFont"): NameObject("/Arial"),
+        NameObject("/CIDSystemInfo"): cid_info,
+    })
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type0"),
+        NameObject("/BaseFont"): NameObject("/Arial"),
+        NameObject("/Encoding"): NameObject("/Identity-H"),
+        NameObject("/DescendantFonts"): ArrayObject([writer._add_object(cid_font)]),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})
+    })
+
+    def split_row(label: str, amount: str, y: int) -> bytes:
+        return (
+            b"BT /F1 10 Tf 72 " + str(y).encode() + b" Td [("
+            + label.encode("utf-16-be")
+            + b")\x00 -670\x00 ("
+            + amount.encode("utf-16-be")
+            + b")] TJ ET\n"
+        )
+
+    def row(value: str, y: int) -> bytes:
+        return (
+            b"BT /F1 10 Tf 72 " + str(y).encode() + b" Td [("
+            + value.encode("utf-16-be") + b")] TJ ET\n"
+        )
+
+    stream = DecodedStreamObject()
+    stream.set_data(b"".join([
+        split_row("ТАРИФ", "RUB17205", 720),
+        split_row("ЭКВИВ. В ВАЛ. ПЛ", "RUB17205", 700),
+        split_row("СБОР/TAX", "RUB2549", 680),
+        split_row("ВСЕГО К ОПЛАТЕ", "RUB21884", 660),
+        row("УВЕДОМЛЕНИЕ: текст сохранён", 620),
+        row("ПОДПИСЬ ПАССАЖИРА ___________", 580),
+    ]))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 def test_amount_format_keeps_supplier_separators():
     assert supplier_pdf._format_like("4 819,20", Decimal("4919.2")) == "4 919,20"
     assert supplier_pdf._format_like("25470", Decimal("25520")) == "25520"
@@ -540,6 +597,59 @@ def test_supplier_pdf_closes_published_and_equivalent_air_fares_as_it():
     assert "RUBIT" not in text
     assert "TAX RUB3690" in text
     assert "TOTAL RUB16800" in text
+
+
+def test_raw_it_matches_currency_amount_once_without_overlapping_splices():
+    target = supplier_pdf.AmountTarget(
+        "fare.it",
+        Decimal("17205"),
+        "IT",
+        ("ТАРИФ",),
+    )
+    codec = {"kind": "multibyte", "encoding": "utf-16-be"}
+    data = "ТАРИФ : RUB17205 ЭКВИВ. ТАРИФ : RUB17205".encode("utf-16-be")
+
+    replacements = writer_fix._find_raw_replacements(
+        data,
+        target,
+        [codec],
+        supplier_pdf,
+    )
+
+    assert len(replacements) == 2
+    assert all(data[start:end].decode("utf-16-be") == "RUB17205" for start, end, _ in replacements)
+    assert replacements[0][1] <= replacements[1][0]
+
+
+def test_cpdf_it_edit_keeps_everything_after_fare_and_page_dimensions():
+    source = _cpdf_null_spaced_it_pdf()
+    corrected, report = supplier_pdf.patch_supplier_pdf(
+        source,
+        {"fare": "17205", "taxes": "2549", "total": "21884"},
+        {
+            "fare": "17205",
+            "taxes": "2549",
+            "total": "21884",
+            "output": {"priceMode": "it"},
+        },
+    )
+
+    assert corrected is not None
+    assert report["strategy"] == "raw_stream"
+    assert report["replacements"] == 2
+    assert report["stream_repairs"] > 0
+    source_page = PdfReader(BytesIO(source), strict=False).pages[0]
+    corrected_page = PdfReader(BytesIO(corrected), strict=False).pages[0]
+    text = corrected_page.extract_text()
+    assert "ТАРИФ IT" in text
+    assert "ЭКВИВ. В ВАЛ. ПЛ IT" in text
+    assert "IT RUB" not in text
+    assert "RUB IT" not in text
+    assert "СБОР/TAX RUB2549" in text
+    assert "ВСЕГО К ОПЛАТЕ RUB21884" in text
+    assert "УВЕДОМЛЕНИЕ: текст сохранён" in text
+    assert "ПОДПИСЬ ПАССАЖИРА" in text
+    assert corrected_page.mediabox == source_page.mediabox
 
 
 def test_queued_snapshot_preserves_it_for_parent_and_group_children():

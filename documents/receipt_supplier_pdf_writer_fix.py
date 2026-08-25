@@ -1700,6 +1700,64 @@ def _has_digit_boundary(data: bytes, start: int, end: int, digit_patterns: list[
     return True
 
 
+def _non_overlapping_raw_replacements(
+    replacements: list[tuple[int, int, bytes]],
+) -> list[tuple[int, int, bytes]]:
+    """Keep the most specific byte match when currency and amount overlap.
+
+    Closing an IT fare produces candidates for both ``RUB17205`` and its
+    nested ``17205``. Applying both with offsets from the original stream makes
+    the shorter match delete bytes after the fare. Prefer the widest match and
+    only then keep disjoint occurrences elsewhere on the page.
+    """
+
+    selected: list[tuple[int, int, bytes]] = []
+    for candidate in sorted(
+        replacements,
+        key=lambda item: (-(item[1] - item[0]), item[0], item[1]),
+    ):
+        start, end, _replacement = candidate
+        if any(start < chosen_end and chosen_start < end for chosen_start, chosen_end, _ in selected):
+            continue
+        selected.append(candidate)
+    return sorted(selected, key=lambda item: (item[0], item[1]))
+
+
+def _strip_null_whitespace_outside_literals(data: bytes) -> tuple[bytes, int]:
+    """Normalize CPDF's UTF-16 spacing without touching encoded text bytes.
+
+    dompdf/CPDF sometimes emits NUL whitespace between operands in a TJ array.
+    PDF viewers tolerate it, but after a stream edit their recovery can stop at
+    the fare row and hide the rest of the page. NUL is only removed outside
+    literal strings; embedded Identity-H glyph data remains byte-for-byte
+    intact.
+    """
+
+    output = bytearray()
+    depth = 0
+    escaped = False
+    removed = 0
+    for value in data:
+        if depth:
+            output.append(value)
+            if escaped:
+                escaped = False
+            elif value == 0x5C:  # backslash
+                escaped = True
+            elif value == 0x28:  # (
+                depth += 1
+            elif value == 0x29:  # )
+                depth -= 1
+            continue
+        if value == 0:
+            removed += 1
+            continue
+        output.append(value)
+        if value == 0x28:
+            depth = 1
+    return bytes(output), removed
+
+
 def _find_raw_replacements(
     data: bytes,
     target,
@@ -1750,7 +1808,10 @@ def _find_raw_replacements(
                             continue
                     found[(index, end)] = new_bytes
 
-    return [(start, end, replacement) for (start, end), replacement in sorted(found.items())]
+    return _non_overlapping_raw_replacements([
+        (start, end, replacement)
+        for (start, end), replacement in found.items()
+    ])
 
 
 def _patch_supplier_pdf_raw(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
@@ -1772,6 +1833,7 @@ def _patch_supplier_pdf_raw(content: bytes, before: dict, after: dict) -> tuple[
         "source_immutable": True,
         "strategy": "raw_stream",
         "fallback": True,
+        "stream_repairs": 0,
     }
     if not targets:
         return None, report
@@ -1830,6 +1892,16 @@ def _patch_supplier_pdf_raw(content: bytes, before: dict, after: dict) -> tuple[
         for (start, end), replacement in sorted(page_replacements.items(), reverse=True):
             data = data[:start] + replacement + data[end:]
             report["replacements"] += 1
+
+        # CPDF's NUL separators are harmless in the immutable source, but can
+        # make viewers stop after the edited fare row once byte lengths change.
+        # Normalize only pages using a multibyte font and only outside strings.
+        if any(
+            isinstance(codec, dict) and codec.get("kind") == "multibyte"
+            for codec in codecs
+        ):
+            data, repairs = _strip_null_whitespace_outside_literals(data)
+            report["stream_repairs"] += repairs
 
         stream = DecodedStreamObject()
         stream.set_data(data)
