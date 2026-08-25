@@ -36,6 +36,19 @@ class AmountTarget:
 
 _FINANCIAL_FIELDS = (
     ("fare", ("ТАРИФ", "FARE")),
+    ("publishedFare", (
+        "ТАРИФ/FARE",
+        "BASE FARE",
+        "PUBLISHED FARE",
+        "ТАРИФ",
+        "FARE",
+    )),
+    ("equivalentFare", (
+        "ЭКВИВ. ТАРИФА/EQUIVALENT FARE PAID",
+        "ЭКВИВ. ТАРИФА",
+        "EQUIVALENT FARE PAID",
+        "EQUIVALENT FARE",
+    )),
     ("taxes", (
         "ТАКСЫ ПЕРЕВОЗЧИКА",
         "СБОРЫ ПЕРЕВОЗЧИКА",
@@ -82,6 +95,8 @@ _BREAKDOWNS = (
     ("feeBreakdown", ("FEE", "СБОР")),
 )
 _GROUP_KEYS = ("groupTickets", "receiptItems", "receipt_items", "receipts", "railTickets")
+_IT_PRICE_MODES = {"it", "itfare", "fareit", "закрыть как it", "closed_it"}
+_IT_FARE_FIELDS = ("fare", "publishedFare", "equivalentFare")
 
 
 def _decimal(value) -> Decimal | None:
@@ -98,6 +113,34 @@ def _decimal(value) -> Decimal | None:
 def _value(data: dict, key: str):
     snake = re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
     return data.get(key, data.get(snake))
+
+
+def _uses_it_fare(data: dict) -> bool:
+    output = _value(data, "output")
+    if not isinstance(output, dict):
+        return False
+    price_mode = str(output.get("priceMode") or output.get("price_mode") or "").strip().lower()
+    return price_mode in _IT_PRICE_MODES
+
+
+def _it_fare_fields(before: dict) -> set[str]:
+    """Prefer the two physical airline fare rows when recognition found them.
+
+    Airline forms may print the published fare in the tariff currency and an
+    equivalent paid fare in the settlement currency.  The CRM financial
+    ``fare`` usually equals the latter, so targeting all three representations
+    would make one printed value satisfy two required edits.  Use the precise
+    physical rows when available and retain the legacy generic fare fallback
+    for suppliers that expose only one amount.
+    """
+
+    precise = {
+        key for key in ("publishedFare", "equivalentFare")
+        if _decimal(_value(before, key)) is not None
+    }
+    if precise:
+        return precise
+    return {"fare"} if _decimal(_value(before, "fare")) is not None else set()
 
 
 def _row_identity(row: dict) -> str:
@@ -282,8 +325,8 @@ def _collect_targets(
     targets: list[AmountTarget] = []
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
-    output = _value(after, "output")
-    price_mode = str(output.get("priceMode") or output.get("price_mode") or "").strip().lower() if isinstance(output, dict) else ""
+    closes_fare_as_it = _uses_it_fare(after)
+    it_fare_fields = _it_fare_fields(before) if closes_fare_as_it else set()
     aggregate_breakdowns = {
         "fare": "fareBreakdown",
         "taxes": "taxBreakdown",
@@ -292,9 +335,9 @@ def _collect_targets(
     for key, aliases in _FINANCIAL_FIELDS:
         old = _decimal(_value(before, key))
         new = _decimal(_value(after, key))
-        if key == "fare" and price_mode in {"it", "закрыть как it", "closed_it"}:
-            if old is not None:
-                targets.append(AmountTarget(f"{prefix}fare.it", old, "IT", aliases, page_index, page_markers))
+        if closes_fare_as_it and key in _IT_FARE_FIELDS:
+            if key in it_fare_fields and old is not None:
+                targets.append(AmountTarget(f"{prefix}{key}.it", old, "IT", aliases, page_index, page_markers))
             continue
         if old is None or new is None or old == new:
             continue
@@ -838,21 +881,28 @@ def _request_financial_snapshot(stored: dict, submitted: dict, parser_status: st
                 merged[key] = source[key]
             if snake in source:
                 merged[snake] = source[snake]
+        if isinstance(source.get("output"), dict):
+            # IT is a display correction, not a monetary edit.  Dropping this
+            # object from the queued snapshot made the PDF worker see ordinary
+            # numeric fare mode even though the editor already showed IT.
+            merged["output"] = source["output"]
         return merged
 
     corrected = overlay(canonical, current)
     submitted_group = _first_group(current)
     stored_group = _first_group(canonical)
+    parent_output = current.get("output") if isinstance(current.get("output"), dict) else None
     if len(submitted_group) > 1:
         merged_group = []
         for index, submitted_child in enumerate(submitted_group):
             stored_child = stored_group[index] if index < len(stored_group) else {}
-            merged_group.append(
-                overlay(
-                    stored_child if isinstance(stored_child, dict) else {},
-                    submitted_child if isinstance(submitted_child, dict) else {},
-                )
+            merged_child = overlay(
+                stored_child if isinstance(stored_child, dict) else {},
+                submitted_child if isinstance(submitted_child, dict) else {},
             )
+            if parent_output and not isinstance(submitted_child.get("output"), dict):
+                merged_child["output"] = parent_output
+            merged_group.append(merged_child)
         for key in _GROUP_KEYS:
             corrected[key] = merged_group
         corrected["receiptCount"] = len(merged_group)

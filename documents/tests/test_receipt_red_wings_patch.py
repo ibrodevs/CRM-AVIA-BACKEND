@@ -80,6 +80,12 @@ IT
 Уведомление
 """
 
+RED_WINGS_NUMERIC_ITINERARY = RED_WINGS_ITINERARY.replace(
+    "IT\nIT\nУведомление",
+    "INV\nGOJ WZ TBS157.68NUC157.68END ROE0.875142\n"
+    "EUR138.00\nRUB13110\nRUB1425YQ RUB430SA RUB1835TU\nRUB16800\nУведомление",
+)
+
 
 def test_red_wings_itinerary_recognizes_every_visible_field_without_inventing_price():
     parsed = _parse_red_wings(RED_WINGS_ITINERARY)
@@ -143,3 +149,19 @@ def test_red_wings_fields_survive_canonical_verified_data_mapping():
     assert verified["legs"][0]["duration"] == "1 ч 55 мин"
     assert verified["output"]["priceMode"] == "it"
     assert verified["recognitionPending"] is False
+
+
+def test_red_wings_numeric_payment_table_keeps_both_fares_for_it_closure():
+    parsed = _parse_red_wings(RED_WINGS_NUMERIC_ITINERARY)
+
+    assert parsed is not None
+    assert parsed["output"]["priceMode"] == "total"
+    assert parsed["publishedFare"] == 138
+    assert parsed["publishedFareCurrency"] == "EUR"
+    assert parsed["equivalentFare"] == 13110
+    assert parsed["equivalentFareCurrency"] == "RUB"
+    assert parsed["fare"] == 13110
+    assert parsed["taxes"] == 3690
+    assert parsed["fees"] == 0
+    assert parsed["total"] == 16800
+    assert [row["code"] for row in parsed["tax_breakdown"]] == ["YQ", "SA", "TU"]

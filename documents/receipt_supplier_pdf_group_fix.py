@@ -109,6 +109,11 @@ def _reconcile_single_receipt_parent_edit(before: dict, after: dict, old_group, 
         child_changed = not _money_equal(_value(old_child, key), _value(new_child, key))
         if parent_changed and not child_changed:
             reconciled[key] = new_parent_value
+    if isinstance(after.get("output"), dict):
+        # A singleton compatibility child is hidden in the editor.  Its
+        # display mode must follow the visible parent so toggling IT reaches
+        # the physical source page selected by the grouped-PDF collector.
+        reconciled["output"] = after["output"]
     return [reconciled]
 
 
@@ -286,13 +291,20 @@ def install_receipt_supplier_pdf_group_fix() -> None:
             else:
                 # Generic supplier PDFs (primarily aviation) use fare/tax/fee/total.
                 # Do not let rail-only compatibility fields become accidental targets.
-                allowed = {"fare", "taxes", "fees", "total"}
+                allowed = {
+                    "fare",
+                    "publishedFare",
+                    "equivalentFare",
+                    "taxes",
+                    "fees",
+                    "total",
+                }
                 financial_fields = [row for row in supplier_pdf._FINANCIAL_FIELDS if row[0] in allowed]
                 breakdowns = supplier_pdf._BREAKDOWNS
 
             targets = []
-            output = _value(after, "output")
-            price_mode = str(output.get("priceMode") or output.get("price_mode") or "").strip().lower() if isinstance(output, dict) else ""
+            closes_fare_as_it = supplier_pdf._uses_it_fare(after)
+            it_fare_fields = supplier_pdf._it_fare_fields(before) if closes_fare_as_it else set()
             aggregate_breakdowns = {
                 "fare": "fareBreakdown",
                 "taxes": "taxBreakdown",
@@ -327,10 +339,10 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                     aliases = tuple(dict.fromkeys((*aliases, *voucher_aliases)))
                 old = supplier_pdf._decimal(_value(before, key))
                 new = supplier_pdf._decimal(_value(after, key))
-                if key == "fare" and price_mode in {"it", "закрыть как it", "closed_it"}:
-                    if old is not None:
+                if closes_fare_as_it and key in supplier_pdf._IT_FARE_FIELDS:
+                    if key in it_fare_fields and old is not None:
                         targets.append(supplier_pdf.AmountTarget(
-                            f"{prefix}fare.it", old, "IT", aliases, page_index, page_markers
+                            f"{prefix}{key}.it", old, "IT", aliases, page_index, page_markers
                         ))
                     continue
                 if old is None or new is None or old == new:

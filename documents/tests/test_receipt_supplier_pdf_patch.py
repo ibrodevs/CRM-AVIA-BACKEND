@@ -69,6 +69,30 @@ def _simple_fare_pdf() -> bytes:
     return output.getvalue()
 
 
+def _two_currency_fare_pdf() -> bytes:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=595, height=842)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+        NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+    })
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+    stream = DecodedStreamObject()
+    stream.set_data(
+        b"BT /F1 12 Tf 72 720 Td "
+        b"(FARE EUR138 EQUIVALENT FARE PAID RUB13110 TAX RUB3690 TOTAL RUB16800) Tj ET"
+    )
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 def _fragmented_amount_pdf() -> bytes:
     """Supplier-style stream with one independently positioned glyph per Tj."""
 
@@ -483,6 +507,61 @@ def test_supplier_pdf_can_close_fare_as_it_without_hiding_taxes_or_total():
     assert "FARE IT RUB" in text
     assert "TAX 1250 RUB" in text
     assert "TOTAL 25470 RUB" in text
+
+
+def test_supplier_pdf_closes_published_and_equivalent_air_fares_as_it():
+    corrected, report = supplier_pdf.patch_supplier_pdf(
+        _two_currency_fare_pdf(),
+        {
+            "fare": "13110",
+            "publishedFare": "138",
+            "equivalentFare": "13110",
+            "taxes": "3690",
+            "total": "16800",
+        },
+        {
+            "fare": "13110",
+            "publishedFare": "138",
+            "equivalentFare": "13110",
+            "taxes": "3690",
+            "total": "16800",
+            "output": {"priceMode": "it"},
+        },
+    )
+
+    assert corrected is not None
+    assert report["requested"] == report["applied"] == 2
+    text = PdfReader(BytesIO(corrected)).pages[0].extract_text()
+    assert "FARE EURIT" in text
+    assert "EQUIVALENT FARE PAID RUBIT" in text
+    assert "TAX RUB3690" in text
+    assert "TOTAL RUB16800" in text
+
+
+def test_queued_snapshot_preserves_it_for_parent_and_group_children():
+    stored = {
+        "fare": "13110",
+        "total": "16800",
+        "output": {"priceMode": "total"},
+        "receipts": [
+            {"fare": "13110", "total": "16800", "output": {"priceMode": "total"}},
+            {"fare": "7200", "total": "8000", "output": {"priceMode": "total"}},
+        ],
+    }
+    submitted = {
+        **stored,
+        "output": {"priceMode": "it"},
+        "receipts": [
+            {"fare": "13110", "total": "16800"},
+            {"fare": "7200", "total": "8000"},
+        ],
+    }
+
+    snapshot = supplier_pdf._request_financial_snapshot(stored, submitted, "parsed")
+
+    assert snapshot["output"]["priceMode"] == "it"
+    assert snapshot["receipts"][0]["output"]["priceMode"] == "it"
+    assert snapshot["receipts"][1]["output"]["priceMode"] == "it"
 
 
 def test_malformed_identity_h_supplier_pdf_uses_raw_stream_same_font_fallback():

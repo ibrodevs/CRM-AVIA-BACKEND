@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
 from documents.receipt_client_pdf_requirements import _clean, _named_date, _replace_result
@@ -23,6 +24,41 @@ def _red_wings_passenger(value: str) -> str:
     # They are not part of the passenger name stored in CRM.
     value = re.sub(r"\s+(?:Г-ЖА|Г-Н|MR|MRS|MS)$", "", value, flags=re.IGNORECASE)
     return _clean(value.replace("/", " "))
+
+
+def _red_wings_payment_amounts(section: str) -> dict:
+    """Read the bilingual Red Wings payment table in its visual column order."""
+
+    if not section or re.search(r"\bIT\b", section):
+        return {}
+    tokens = []
+    pattern = re.compile(
+        r"(?P<currency>RUB|EUR|USD|KGS|KZT)\s*"
+        r"(?P<amount>\d[\d\s]*(?:[,.]\d{1,2})?)(?P<code>[A-ZА-Я]{2,3})?(?=\s|$)",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(section):
+        try:
+            amount = Decimal(match.group("amount").replace(" ", "").replace(",", "."))
+        except (InvalidOperation, ValueError):
+            continue
+        tokens.append({
+            "amount": amount,
+            "currency": match.group("currency").upper(),
+            "code": (match.group("code") or "").upper(),
+        })
+    # Published fare, equivalent paid fare, zero or more tax rows, total.
+    if len(tokens) < 3:
+        return {}
+    published, equivalent, total = tokens[0], tokens[1], tokens[-1]
+    tax_rows = tokens[2:-1]
+    return {
+        "published": published,
+        "equivalent": equivalent,
+        "tax_rows": tax_rows,
+        "taxes": sum((row["amount"] for row in tax_rows), Decimal("0")),
+        "total": total,
+    }
 
 
 def _route_value(value: str) -> bool:
@@ -190,6 +226,11 @@ def _parse_red_wings(text: str) -> dict | None:
     if payment_start >= 0:
         payment_section = text[payment_start : notice_start if notice_start > payment_start else len(text)]
     price_is_it = bool(re.search(r"\bIT\b", payment_section))
+    payment_amounts = _red_wings_payment_amounts(payment_section)
+    published_fare = payment_amounts.get("published", {})
+    equivalent_fare = payment_amounts.get("equivalent", {})
+    tax_rows = payment_amounts.get("tax_rows", [])
+    payment_total = payment_amounts.get("total", {})
 
     segment = {
         "from": from_city,
@@ -240,15 +281,27 @@ def _parse_red_wings(text: str) -> dict | None:
         "fare_basis": fare_basis,
         "baggage": baggage,
         "hand_baggage": "",
-        "fare": None,
-        "taxes": None,
-        "fees": None,
-        "total": None,
-        "originalTotal": None,
-        "currency": "",
+        "fare": equivalent_fare.get("amount"),
+        "publishedFare": published_fare.get("amount"),
+        "publishedFareCurrency": published_fare.get("currency", ""),
+        "equivalentFare": equivalent_fare.get("amount"),
+        "equivalentFareCurrency": equivalent_fare.get("currency", ""),
+        "taxes": payment_amounts.get("taxes"),
+        "fees": Decimal("0") if payment_amounts else None,
+        "total": payment_total.get("amount"),
+        "originalTotal": payment_total.get("amount"),
+        "currency": payment_total.get("currency") or equivalent_fare.get("currency", ""),
         "segments": [segment],
         "fare_breakdown": [],
-        "tax_breakdown": [],
+        "tax_breakdown": [
+            {
+                "code": row.get("code") or "TAX",
+                "label": "Сбор перевозчика",
+                "amount": row["amount"],
+                "currency": row["currency"],
+            }
+            for row in tax_rows
+        ],
         "fee_breakdown": [],
         "service_kind": "avia",
         "service_type": "Авиа",
