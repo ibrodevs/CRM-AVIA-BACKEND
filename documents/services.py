@@ -1365,22 +1365,35 @@ def _avia_segments(text: str) -> list[dict]:
                 "dir": "out",
             }]
 
-    route = re.search(r"(?m)^([А-ЯЁA-Z][^\n]{2,40})\s+([А-ЯЁA-Z][^\n]{2,40})\s*$", text)
+    routes = re.finditer(r"(?m)^([А-ЯЁA-Z][^\n]{2,40})\s+([А-ЯЁA-Z][^\n]{2,40})\s*$", text)
     flight = re.search(r"\b([A-ZА-Я]{2})\s*[- ]?\s*(\d{2,5})\b", text)
     dates = re.findall(r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{4})\b", text)
     times = re.findall(r"\b(\d{1,2}:\d{2})\b", text)
-    if route and flight and dates and len(times) >= 2:
-        return [{
-            "from": route.group(1).strip(),
-            "fromCode": "",
-            "to": route.group(2).strip(),
-            "toCode": "",
-            "date": _normalize_date(dates[0]),
-            "dep": times[-2],
-            "arr": times[-1],
-            "flightNo": "".join(flight.groups()),
-            "dir": "out",
-        }]
+    if flight and dates and len(times) >= 2:
+        # A supplier's legal name and tax identifier are often printed as two
+        # adjacent uppercase columns above the actual itinerary.  They match
+        # the broad layout fallback, but must never become flight endpoints.
+        from documents.receipt_quality_guard import plausible_avia_location
+
+        for route in routes:
+            origin = route.group(1).strip()
+            destination = route.group(2).strip()
+            if not (
+                plausible_avia_location(origin)
+                and plausible_avia_location(destination)
+            ):
+                continue
+            return [{
+                "from": origin,
+                "fromCode": "",
+                "to": destination,
+                "toCode": "",
+                "date": _normalize_date(dates[0]),
+                "dep": times[-2],
+                "arr": times[-1],
+                "flightNo": "".join(flight.groups()),
+                "dir": "out",
+            }]
     return []
 
 

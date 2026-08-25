@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import Any
 
@@ -17,6 +18,45 @@ def _present(value: Any) -> bool:
 def _segments(fields: dict) -> list[dict]:
     rows = fields.get("segments") or fields.get("legs") or []
     return [row for row in rows if isinstance(row, dict)]
+
+
+_NON_LOCATION = re.compile(
+    r"(?:\b(?:TIN|INN|VAT|TAX\s*ID|LLC|LTD|JSC|CORP(?:ORATION)?|INC|COMPANY|"
+    r"SERVICE\s+GROUP|TRAVEL\s+AGENCY|AGENT|AIRLINES?|ELECTRONIC\s+TICKET|"
+    r"BOOKING|ISSUED|PAYMENT|PASSENGER|DOCUMENT|FARE)\b|"
+    r"\b(?:ИНН|КПП|ОГРН|ОКПО|ООО|ОАО|ПАО|ЗАО|ОСОО|ТОО|АВИАКОМПАНИЯ|БИЛЕТ|"
+    r"БРОНИРОВАНИЕ|ВЫДАН|ОПЛАТА|ПАССАЖИР|ДОКУМЕНТ|ТАРИФ)\b|"
+    r"(?:https?://|www\.|@))",
+    re.IGNORECASE,
+)
+
+
+def plausible_avia_location(value: Any, code: Any = "") -> bool:
+    """Reject seller/accounting details while accepting cities and airports."""
+
+    location = re.sub(r"\s+", " ", str(value or "").replace("\xa0", " ")).strip(" ,;:")
+    iata = str(code or "").strip().upper()
+    if iata and not re.fullmatch(r"[A-Z]{3}", iata):
+        return False
+    if not location:
+        return bool(iata)
+    if len(location) > 100 or _NON_LOCATION.search(location):
+        return False
+    if re.fullmatch(r"\d{1,2}(?:[:./-]\d{1,4})+(?:\s+\d{2,4})?", location):
+        return False
+    if re.fullmatch(r"(?:\D*\d){6,}\D*", location):
+        return False
+    if not re.search(r"[A-Za-zА-Яа-яЁё]", location):
+        return False
+    return True
+
+
+def has_plausible_avia_route(fields: dict) -> bool:
+    return any(
+        plausible_avia_location(segment.get("from"), segment.get("fromCode"))
+        and plausible_avia_location(segment.get("to"), segment.get("toCode"))
+        for segment in _segments(fields)
+    )
 
 
 def _passengers(fields: dict) -> list[dict]:
@@ -89,7 +129,7 @@ def _missing_fields(kind: str, fields: dict) -> list[str]:
     if kind == "avia":
         if not _has_passenger(fields):
             missing.append("пассажир")
-        if not _has_route(fields):
+        if not has_plausible_avia_route(fields):
             missing.append("маршрут")
         if not _has_flight(fields):
             missing.append("номер рейса")

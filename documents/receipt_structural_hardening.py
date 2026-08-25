@@ -5,8 +5,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from documents.receipt_parser_patch_safe import _json_safe
+from documents.receipt_quality_guard import has_plausible_avia_route
 
-HARDENING_VERSION = "2026.08.21-v3"
+HARDENING_VERSION = "2026.08.25-v4"
 _CURRENCIES = {"RUB", "USD", "EUR", "KGS", "CNY", "РУБ"}
 _PASSENGER_TITLE = re.compile(
     r"\s+(?:MR|MRS|MS|MSTR|Г-Н|Г-ЖА|Г-Ж|ГОСПОДИН|ГОСПОЖА)$",
@@ -515,6 +516,20 @@ def install_receipt_structural_hardening() -> None:
                 item_kind = str(item.get("service_kind") or service_kind).lower()
                 item_hardener = harden_rail_fields if item_kind == "rail" else harden_avia_fields
                 changed.update(item_hardener(item, child_text))
+
+        if service_kind == "avia" and not has_plausible_avia_route(fields):
+            warning = (
+                "Нужно проверить маршрут: вместо авиационных локаций "
+                "распознаны реквизиты или служебный текст."
+            )
+            warnings = result.setdefault("warnings", [])
+            if isinstance(warnings, list) and warning not in warnings:
+                warnings.append(warning)
+            result["status"] = "manual_review"
+            result["confidence"] = min(
+                result.get("confidence") or Decimal("0"),
+                Decimal("0.490"),
+            )
 
         _sync_raw(result, fields, changed)
         return result

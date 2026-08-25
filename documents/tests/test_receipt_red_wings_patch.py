@@ -1,7 +1,6 @@
 from documents.receipt_metadata import receipt_verified_data
 from documents.receipt_red_wings_patch import _parse_red_wings
 
-
 RED_WINGS_ITINERARY = """
 ИП ХМЕЛЬ МАРИНА ВАЛЕРЬЕВНА
 ИНН 525803171496
@@ -86,6 +85,26 @@ RED_WINGS_NUMERIC_ITINERARY = RED_WINGS_ITINERARY.replace(
     "EUR138.00\nRUB13110\nRUB1425YQ RUB430SA RUB1835TU\nRUB16800\nУведомление",
 )
 
+RED_WINGS_LATIN_ITINERARY = (
+    RED_WINGS_ITINERARY
+    .replace("ИП ХМЕЛЬ МАРИНА ВАЛЕРЬЕВНА\nИНН 525803171496", "TRANS SERVICE GROUP, LLC\nTIN 3907209514")
+    .replace("КОРБУТ/АНАСТАСИЯ И Г-ЖА", "KIGHURADZE/OTAR MR")
+    .replace("ПС7622223740", "PP123456789")
+    .replace("Нижний Новгород", "Nizhny Novgorod")
+    .replace("Стригино", "Strigino")
+    .replace("Екатеринбург", "Tbilisi")
+    .replace("Кольцово", "Tbilisi International Airport")
+    .replace("WZ 2030", "WZ 1339")
+    .replace("11:50", "09:30")
+    .replace("15:45", "13:45")
+    .replace("25.05.2025", "10.10.2026")
+    .replace("25 мая 2025", "10 October 2026")
+    .replace("23 мая 2025", "23 August 2026")
+    .replace("воскресенье", "Saturday")
+    .replace("1 ч 55 мин", "3 h 15 m")
+    .replace("РЕД ВИНГС", "RED WINGS")
+)
+
 
 def test_red_wings_itinerary_recognizes_every_visible_field_without_inventing_price():
     parsed = _parse_red_wings(RED_WINGS_ITINERARY)
@@ -165,3 +184,29 @@ def test_red_wings_numeric_payment_table_keeps_both_fares_for_it_closure():
     assert parsed["fees"] == 0
     assert parsed["total"] == 16800
     assert [row["code"] for row in parsed["tax_breakdown"]] == ["YQ", "SA", "TU"]
+
+
+def test_red_wings_latin_ticket_ignores_seller_legal_details_in_route():
+    parsed = _parse_red_wings(RED_WINGS_LATIN_ITINERARY)
+
+    assert parsed is not None
+    assert parsed["issuer"] == "RED WINGS"
+    assert parsed["passenger_name"] == "KIGHURADZE OTAR"
+    assert parsed["issue_date"] == "23.08.2026"
+    segment = parsed["segments"][0]
+    assert segment["from"] == "Nizhny Novgorod"
+    assert segment["fromAddress"] == "Strigino"
+    assert segment["to"] == "Tbilisi"
+    assert segment["toAddress"] == "Tbilisi International Airport"
+    assert segment["date"] == "10.10.2026"
+    assert segment["endDate"] == "10.10.2026"
+    assert segment["dep"] == "09:30"
+    assert segment["arr"] == "13:45"
+    assert segment["duration"] == "3 h 15 m"
+    assert segment["flightNo"] == "WZ1339"
+    route_text = " ".join(
+        str(parsed["segments"][0].get(key) or "")
+        for key in ("from", "fromAddress", "to", "toAddress")
+    )
+    assert "TRANS SERVICE" not in route_text
+    assert "3907209514" not in route_text

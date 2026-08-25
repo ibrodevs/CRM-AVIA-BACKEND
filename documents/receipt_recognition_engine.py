@@ -6,10 +6,12 @@ from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Any
 
-from documents.receipt_quality_guard import apply_receipt_quality_guard
+from documents.receipt_quality_guard import (
+    apply_receipt_quality_guard,
+    plausible_avia_location,
+)
 
-
-ENGINE_VERSION = "2026.08.07-v2"
+ENGINE_VERSION = "2026.08.25-v3"
 
 
 def _present(value: Any) -> bool:
@@ -130,9 +132,17 @@ def _ticket_number(fields: dict) -> str:
 
 
 def _has_route(fields: dict) -> bool:
+    is_avia = str(fields.get("service_kind") or "").lower() == "avia"
     return any(
         _present(segment.get("from") or segment.get("fromCode"))
         and _present(segment.get("to") or segment.get("toCode"))
+        and (
+            not is_avia
+            or (
+                plausible_avia_location(segment.get("from"), segment.get("fromCode"))
+                and plausible_avia_location(segment.get("to"), segment.get("toCode"))
+            )
+        )
         for segment in _segments(fields)
     )
 
@@ -194,6 +204,12 @@ def _specialized_result(text: str) -> dict | None:
     """Try deterministic supplier parsers against every text representation."""
 
     parsers = []
+    try:
+        from documents.receipt_red_wings_patch import _parse_red_wings
+
+        parsers.append(("red_wings", _parse_red_wings))
+    except Exception:
+        pass
     try:
         from documents.receipt_problem_formats_patch import _parse_s7_ticket
 
@@ -269,7 +285,17 @@ def _merge_passengers(primary: list, secondary: list) -> list:
 
 def _segment_completeness(segment: dict) -> int:
     keys = ("from", "fromCode", "to", "toCode", "date", "dep", "arr", "flightNo", "coach", "seat", "status")
-    return sum(_present(segment.get(key)) for key in keys)
+    score = sum(_present(segment.get(key)) for key in keys)
+    origin = segment.get("from") or segment.get("fromCode")
+    destination = segment.get("to") or segment.get("toCode")
+    # Only penalize an existing but semantically invalid route. Empty route
+    # fields are valid for non-transport services that share the merge helper.
+    if (origin or destination) and not (
+        plausible_avia_location(segment.get("from"), segment.get("fromCode"))
+        and plausible_avia_location(segment.get("to"), segment.get("toCode"))
+    ):
+        score -= 20
+    return score
 
 
 def _segments_score(rows: list) -> int:
@@ -433,7 +459,12 @@ def _repair_fields(fields: dict, text: str, warnings: list[str]) -> None:
     if kind == "avia":
         recovered = _compact_route_recovery(text)
         current = _segments(fields)
-        if recovered and _segments_score(recovered) > _segments_score(current):
+        current_is_plausible = all(
+            plausible_avia_location(row.get("from"), row.get("fromCode"))
+            and plausible_avia_location(row.get("to"), row.get("toCode"))
+            for row in current
+        ) if current else False
+        if recovered and (not current_is_plausible or _segments_score(recovered) > _segments_score(current)):
             # Preserve dates/times from existing rows when route recovery only
             # contributes flight and airport identities.
             if len(recovered) == len(current):
@@ -456,6 +487,13 @@ def _consistency_warnings(fields: dict) -> list[str]:
             destination = str(segment.get("toCode") or segment.get("to") or "").strip()
             if origin and destination and origin.casefold() == destination.casefold():
                 warnings.append(f"Нужно проверить сегмент {index + 1}: пункт отправления совпадает с пунктом назначения.")
+            if kind == "avia" and not (
+                plausible_avia_location(segment.get("from"), segment.get("fromCode"))
+                and plausible_avia_location(segment.get("to"), segment.get("toCode"))
+            ):
+                warnings.append(
+                    f"Нужно проверить сегмент {index + 1}: вместо авиационной локации распознаны реквизиты или служебный текст."
+                )
             dep = str(segment.get("dep") or "").strip()
             arr = str(segment.get("arr") or "").strip()
             for label, value in (("время отправления", dep), ("время прибытия", arr)):

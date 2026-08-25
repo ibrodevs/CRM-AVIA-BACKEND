@@ -243,3 +243,30 @@ def test_ocr_runs_only_for_weak_manual_review_results():
 
     assert _should_ocr(weak) is True
     assert _should_ocr(strong) is False
+
+
+def test_valid_airports_win_over_supplier_details_during_candidate_merge():
+    wrong = {
+        "service_kind": "avia",
+        "segments": [{
+            "from": "TRANS SERVICE GROUP, LLC",
+            "to": "TIN 3907209514",
+            "flightNo": "WZ1339",
+            "date": "10.10.2026",
+            "dep": "09:30",
+            "arr": "13:45",
+        }],
+    }
+    correct = {
+        "service_kind": "avia",
+        "segments": [{
+            "from": "Nizhny Novgorod",
+            "to": "Tbilisi",
+            "flightNo": "WZ1339",
+            "date": "10.10.2026",
+            "dep": "09:30",
+            "arr": "13:45",
+        }],
+    }
+
+    assert _merge_dict(wrong, correct)["segments"] == correct["segments"]

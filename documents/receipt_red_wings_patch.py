@@ -6,7 +6,6 @@ from io import BytesIO
 
 from documents.receipt_client_pdf_requirements import _clean, _named_date, _replace_result
 
-
 _WEEKDAYS = {
     "понедельник",
     "вторник",
@@ -15,6 +14,19 @@ _WEEKDAYS = {
     "пятница",
     "суббота",
     "воскресенье",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+}
+
+_EN_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
 }
 
 
@@ -24,6 +36,23 @@ def _red_wings_passenger(value: str) -> str:
     # They are not part of the passenger name stored in CRM.
     value = re.sub(r"\s+(?:Г-ЖА|Г-Н|MR|MRS|MS)$", "", value, flags=re.IGNORECASE)
     return _clean(value.replace("/", " "))
+
+
+def _red_wings_issue_date(value: str) -> str:
+    value = _clean(value)
+    numeric = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})", value)
+    if numeric:
+        day, month, year = numeric.groups()
+        if len(year) == 2:
+            year = "20" + year
+        return f"{int(day):02d}.{int(month):02d}.{year}"
+    named = _named_date(value)
+    if named:
+        return named
+    english = re.fullmatch(r"(\d{1,2})\s+([A-Za-z]+)\s+(20\d{2})", value)
+    if english and english.group(2).lower() in _EN_MONTHS:
+        return f"{int(english.group(1)):02d}.{_EN_MONTHS[english.group(2).lower()]:02d}.{english.group(3)}"
+    return ""
 
 
 def _red_wings_payment_amounts(section: str) -> dict:
@@ -67,13 +96,14 @@ def _route_value(value: str) -> bool:
         return False
     if value.lower() in _WEEKDAYS:
         return False
-    if re.fullmatch(r"\d{1,2}\s+[А-Яа-яЁё]+\s+20\d{2}", value):
+    if re.fullmatch(r"\d{1,2}\s+[A-Za-zА-Яа-яЁё]+\s+20\d{2}", value):
         return False
-    if re.fullmatch(r"\d+\s*ч(?:\s*\d+\s*мин)?", value, re.IGNORECASE):
+    if re.fullmatch(r"\d+\s*(?:ч|h)(?:\s*\d+\s*(?:мин|m|min))?", value, re.IGNORECASE):
         return False
     if re.search(
         r"Перевозчик|Carrier|Статус|Status|Недействителен|Fare basis|тариф|Brand|"
-        r"Рейс выполняет|Flight operated|Багаж|Baggage|Класс|Class|Ticket number|Issued by|Date of issue",
+        r"Рейс выполняет|Flight operated|Багаж|Baggage|Класс|Class|Ticket number|Issued by|Date of issue|"
+        r"\b(?:TIN|INN|VAT|LLC|LTD|JSC|CORP|INC)\b",
         value,
         re.IGNORECASE,
     ):
@@ -93,7 +123,7 @@ def _parse_red_wings(text: str) -> dict | None:
     if (
         "Electronic ticket" not in text
         or "Рейс/Flight" not in text
-        or not re.search(r"\bРЕД\s+ВИНГС\b", text, re.IGNORECASE)
+        or not re.search(r"\b(?:РЕД\s+ВИНГС|RED\s+WINGS)\b", text, re.IGNORECASE)
     ):
         return None
 
@@ -123,7 +153,8 @@ def _parse_red_wings(text: str) -> dict | None:
         r"Номер билета\s+Ticket number\s+Выдан от/Issued by\s+Дата выдачи\s+Date of issue\s+"
         r"(?P<ticket>\d{3}\s+\d{10}|\d{13})\s+"
         r"(?P<issuer>.+?)\s+"
-        r"(?P<issue>\d{1,2}\s+[А-Яа-яЁё]+\s+20\d{2})\s+Данные бронирования",
+        r"(?P<issue>(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}\s+[A-Za-zА-Яа-яЁё]+\s+20\d{2}))\s+"
+        r"Данные бронирования",
         flat,
         re.IGNORECASE,
     )
@@ -151,7 +182,10 @@ def _parse_red_wings(text: str) -> dict | None:
         return None
 
     carrier_index = next(
-        (index for index, line in enumerate(block_lines) if line.lower().startswith("перевозчик/carrier:")),
+        (
+            index for index, line in enumerate(block_lines)
+            if re.match(r"(?:Перевозчик/Carrier|Carrier)\s*:", line, re.IGNORECASE)
+        ),
         -1,
     )
     last_date_index = max(
@@ -170,18 +204,21 @@ def _parse_red_wings(text: str) -> dict | None:
     # origin city, origin airport, destination city, destination airport.
     if len(route_values) >= 4:
         from_city, from_airport, to_city, to_airport = route_values[:4]
+    elif len(route_values) == 3:
+        from_city, from_airport, to_city = route_values
+        to_airport = ""
     else:
         from_city, to_city = route_values[:2]
         from_airport = to_airport = ""
 
     block_flat = "\n".join(block_lines)
-    carrier_match = re.search(r"Перевозчик/Carrier:\s*([^\n]+)", block_flat, re.IGNORECASE)
-    status_match = re.search(r"Статус/Status:\s*([A-ZА-ЯЁ]+)", block_flat, re.IGNORECASE)
-    fare_basis_match = re.search(r"Вид тарифа/Fare basis:\s*([A-Z0-9-]+)", block_flat, re.IGNORECASE)
-    brand_match = re.search(r"Бренд/Brand:\s*([^\n]+)", block_flat, re.IGNORECASE)
+    carrier_match = re.search(r"(?:Перевозчик/Carrier|Carrier):\s*([^\n]+)", block_flat, re.IGNORECASE)
+    status_match = re.search(r"(?:Статус/Status|Status):\s*([A-ZА-ЯЁ]+)", block_flat, re.IGNORECASE)
+    fare_basis_match = re.search(r"(?:Вид тарифа/Fare basis|Fare basis):\s*([A-Z0-9-]+)", block_flat, re.IGNORECASE)
+    brand_match = re.search(r"(?:Бренд/Brand|Brand):\s*([^\n]+)", block_flat, re.IGNORECASE)
 
     duration_match = re.search(
-        r"В пути/Travel time:\s*(\d+\s*ч(?:\s*\d+\s*мин)?)",
+        r"(?:В пути/Travel time|Travel time):\s*(\d+\s*(?:ч|h)(?:\s*\d+\s*(?:мин|m|min))?)",
         flat,
         re.IGNORECASE,
     )
@@ -210,7 +247,7 @@ def _parse_red_wings(text: str) -> dict | None:
     document_number = document_match.group(1) if document_match else ""
     ticket_number = ticket_meta.group("ticket")
     issuer = _clean(ticket_meta.group("issuer"))
-    issue_date = _named_date(ticket_meta.group("issue"))
+    issue_date = _red_wings_issue_date(ticket_meta.group("issue"))
     booking_reference = _clean(booking_match.group(1)) if booking_match else ""
     carrier = _clean(carrier_match.group(1)) if carrier_match else issuer
     operated_by = _clean(operated_match.group(1)) if operated_match else carrier
