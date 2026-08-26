@@ -23,11 +23,11 @@ class DocumentsConfig(AppConfig):
         from documents.receipt_red_wings_patch import install_receipt_red_wings_patch
         from documents.receipt_rzd_fastpath import install_receipt_rzd_fastpath
         from documents.receipt_sequential_review_patch import install_receipt_sequential_review_patch
+        from documents.receipt_structural_hardening import install_receipt_structural_hardening
         from documents.receipt_supplier_pdf_font_codec import install_receipt_supplier_pdf_font_codec
         from documents.receipt_supplier_pdf_group_fix import install_receipt_supplier_pdf_group_fix
         from documents.receipt_supplier_pdf_patch import install_receipt_supplier_pdf_patch
         from documents.receipt_supplier_pdf_writer_fix import install_receipt_supplier_pdf_writer_fix
-        from documents.receipt_structural_hardening import install_receipt_structural_hardening
         from documents.receipt_tax_columns_patch import install_receipt_tax_columns_patch
         from documents.receipt_ticket_level_patch import install_receipt_ticket_level_patch
 
@@ -42,7 +42,6 @@ class DocumentsConfig(AppConfig):
         install_receipt_recognition_engine()
         install_receipt_recognition_performance_patch()
         install_receipt_ocr_fallback()
-        install_receipt_rzd_fastpath()
         # Run the client-format hardening after all parser/OCR compatibility
         # wrappers so its complete segment and structured hotel data cannot be
         # collapsed again by an older fallback parser.
@@ -68,6 +67,11 @@ class DocumentsConfig(AppConfig):
         # deduplicates continuation pages and corrects strong rail evidence
         # before ticket-level persistence consumes the result.
         install_receipt_pdf_grouping()
+        # Install the deterministic RZD handler as the outermost recognition
+        # layer. A complete multi-page coupon is returned after one text pass;
+        # the generic wrappers must not extract the same PDF again and turn a
+        # valid upload into a gateway timeout on constrained production hosts.
+        install_receipt_rzd_fastpath()
         # Ticket-level storage consumes the final parser result.
         install_receipt_ticket_level_patch()
         # Run after ticket-level storage so review status/progress is preserved

@@ -5,7 +5,6 @@ from documents.receipt_rzd_fastpath import (
     recognize_rzd_coupon_pages,
 )
 
-
 PASSENGERS = [
     "ИВАНОВ ИВАН ИВАНОВИЧ",
     "ПЕТРОВ ПЕТР ПЕТРОВИЧ",
@@ -71,7 +70,10 @@ def test_eight_page_rzd_group_is_parsed_without_generic_engine():
     assert fields["service_kind"] == "rail"
     assert fields["receipt_count"] == 8
     assert len(fields["receipts"]) == 8
+    assert len(fields["receipt_items"]) == 8
     assert len(fields["passengers"]) == 8
+    assert fields["document_is_container"] is True
+    assert [receipt["sourcePage"] for receipt in fields["receipt_items"]] == list(range(1, 9))
     assert [receipt["segments"][0]["seat"] for receipt in fields["receipts"]] == SEATS
     assert fields["total"] == Decimal("30710.40")
     assert len(fields["passenger_name"]) <= 255

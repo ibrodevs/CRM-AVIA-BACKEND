@@ -4,8 +4,8 @@ from decimal import Decimal
 
 from documents.receipt_multiform_patch import _aggregate_rail_receipts, _best_pages, _page_texts
 from documents.receipt_parser_patch_safe import _json_safe, _rail
+from documents.receipt_pdf_grouping import _aliases, _clean_child
 from documents.receipt_quality_guard import apply_receipt_quality_guard
-
 
 RZD_COUPON_MARKER = "КОНТРОЛЬНЫЙ КУПОН"
 
@@ -59,19 +59,29 @@ def recognize_rzd_coupon_pages(pages: list[str]) -> dict | None:
     running every PDF extractor against a multi-page group file.
     """
 
-    coupon_pages = [page for page in pages if RZD_COUPON_MARKER in (page or "")]
+    coupon_pages = [
+        (page_number, page)
+        for page_number, page in enumerate(pages, start=1)
+        if RZD_COUPON_MARKER in (page or "")
+    ]
     if not coupon_pages:
         return None
 
     receipts: list[dict] = []
     failed_pages: list[int] = []
-    for page_number, page in enumerate(coupon_pages, start=1):
+    for page_number, page in coupon_pages:
         try:
             receipt = _rail(page)
         except Exception:
             receipt = None
         if receipt:
-            receipts.append(receipt)
+            receipts.append(
+                _clean_child(
+                    receipt,
+                    page_number=page_number,
+                    index=len(receipts),
+                )
+            )
         else:
             failed_pages.append(page_number)
 
@@ -79,6 +89,15 @@ def recognize_rzd_coupon_pages(pages: list[str]) -> dict | None:
         return None
 
     fields = _aggregate_rail_receipts(receipts, {})
+    items = [
+        _clean_child(
+            receipt,
+            page_number=int(receipt.get("sourcePage") or receipt.get("receiptPage") or index + 1),
+            index=index,
+        )
+        for index, receipt in enumerate(fields.get("receipts") or receipts)
+    ]
+    _aliases(fields, items)
     fields["source_coupon_pages"] = len(coupon_pages)
     _compact_passenger_summary(fields)
 
@@ -98,6 +117,7 @@ def recognize_rzd_coupon_pages(pages: list[str]) -> dict | None:
         )
 
     raw = _json_safe(fields)
+    _aliases(raw, _json_safe(items))
     raw.update(
         {
             "rzd_fastpath": True,
