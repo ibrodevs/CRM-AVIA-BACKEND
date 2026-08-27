@@ -547,7 +547,7 @@ def test_duplicate_bold_total_updates_its_overprint_reset_for_new_glyph_widths()
     assert reset == 3700
 
 
-def test_supplier_pdf_can_close_fare_as_it_without_hiding_taxes_or_total():
+def test_supplier_pdf_closes_only_the_fare_and_leaves_every_other_amount():
     source = _simple_fare_pdf()
     corrected, report = supplier_pdf.patch_supplier_pdf(
         source,
@@ -559,6 +559,7 @@ def test_supplier_pdf_can_close_fare_as_it_without_hiding_taxes_or_total():
     )
 
     assert corrected is not None
+    # Закрывается ровно графа тарифа: таксы и итог печатаются как были.
     assert report["requested"] == report["applied"] == 1
     text = PdfReader(BytesIO(corrected)).pages[0].extract_text()
     assert "FARE IT" in text
@@ -596,6 +597,7 @@ def test_supplier_pdf_closes_published_and_equivalent_air_fares_as_it():
     assert "EURIT" not in text
     assert "RUBIT" not in text
     assert "TAX RUB3690" in text
+    # Итог — не тариф, его цифры остаются нетронутыми.
     assert "TOTAL RUB16800" in text
 
 

@@ -304,7 +304,7 @@ def install_receipt_supplier_pdf_group_fix() -> None:
 
             targets = []
             closes_fare_as_it = supplier_pdf._uses_it_fare(after)
-            it_fare_fields = supplier_pdf._it_fare_fields(before) if closes_fare_as_it else set()
+            it_closed_fields = dict(supplier_pdf._it_closed_fields(before)) if closes_fare_as_it else {}
             aggregate_breakdowns = {
                 "fare": "fareBreakdown",
                 "taxes": "taxBreakdown",
@@ -339,10 +339,13 @@ def install_receipt_supplier_pdf_group_fix() -> None:
                     aliases = tuple(dict.fromkeys((*aliases, *voucher_aliases)))
                 old = supplier_pdf._decimal(_value(before, key))
                 new = supplier_pdf._decimal(_value(after, key))
-                if closes_fare_as_it and key in supplier_pdf._IT_FARE_FIELDS:
-                    if key in it_fare_fields and old is not None:
+                if closes_fare_as_it and key in supplier_pdf._IT_CLOSED_FIELDS:
+                    # Закрывается только тариф: итог и остальные цифры бланка
+                    # остаются как напечатал поставщик.
+                    if key in it_closed_fields and old is not None:
                         targets.append(supplier_pdf.AmountTarget(
-                            f"{prefix}{key}.it", old, "IT", aliases, page_index, page_markers
+                            f"{prefix}{key}.it", old, "IT", aliases, page_index, page_markers,
+                            it_closed_fields[key],
                         ))
                     continue
                 if old is None or new is None or old == new:

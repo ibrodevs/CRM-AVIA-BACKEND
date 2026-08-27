@@ -97,6 +97,9 @@ _BREAKDOWNS = (
 _GROUP_KEYS = ("groupTickets", "receiptItems", "receipt_items", "receipts", "railTickets")
 _IT_PRICE_MODES = {"it", "itfare", "fareit", "закрыть как it", "closed_it"}
 _IT_FARE_FIELDS = ("fare", "publishedFare", "equivalentFare")
+# На IT закрывается только тариф. Итог, таксы, сборы и любые другие цифры
+# бланка остаются как есть — их правит обычный финансовый пересчёт.
+_IT_CLOSED_FIELDS = _IT_FARE_FIELDS
 _FARE_CURRENCIES = ("RUB", "РУБ.", "РУБ", "EUR", "USD", "KGS", "KZT", "CNY", "₽", "$", "€")
 
 
@@ -124,24 +127,38 @@ def _uses_it_fare(data: dict) -> bool:
     return price_mode in _IT_PRICE_MODES
 
 
-def _it_fare_fields(before: dict) -> set[str]:
-    """Prefer the two physical airline fare rows when recognition found them.
+_IT_FARE_FIELDS_ORDER = ("publishedFare", "equivalentFare", "fare")
 
-    Airline forms may print the published fare in the tariff currency and an
-    equivalent paid fare in the settlement currency.  The CRM financial
-    ``fare`` usually equals the latter, so targeting all three representations
-    would make one printed value satisfy two required edits.  Use the precise
-    physical rows when available and retain the legacy generic fare fallback
-    for suppliers that expose only one amount.
+
+def _it_closed_fields(before: dict) -> list[tuple[str, bool]]:
+    """Печатные представления тарифа, которые закрываются на IT.
+
+    Бланк перевозчика печатает тариф дважды: опубликованный в валюте тарифа и
+    эквивалент в валюте расчёта. Закрываются оба; остальные суммы бланка —
+    итог, таксы, сборы — не трогаются.
     """
 
-    precise = {
-        key for key in ("publishedFare", "equivalentFare")
-        if _decimal(_value(before, key)) is not None
-    }
-    if precise:
-        return precise
-    return {"fare"} if _decimal(_value(before, "fare")) is not None else set()
+    order = _IT_FARE_FIELDS_ORDER
+    fields: list[tuple[str, bool]] = []
+    seen_amounts: set = set()
+    for key in order:
+        amount = _decimal(_value(before, key))
+        if amount is None:
+            continue
+        # Повтор той же суммы отдельной целью не становится: стратегии правки
+        # заменяют все вхождения числа, а вторая цель на ту же сумму делала
+        # правку неприменимой целиком.
+        if amount in seen_amounts:
+            continue
+        seen_amounts.add(amount)
+        fields.append((key, True))
+    return fields
+
+
+def _it_fare_fields(before: dict) -> set[str]:
+    """Совместимость: набор ключей тарифа, закрываемых на IT."""
+
+    return {key for key, _ in _it_closed_fields(before) if key in _IT_FARE_FIELDS}
 
 
 def _target_amount_pattern(variant: str, target) -> re.Pattern:
@@ -363,7 +380,7 @@ def _collect_targets(
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
     closes_fare_as_it = _uses_it_fare(after)
-    it_fare_fields = _it_fare_fields(before) if closes_fare_as_it else set()
+    it_closed_fields = dict(_it_closed_fields(before)) if closes_fare_as_it else {}
     aggregate_breakdowns = {
         "fare": "fareBreakdown",
         "taxes": "taxBreakdown",
@@ -372,9 +389,12 @@ def _collect_targets(
     for key, aliases in _FINANCIAL_FIELDS:
         old = _decimal(_value(before, key))
         new = _decimal(_value(after, key))
-        if closes_fare_as_it and key in _IT_FARE_FIELDS:
-            if key in it_fare_fields and old is not None:
-                targets.append(AmountTarget(f"{prefix}{key}.it", old, "IT", aliases, page_index, page_markers))
+        if closes_fare_as_it and key in _IT_CLOSED_FIELDS:
+            if key in it_closed_fields and old is not None:
+                targets.append(AmountTarget(
+                    f"{prefix}{key}.it", old, "IT", aliases, page_index, page_markers,
+                    it_closed_fields[key],
+                ))
             continue
         if old is None or new is None or old == new:
             continue
@@ -598,10 +618,12 @@ def _replace_combined_text(array, codec, target: AmountTarget, context: str) -> 
     return 0
 
 
+
 def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
     from pypdf import PdfReader, PdfWriter
     from pypdf.generic import ArrayObject, ByteStringObject, ContentStream, TextStringObject
     targets = _collect_targets(before, after)
+    closes_fare_as_it = _uses_it_fare(after)
     report = {"requested": len(targets), "applied": 0, "unapplied": [], "font_preserved": True, "source_immutable": True}
     if not targets:
         return None, report
@@ -676,7 +698,16 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
     writer.clone_document_from_reader(reader)
     output = BytesIO()
     writer.write(output)
-    return output.getvalue(), report
+    corrected = output.getvalue()
+    if closes_fare_as_it:
+        leaks = _detect_it_leaks(corrected, _it_closed_amounts(targets))
+        report["it_leaks"] = leaks
+        if leaks:
+            # Закрытый тариф не должен утечь в клиентский документ ни одной
+            # цифрой: лучше отдать бланк на ручную проверку, чем опубликовать
+            # PDF, из которого цена восстанавливается вычитанием.
+            return None, report
+    return corrected, report
 
 
 def _draft_base_verified(draft, parser_status: str) -> dict:
