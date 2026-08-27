@@ -3,6 +3,7 @@ from django.urls import path
 from crm import views as v
 from crm.company_finance_safe_view import CompanyFinancialConditionsView
 from crm.fee_resolution_views import ServiceFeeResolveView
+from crm.person_document_ocr_view import PersonDocumentRecognizeView
 
 urlpatterns = [
     path("persons/", v.PersonListCreateView.as_view(), name="person-list"),
@@ -12,6 +13,11 @@ urlpatterns = [
         "persons/<uuid:person_id>/loyalty-cards/",
         v.PersonLoyaltyCardsView.as_view(),
         name="person-loyalty-cards",
+    ),
+    path(
+        "person-documents/recognize/",
+        PersonDocumentRecognizeView.as_view(),
+        name="person-document-recognize",
     ),
     path("clients/", v.ClientListCreateView.as_view(), name="client-list"),
     path("companies/", v.CompanyListCreateView.as_view(), name="company-list"),

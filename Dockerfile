@@ -5,7 +5,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
+# tesseract и poppler нужны распознаванию сканов: маршрут-квитанции без
+# текстового слоя и документы личности (MRZ паспортов и ID-карт).
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
