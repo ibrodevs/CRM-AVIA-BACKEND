@@ -7,6 +7,12 @@ from django.db import transaction
 from django.utils import timezone
 
 REPORT: dict = {"created": [], "skipped": [], "warnings": []}
+DEMO_USERS = (
+    ("admin@travelhub.local", "admin", "Александр", "Админов"),
+    ("operator@travelhub.local", "operator", "Ольга", "Операторова"),
+    ("accountant@travelhub.local", "accountant", "Борис", "Бухгалтеров"),
+    ("manager@travelhub.local", "manager", "Мария", "Менеджерова"),
+)
 
 
 def _get_or_create(model, defaults=None, report_key=None, **lookup):
@@ -33,7 +39,7 @@ class Command(BaseCommand):
                 "Для стенда используйте --force."
             )
         from accounts.management.commands.bootstrap_tenant import sync_system_roles
-        from accounts.models import Role, User, UserRole
+        from accounts.models import Role, User, UserRole, UserSession
         from crm.models import (
             Agreement,
             ClientProfile,
@@ -58,13 +64,8 @@ class Command(BaseCommand):
 
         with tenant_context(tenant.id):
             users = {}
-            for email, role_code, first, last in [
-                ("admin@travelhub.local", "admin", "Александр", "Админов"),
-                ("operator@travelhub.local", "operator", "Ольга", "Операторова"),
-                ("accountant@travelhub.local", "accountant", "Борис", "Бухгалтеров"),
-                ("manager@travelhub.local", "manager", "Мария", "Менеджерова"),
-            ]:
-                user = User.objects.filter(email=email).first()
+            for email, role_code, first, last in DEMO_USERS:
+                user = User.objects.filter(email__iexact=email).first()
                 if user is None:
                     user = User.objects.create_user(
                         email=email,
@@ -76,7 +77,36 @@ class Command(BaseCommand):
                     )
                     REPORT["created"].append(f"user:{email}")
                 else:
-                    REPORT["skipped"].append(f"user:{email}")
+                    updates = []
+                    if user.tenant_id != tenant.id:
+                        old_tenant_id = user.tenant_id
+                        user.tenant = tenant
+                        updates.append("tenant")
+                        UserRole.objects.filter(user=user).exclude(role__tenant=tenant).delete()
+                        UserSession.objects.filter(user=user, revoked_at__isnull=True).update(
+                            revoked_at=timezone.now()
+                        )
+                        REPORT["warnings"].append(
+                            f"user:{email}: tenant исправлен с {old_tenant_id} на {tenant.id}; "
+                            "старые сессии завершены"
+                        )
+                    if user.status != User.Status.ACTIVE:
+                        user.status = User.Status.ACTIVE
+                        updates.append("status")
+                    if not user.first_name:
+                        user.first_name = first
+                        updates.append("first_name")
+                    if not user.last_name:
+                        user.last_name = last
+                        updates.append("last_name")
+                    if role_code == "admin" and not user.is_staff:
+                        user.is_staff = True
+                        updates.append("is_staff")
+                    if updates:
+                        user.save(update_fields=[*updates, "updated_at"])
+                        REPORT["created"].append(f"user_updated:{email}:{','.join(updates)}")
+                    else:
+                        REPORT["skipped"].append(f"user:{email}")
                 role = Role.objects.get(tenant=tenant, code=role_code)
                 UserRole.objects.get_or_create(user=user, role=role)
                 users[role_code] = user
