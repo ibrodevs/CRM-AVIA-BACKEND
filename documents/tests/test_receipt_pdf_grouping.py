@@ -239,3 +239,58 @@ def test_rail_passenger_with_multiple_seats_keeps_all_blanks(monkeypatch):
     assert [item["segments"][0]["seat"] for item in items] == ["025", "026"]
     assert result["raw"].get("deduplicated_blank_count", 0) == 0
 
+
+def test_rail_group_same_route_and_amount_keeps_neighbour_seats(monkeypatch):
+    passengers = [
+        ("МАСЛЮКОВ АЛЕКСЕЙ", "005"),
+        ("ФАХРУТДИНОВ РУСТАМ", "033"),
+        ("ШАРДАНОВ ИЛЬЯ", "034"),
+        ("ШУТОВ ДМИТРИЙ", "035"),
+    ]
+    tickets = [
+        {
+            "service_kind": "rail",
+            "service_type": "ЖД",
+            "passenger_name": passenger,
+            "ticket_number": "021AA-GROUP",
+            "document_number": "",
+            "total": "21489.20",
+            "currency": "RUB",
+            "segments": [{
+                "from": "САНКТ-ПЕТЕРБУРГ-ГЛАВНЫЙ",
+                "to": "МОСКВА ОКТЯБРЬСКАЯ",
+                "date": "15.03.2025",
+                "flightNo": "021АА",
+                "coach": "13",
+                "seat": seat,
+            }],
+            "receiptPage": index + 1,
+        }
+        for index, (passenger, seat) in enumerate(passengers)
+    ]
+    initial = {
+        "fields": {**tickets[0], "receipt_items": tickets},
+        "raw": {},
+        "warnings": [],
+        "status": "parsed",
+        "confidence": Decimal("0.99"),
+    }
+    monkeypatch.setattr(
+        grouping,
+        "_best_page_texts",
+        lambda _content: [(index, f"page {index + 1}") for index in range(len(tickets))],
+    )
+
+    result = grouping.apply_pdf_grouping(
+        _parser,
+        b"%PDF rail group",
+        mime="application/pdf",
+        name="rail_group.pdf",
+        result=initial,
+    )
+
+    items = result["fields"]["receipt_items"]
+    assert len(items) == 4
+    assert [item["passenger"] for item in items] == [passenger for passenger, _seat in passengers]
+    assert [item["segments"][0]["seat"] for item in items] == ["005", "033", "034", "035"]
+    assert result["raw"].get("deduplicated_blank_count", 0) == 0

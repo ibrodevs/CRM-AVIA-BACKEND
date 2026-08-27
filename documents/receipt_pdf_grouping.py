@@ -131,15 +131,60 @@ def _passenger(item: dict) -> str:
     return str(item.get("passenger") or item.get("passenger_name") or "").strip()
 
 
+def _identity_part(value: Any) -> str:
+    return re.sub(r"\W+", "", str(value or "")).casefold()
+
+
+def _first_segment(item: dict) -> dict:
+    for key in ("segments", "legs"):
+        values = item.get(key)
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, dict):
+                    return value
+    return {}
+
+
+def _route_identity(item: dict) -> str:
+    segment = _first_segment(item)
+    fields = (
+        "from",
+        "fromCode",
+        "to",
+        "toCode",
+        "date",
+        "dep",
+        "arr",
+        "flightNo",
+        "train",
+        "trainNo",
+        "train_number",
+        "coach",
+        "wagon",
+        "car",
+        "seat",
+        "place",
+    )
+    return "|".join(_identity_part(segment.get(field) or item.get(field)) for field in fields)
+
+
 def _identity(item: dict) -> str:
-    ticket = re.sub(r"\W+", "", _ticket_number(item)).casefold()
-    passenger = re.sub(r"\W+", "", _passenger(item)).casefold()
-    document = re.sub(
-        r"\W+",
-        "",
-        str(item.get("document_number") or item.get("docNo") or ""),
-    ).casefold()
-        return f"fields:{passenger}|{document}|{route}|{_decimal(item.get('total'))}"
+    ticket = _identity_part(_ticket_number(item))
+    passenger = _identity_part(_passenger(item))
+    document = _identity_part(item.get("document_number") or item.get("docNo"))
+    route = _route_identity(item)
+    total = _decimal(item.get("total"))
+    if _kind(item.get("service_kind")) == "rail":
+        # Grouped railway PDFs can print the same order/control number on many
+        # coupons. Keep coach/seat/passenger data in the key so neighbours are
+        # not collapsed into a false duplicate.
+        if any((ticket, passenger, document, route)):
+            return f"rail:{ticket}|{passenger}|{document}|{route}|{total}"
+        return ""
+    if ticket:
+        return f"ticket:{ticket}"
+    if any((passenger, document, route)):
+        return f"fields:{passenger}|{document}|{route}|{total}"
     return ""
 
 
