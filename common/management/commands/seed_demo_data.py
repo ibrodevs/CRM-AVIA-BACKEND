@@ -72,6 +72,7 @@ class Command(BaseCommand):
                         password="Demo-Pass-2026!",
                         tenant=tenant,
                         status=User.Status.ACTIVE,
+                        is_staff=(role_code == "admin"),
                         first_name=first,
                         last_name=last,
                     )
@@ -102,6 +103,8 @@ class Command(BaseCommand):
                     if role_code == "admin" and not user.is_staff:
                         user.is_staff = True
                         updates.append("is_staff")
+                    user.set_password("Demo-Pass-2026!")
+                    updates.append("password")
                     if updates:
                         user.save(update_fields=[*updates, "updated_at"])
                         REPORT["created"].append(f"user_updated:{email}:{','.join(updates)}")
