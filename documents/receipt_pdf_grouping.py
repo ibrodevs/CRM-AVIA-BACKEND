@@ -133,27 +133,12 @@ def _passenger(item: dict) -> str:
 
 def _identity(item: dict) -> str:
     ticket = re.sub(r"\W+", "", _ticket_number(item)).casefold()
-    if ticket:
-        return f"ticket:{ticket}"
-    segments = item.get("segments") or item.get("legs") or []
-    route = "|".join(
-        str(value or "").strip().casefold()
-        for segment in segments[:2]
-        if isinstance(segment, dict)
-        for value in (
-            segment.get("fromCode") or segment.get("from"),
-            segment.get("toCode") or segment.get("to"),
-            segment.get("date"),
-            segment.get("flightNo"),
-        )
-    )
     passenger = re.sub(r"\W+", "", _passenger(item)).casefold()
     document = re.sub(
         r"\W+",
         "",
         str(item.get("document_number") or item.get("docNo") or ""),
     ).casefold()
-    if passenger and (route or document):
         return f"fields:{passenger}|{document}|{route}|{_decimal(item.get('total'))}"
     return ""
 
