@@ -77,7 +77,7 @@ class Order(TenantModel):
     )
     source = models.CharField(max_length=32, blank=True)
     preferred_channel = models.CharField(max_length=32, blank=True)
-    base_currency = models.CharField(max_length=3, default="USD")
+    base_currency = models.CharField(max_length=3, default="RUB")
     agreement = models.ForeignKey(
         "crm.Agreement", null=True, blank=True, on_delete=models.PROTECT, related_name="orders"
     )

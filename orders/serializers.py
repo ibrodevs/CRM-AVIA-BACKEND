@@ -205,7 +205,7 @@ class OrderCreateSerializer(serializers.Serializer):
     priority = serializers.ChoiceField(choices=Order.Priority.choices, default=Order.Priority.NORMAL)
     source = serializers.CharField(required=False, allow_blank=True, max_length=32)
     preferred_channel = serializers.CharField(required=False, allow_blank=True, max_length=32)
-    base_currency = serializers.CharField(default="USD", max_length=3)
+    base_currency = serializers.CharField(default="RUB", max_length=3)
     agreement = serializers.PrimaryKeyRelatedField(
         queryset=Agreement.objects.all(), required=False, allow_null=True
     )

@@ -166,7 +166,7 @@ def seed_full_workspace(*, tenant, users, primary_person, primary_company, agree
                     "preferred_channel": "telegram",
                     "planned_start": (now + timedelta(days=start_delta)).date(),
                     "planned_end": (now + timedelta(days=end_delta)).date(),
-                    "base_currency": "USD",
+                    "base_currency": "RUB",
                     "route": {
                         "kind": "round_trip",
                         "points": [
@@ -177,7 +177,9 @@ def seed_full_workspace(*, tenant, users, primary_person, primary_company, agree
                     "participants": [{"person": person or primary_person, "role": "passenger", "is_contact": True}],
                 },
             )
-        Order.objects.filter(pk=order.pk).update(status=status, stage=stage, priority=priority, operator=assigned, is_group=request_type == "group")
+        Order.objects.filter(pk=order.pk).update(
+            status=status, stage=stage, priority=priority, operator=assigned, is_group=request_type == "group", base_currency="RUB"
+        )
         order.refresh_from_db()
         mark(f"order:{purpose}", created)
         _, history_created = OrderStatusHistory.objects.get_or_create(

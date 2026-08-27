@@ -288,7 +288,7 @@ class Command(BaseCommand):
                         "purpose": "Отпуск в Стамбуле",
                         "planned_start": (timezone.now() + timedelta(days=30)).date(),
                         "planned_end": (timezone.now() + timedelta(days=37)).date(),
-                        "base_currency": "USD",
+                        "base_currency": "RUB",
                         "route": {
                             "kind": "round_trip",
                             "points": [
@@ -310,7 +310,7 @@ class Command(BaseCommand):
                         "agreement": agreement,
                         "purpose": "Командировка отдела продаж",
                         "planned_start": (timezone.now() + timedelta(days=14)).date(),
-                        "base_currency": "USD",
+                        "base_currency": "RUB",
                     },
                 )
                 REPORT["created"].append(f"order:{corporate.number}")
@@ -318,13 +318,14 @@ class Command(BaseCommand):
                     tenant=tenant,
                     order=corporate,
                     direction="client_receivable",
-                    currency="USD",
+                    currency="RUB",
                     original_amount=Decimal("1720.00"),
                     due_date=(timezone.now() + timedelta(days=7)).date(),
                     created_by=users["accountant"],
                 )
                 REPORT["created"].append("obligation:corporate")
             else:
+                Order.objects.filter(tenant=tenant).update(base_currency="RUB")
                 REPORT["skipped"].append("orders (уже существуют)")
 
             from common.demo_workspace import seed_full_workspace
