@@ -87,6 +87,51 @@ class TestDocuments:
         assert download["Content-Disposition"].startswith("attachment;")
         assert preview["Content-Disposition"].startswith("inline;")
 
+    def test_document_download_when_file_missing_on_disk_returns_404(
+        self, admin_client, order
+    ):
+        created = admin_client.post(
+            "/api/v1/documents/",
+            {
+                "file": upload_file("missing.pdf", b"%PDF missing", "application/pdf"),
+                "document": json.dumps(
+                    {"order": order["id"], "kind": "voucher", "title": "Missing File"}
+                ),
+            },
+            format="multipart",
+        ).json()
+        doc = Document.objects.get(pk=created["id"])
+        version = doc.versions.first()
+        # Simulate missing file on storage / disk
+        version.file.storage.delete(version.file.name)
+
+        url = f"/api/v1/documents/{created['id']}/download/"
+        response = admin_client.get(url)
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "FILE_NOT_FOUND"
+
+    def test_supplier_pdf_download_when_file_missing_on_disk_returns_404(
+        self, admin_client, order
+    ):
+        created = admin_client.post(
+            "/api/v1/documents/",
+            {
+                "file": upload_file("supplier_missing.pdf", b"%PDF missing supplier", "application/pdf"),
+                "document": json.dumps(
+                    {"order": order["id"], "kind": "voucher", "title": "Supplier Missing"}
+                ),
+            },
+            format="multipart",
+        ).json()
+        doc = Document.objects.get(pk=created["id"])
+        version = doc.versions.first()
+        version.file.storage.delete(version.file.name)
+
+        url = f"/api/v1/documents/{created['id']}/supplier-pdf/"
+        response = admin_client.get(url)
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "FILE_NOT_FOUND"
+
     def test_new_version_does_not_overwrite_previous(self, admin_client, order):
         created = admin_client.post(
             "/api/v1/documents/",

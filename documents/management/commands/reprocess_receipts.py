@@ -31,6 +31,10 @@ class Command(BaseCommand):
         stats = {"parsed": 0, "manual_review": 0, "errors": 0}
         for job in jobs.iterator():
             version = job.file_version
+            if not version or not version.file:
+                stats["errors"] += 1
+                self.stderr.write(f"{job.id}: missing file version")
+                continue
             try:
                 with version.file.open("rb") as source:
                     content = source.read()

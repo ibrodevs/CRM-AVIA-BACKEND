@@ -753,7 +753,7 @@ def _base_verified_from_document(document) -> dict:
     ):
         return cached
 
-    if original is not None:
+    if original is not None and original.file:
         try:
             from documents.services import extract_receipt_fields
 
@@ -871,11 +871,20 @@ def _sync_supplier_pdf(document, base_verified: dict, corrected_verified: dict, 
             supplier["base_source_checksum_sha256"] = original.checksum_sha256
             supplier["base_source_version"] = original.version
     result = {"status": "source", "source_version": original.version if original else None, "corrected_version": None, "requested": 0, "applied": 0, "font_preserved": True}
-    if original is None or not base_verified:
+    if original is None or not base_verified or not original.file:
         result["status"] = "unsupported"
     else:
-        with original.file.open("rb") as source:
-            corrected_content, patch_report = patch_supplier_pdf(source.read(), base_verified, corrected_verified)
+        try:
+            with original.file.open("rb") as source:
+                corrected_content, patch_report = patch_supplier_pdf(source.read(), base_verified, corrected_verified)
+        except (FileNotFoundError, OSError, ValueError) as error:
+            logger.warning(
+                "supplier_pdf_source_open_failed document_id=%s version=%s error=%s",
+                document.id,
+                original.version,
+                error,
+            )
+            corrected_content, patch_report = None, {"requested": 0, "applied": 0, "font_preserved": True}
         result.update(patch_report)
         if patch_report["requested"] == 0:
             receipt_import = {**(metadata.get("receipt_import") or {})}
@@ -1161,7 +1170,15 @@ def install_receipt_supplier_pdf_patch() -> None:
                 candidate = versions.filter(version=corrected).first()
                 if candidate is not None:
                     version = candidate
-            response = FileResponse(version.file.open("rb"), content_type="application/pdf")
+            if not version.file:
+                from common.errors import ApiError
+                raise ApiError(code="FILE_NOT_FOUND", message="Файл не найден на сервере", status_code=404)
+            try:
+                file_handle = version.file.open("rb")
+            except (FileNotFoundError, OSError, ValueError):
+                from common.errors import ApiError
+                raise ApiError(code="FILE_NOT_FOUND", message="Файл не найден на сервере", status_code=404) from None
+            response = FileResponse(file_handle, content_type="application/pdf")
             disposition = "attachment" if request.query_params.get("disposition") == "attachment" else "inline"
             response["Content-Disposition"] = f'{disposition}; filename="{version.original_name or document.title}"'
             response["X-Content-Type-Options"] = "nosniff"

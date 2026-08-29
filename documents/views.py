@@ -213,12 +213,18 @@ class DocumentDownloadView(APIView):
         )
         if version is None:
             raise ApiError(code="NO_VERSION", message="Нет файла", status_code=404)
+        if not version.file:
+            raise ApiError(code="FILE_NOT_FOUND", message="Файл не найден на сервере", status_code=404)
         if version.scan_status != "clean":
             raise ApiError(code="FILE_QUARANTINED", message="Файл не прошёл проверку", status_code=423)
 
         if document.is_confidential:
             audit("documents.sensitive_downloaded", actor=request.user, resource=document, request=request)
-        response = FileResponse(version.file.open("rb"), content_type=version.mime_type)
+        try:
+            file_handle = version.file.open("rb")
+        except (FileNotFoundError, OSError, ValueError):
+            raise ApiError(code="FILE_NOT_FOUND", message="Файл не найден на сервере", status_code=404) from None
+        response = FileResponse(file_handle, content_type=version.mime_type)
         disposition = "inline" if request.query_params.get("disposition") == "inline" else "attachment"
         response["Content-Disposition"] = (
             f'{disposition}; filename="{version.original_name or document.title}"'
