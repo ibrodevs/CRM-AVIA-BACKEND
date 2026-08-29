@@ -3,6 +3,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from pypdf import PdfWriter
 
 from documents.receipt_ocr_fallback import (
@@ -303,6 +304,7 @@ def test_ocr_keeps_receipt_columns_for_russian_and_english_text(monkeypatch, tmp
 
 
 def test_pdfium_renders_pdf_without_system_pdftoppm(tmp_path):
+    pytest.importorskip("pypdfium2")
     source = BytesIO()
     writer = PdfWriter()
     writer.add_blank_page(width=200, height=100)
