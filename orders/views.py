@@ -298,7 +298,13 @@ class OrderOverviewView(APIView):
         order = (
             orders_visible_to(request.user)
             .select_related("client_person", "client_company", "operator", "contact_person")
-            .prefetch_related("participants__person", "route__points", "services__passengers", "tasks")
+            .prefetch_related(
+                "participants__person",
+                "route__points",
+                "services__passengers__participant__person",
+                "services__supplier",
+                "tasks",
+            )
             .filter(pk=order_id)
             .first()
         )
@@ -307,14 +313,34 @@ class OrderOverviewView(APIView):
         services_summary = [
             {
                 "id": str(s.id),
+                "order": str(order.id),
                 "kind": s.kind,
                 "status": s.status,
                 "title": s.title,
+                "supplier": s.supplier.name if s.supplier else "",
+                "supplier_cost": str(s.supplier_cost) if s.supplier_cost is not None else None,
+                "taxes": str(s.taxes) if s.taxes is not None else None,
+                "agency_fee": str(s.agency_fee) if s.agency_fee is not None else None,
+                "markup": str(s.markup) if s.markup is not None else None,
+                "commission": str(s.commission) if s.commission is not None else None,
+                "discount": str(s.discount) if s.discount is not None else None,
                 "starts_at": s.starts_at,
-                "client_total": str(s.client_total) if s.client_total else None,
+                "ends_at": s.ends_at,
+                "client_total": str(s.client_total) if s.client_total is not None else None,
                 "currency": s.currency,
                 "ticketing_deadline": s.ticketing_deadline,
                 "version": s.version,
+                "passengers": [
+                    {
+                        "participant": str(sp.participant_id),
+                        "name": sp.participant.person.full_name
+                        if sp.participant.person
+                        else (sp.participant.guest_snapshot or {}).get("full_name")
+                        or (sp.participant.guest_snapshot or {}).get("name")
+                        or "",
+                    }
+                    for sp in s.passengers.all()
+                ],
             }
             for s in order.services.all()
         ]

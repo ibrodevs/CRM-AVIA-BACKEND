@@ -335,8 +335,90 @@ class DocumentReceiptUpdateView(APIView):
                 ) from None
         document.currency = str(verified.get("currency") or document.currency or "")
         document.source = "corrected"
+
+        if not save_as_draft and document.order is not None and document.service is None:
+            import datetime
+            from django.utils.dateparse import parse_date, parse_datetime
+            from services.models import OrderService, ServicePassenger
+            from common.money import quantize
+
+            service_type = str(verified.get("service_type") or (document.metadata or {}).get("receipt_import", {}).get("service_type") or document.kind or "avia")
+            kind_map = {
+                "авиа": "avia", "avia": "avia", "flight": "avia", "itinerary_receipt": "avia",
+                "жд": "rail", "ж/д": "rail", "rail": "rail", "train": "rail", "ticket": "rail",
+                "гостиница": "hotel", "отель": "hotel", "hotel": "hotel", "stay": "hotel", "voucher": "hotel",
+                "трансфер": "transfer", "transfer": "transfer",
+                "автобус": "bus", "bus": "bus",
+                "тур": "tour", "tour": "tour",
+                "страхование": "insurance", "страховка": "insurance", "insurance": "insurance",
+                "виза": "visa", "visa": "visa",
+                "прочее": "other", "other": "other",
+            }
+            raw_kind = service_type.strip().lower()
+            service_kind = kind_map.get(raw_kind, "avia" if "авиа" in raw_kind or "avia" in raw_kind else "other")
+            fare = Decimal(str(verified.get("fare", 0) or 0))
+            taxes = Decimal(str(verified.get("taxes", 0) or 0))
+            fees = Decimal(str(verified.get("fees", 0) or 0))
+            currency = str(verified.get("currency") or document.currency or "USD")
+            client_total_val = Decimal(str(verified.get("total") or (fare + taxes + fees)))
+
+            starts_at = None
+            segments = verified.get("legs") or verified.get("segments") or []
+            if segments and isinstance(segments, list) and isinstance(segments[0], dict):
+                first_seg = segments[0]
+                dt_val = first_seg.get("depDate") or first_seg.get("date") or first_seg.get("departure_datetime")
+                if dt_val:
+                    parsed_dt = parse_datetime(str(dt_val))
+                    if parsed_dt:
+                        starts_at = parsed_dt
+                    else:
+                        parsed_d = parse_date(str(dt_val))
+                        if parsed_d:
+                            starts_at = timezone.make_aware(datetime.datetime.combine(parsed_d, datetime.time(0, 0)))
+
+            service = OrderService.objects.create(
+                tenant_id=request.user.tenant_id,
+                order=document.order,
+                kind=service_kind,
+                status=OrderService.Status.ISSUED,
+                title=(verified.get("carrier") or verified.get("issuer") or document.title or "Услуга") + (
+                    f" · {verified.get('passenger') or verified.get('passenger_name')}" if verified.get("passenger") or verified.get("passenger_name") else ""
+                ),
+                source=OrderService.Source.IMPORT,
+                starts_at=starts_at,
+                supplier_cost=quantize(fare + taxes, currency),
+                agency_fee=fees,
+                markup=Decimal(str(verified.get("markup", 0) or 0)),
+                commission=Decimal(str(verified.get("commission", 0) or 0)),
+                client_total=quantize(client_total_val, currency),
+                currency=currency,
+                created_by=request.user,
+                updated_by=request.user,
+            )
+            document.service = service
+            pax_name = str(verified.get("passenger") or verified.get("passenger_name") or "").strip().lower()
+            if pax_name:
+                for participant in document.order.participants.all():
+                    part_name = ""
+                    if participant.person:
+                        part_name = f"{participant.person.surname} {participant.person.given_name}".strip().lower()
+                    elif participant.guest_snapshot:
+                        part_name = str(participant.guest_snapshot.get("full_name") or participant.guest_snapshot.get("name") or "").strip().lower()
+                    if part_name and (part_name in pax_name or pax_name in part_name):
+                        ServicePassenger.objects.get_or_create(
+                            tenant_id=request.user.tenant_id,
+                            service=service,
+                            participant=participant,
+                            defaults={
+                                "status": "active",
+                                "currency": currency,
+                                "price": quantize(client_total_val, currency),
+                            },
+                        )
+                        break
+
         document.save(
-            update_fields=["order", "person", "company", "amount", "currency", "source", "metadata"]
+            update_fields=["order", "service", "person", "company", "amount", "currency", "source", "metadata"]
         )
         audit(
             "documents.receipt_draft_saved" if save_as_draft else "documents.receipt_updated",
@@ -728,18 +810,20 @@ class ReceiptImportConfirmView(APIView):
 
                 from services.models import OrderService, ServicePassenger
 
-                service_type = str(data.get("service_type", "avia"))
+                service_type = str(data.get("service_type") or normalized_service_kind or "avia")
                 kind_map = {
-                    "Авиа": "avia",
-                    "ЖД": "rail",
-                    "Гостиница": "hotel",
-                    "Трансфер": "transfer",
-                    "Автобус": "bus",
-                    "Тур": "tour",
-                    "Страхование": "insurance",
-                    "Виза": "visa",
-                    "Прочее": "other",
+                    "авиа": "avia", "avia": "avia", "flight": "avia", "itinerary_receipt": "avia",
+                    "жд": "rail", "ж/д": "rail", "rail": "rail", "train": "rail", "ticket": "rail",
+                    "гостиница": "hotel", "отель": "hotel", "hotel": "hotel", "stay": "hotel", "voucher": "hotel",
+                    "трансфер": "transfer", "transfer": "transfer",
+                    "автобус": "bus", "bus": "bus",
+                    "тур": "tour", "tour": "tour",
+                    "страхование": "insurance", "страховка": "insurance", "insurance": "insurance",
+                    "виза": "visa", "visa": "visa",
+                    "прочее": "other", "other": "other",
                 }
+                raw_kind = service_type.strip().lower()
+                service_kind = kind_map.get(raw_kind, "avia" if "авиа" in raw_kind or "avia" in raw_kind else "other")
                 starts_at = None
                 segments = data.get("segments") or draft.segments or []
                 if segments and isinstance(segments, list) and isinstance(segments[0], dict):
@@ -757,7 +841,7 @@ class ReceiptImportConfirmView(APIView):
                 service = OrderService.objects.create(
                     tenant_id=request.user.tenant_id,
                     order=order,
-                    kind=kind_map.get(service_type, service_type if service_type in kind_map.values() else "other"),
+                    kind=service_kind,
                     status=OrderService.Status.ISSUED,
                     title=(draft.issuer or service_type or "Услуга") + (
                         f" · {draft.passenger_name}" if draft.passenger_name else ""
