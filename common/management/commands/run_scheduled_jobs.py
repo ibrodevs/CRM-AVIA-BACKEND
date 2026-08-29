@@ -17,9 +17,12 @@ class Command(BaseCommand):
         parser.add_argument("--only", default=None, help="Выполнить только задачу с этим именем")
 
     def handle(self, *args, **options):
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_try_advisory_lock(%s)", [ADVISORY_LOCK_KEY])
-            acquired = cursor.fetchone()[0]
+        acquired = True
+        is_pg = connection.vendor == "postgresql"
+        if is_pg:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_try_advisory_lock(%s)", [ADVISORY_LOCK_KEY])
+                acquired = cursor.fetchone()[0]
         if not acquired:
             self.stdout.write("Другой экземпляр run_scheduled_jobs уже выполняется — выход.")
             return
@@ -37,5 +40,6 @@ class Command(BaseCommand):
                     logger.exception("scheduled task failed", extra={"task": name})
                     self.stderr.write(f"{name}: FAILED")
         finally:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_unlock(%s)", [ADVISORY_LOCK_KEY])
+            if is_pg and acquired:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_advisory_unlock(%s)", [ADVISORY_LOCK_KEY])

@@ -401,6 +401,13 @@ class TestDocuments:
         assert service.client_total == service.client_total.__class__("320.00")
         assert original_document.metadata["receipt_import"]["created_service"] == str(service.id)
 
+        overview = admin_client.get(f"/api/v1/orders/{order['id']}/overview/").json()
+        assert len(overview["services"]) == 1
+        assert overview["services"][0]["id"] == str(service.id)
+        assert overview["services"][0]["client_total"] == "320.00"
+        assert overview["services"][0]["supplier_cost"] == "292.50"
+        assert overview["services"][0]["agency_fee"] == "15.00"
+
     def test_receipt_editor_update_persists_binding_finances_and_output_settings(
         self,
         admin_client,

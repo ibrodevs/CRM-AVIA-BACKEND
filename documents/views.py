@@ -396,6 +396,7 @@ class DocumentReceiptUpdateView(APIView):
                 updated_by=request.user,
             )
             document.service = service
+            matched = False
             pax_name = str(verified.get("passenger") or verified.get("passenger_name") or "").strip().lower()
             if pax_name:
                 for participant in document.order.participants.all():
@@ -415,7 +416,20 @@ class DocumentReceiptUpdateView(APIView):
                                 "price": quantize(client_total_val, currency),
                             },
                         )
+                        matched = True
                         break
+            if not matched:
+                for participant in document.order.participants.filter(status="active"):
+                    ServicePassenger.objects.get_or_create(
+                        tenant_id=request.user.tenant_id,
+                        service=service,
+                        participant=participant,
+                        defaults={
+                            "status": "active",
+                            "currency": currency,
+                            "price": quantize(client_total_val, currency),
+                        },
+                    )
 
         document.save(
             update_fields=["order", "service", "person", "company", "amount", "currency", "source", "metadata"]
@@ -857,6 +871,7 @@ class ReceiptImportConfirmView(APIView):
                     created_by=request.user,
                     updated_by=request.user,
                 )
+                matched = False
                 if draft.passenger_name:
                     pax_name = draft.passenger_name.strip().lower()
                     for participant in order.participants.all():
@@ -876,7 +891,20 @@ class ReceiptImportConfirmView(APIView):
                                     "price": Decimal(str(data.get("client_total", total))),
                                 },
                             )
+                            matched = True
                             break
+                if not matched:
+                    for participant in order.participants.filter(status="active"):
+                        ServicePassenger.objects.get_or_create(
+                            tenant_id=request.user.tenant_id,
+                            service=service,
+                            participant=participant,
+                            defaults={
+                                "status": "active",
+                                "currency": currency,
+                                "price": Decimal(str(data.get("client_total", total))),
+                            },
+                        )
                 document.service = service
                 document.metadata["receipt_import"]["created_service"] = str(service.id)
             document.save(
