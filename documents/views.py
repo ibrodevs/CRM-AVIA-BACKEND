@@ -722,7 +722,11 @@ class ReceiptImportConfirmView(APIView):
             document.metadata["supplier_original"]["verified_data"] = json_safe(verified_data)
             document.metadata["receipt_import"]["verified_data"] = json_safe(verified_data)
             if order is not None and data.get("create_services", True):
-                from services.models import OrderService
+                import datetime
+
+                from django.utils.dateparse import parse_date, parse_datetime
+
+                from services.models import OrderService, ServicePassenger
 
                 service_type = str(data.get("service_type", "avia"))
                 kind_map = {
@@ -736,6 +740,20 @@ class ReceiptImportConfirmView(APIView):
                     "Виза": "visa",
                     "Прочее": "other",
                 }
+                starts_at = None
+                segments = data.get("segments") or draft.segments or []
+                if segments and isinstance(segments, list) and isinstance(segments[0], dict):
+                    first_seg = segments[0]
+                    dt_val = first_seg.get("depDate") or first_seg.get("date") or first_seg.get("departure_datetime")
+                    if dt_val:
+                        parsed_dt = parse_datetime(str(dt_val))
+                        if parsed_dt:
+                            starts_at = parsed_dt
+                        else:
+                            parsed_d = parse_date(str(dt_val))
+                            if parsed_d:
+                                starts_at = timezone.make_aware(datetime.datetime.combine(parsed_d, datetime.time(0, 0)))
+
                 service = OrderService.objects.create(
                     tenant_id=request.user.tenant_id,
                     order=order,
@@ -745,6 +763,7 @@ class ReceiptImportConfirmView(APIView):
                         f" · {draft.passenger_name}" if draft.passenger_name else ""
                     ),
                     source=OrderService.Source.IMPORT,
+                    starts_at=starts_at,
                     supplier_cost=quantize(fare + taxes, currency),
                     agency_fee=fees,
                     markup=Decimal(str(data.get("markup", "0"))),
@@ -754,6 +773,26 @@ class ReceiptImportConfirmView(APIView):
                     created_by=request.user,
                     updated_by=request.user,
                 )
+                if draft.passenger_name:
+                    pax_name = draft.passenger_name.strip().lower()
+                    for participant in order.participants.all():
+                        part_name = ""
+                        if participant.person:
+                            part_name = f"{participant.person.surname} {participant.person.given_name}".strip().lower()
+                        elif participant.guest_snapshot:
+                            part_name = str(participant.guest_snapshot.get("full_name") or participant.guest_snapshot.get("name") or "").strip().lower()
+                        if part_name and (part_name in pax_name or pax_name in part_name):
+                            ServicePassenger.objects.get_or_create(
+                                tenant_id=request.user.tenant_id,
+                                service=service,
+                                participant=participant,
+                                defaults={
+                                    "status": "active",
+                                    "currency": currency,
+                                    "price": Decimal(str(data.get("client_total", total))),
+                                },
+                            )
+                            break
                 document.service = service
                 document.metadata["receipt_import"]["created_service"] = str(service.id)
             document.save(
