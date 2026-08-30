@@ -391,6 +391,7 @@ class TestDocuments:
         assert versions[1].correction_reason
 
         service = OrderService.objects.get(pk=original_document.service_id)
+        assert confirm.json()["service_id"] == str(service.id)
         assert str(service.order_id) == order["id"]
         assert service.kind == "avia"
         assert service.source == OrderService.Source.IMPORT

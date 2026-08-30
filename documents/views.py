@@ -945,6 +945,7 @@ class ReceiptImportConfirmView(APIView):
                 "total": str(total),
                 "currency": currency,
                 "order": str(document.order_id) if document.order_id else None,
+                "service_id": str(document.service_id) if document.service_id else None,
                 "person": str(document.person_id) if document.person_id else None,
                 "company": str(document.company_id) if document.company_id else None,
             }
