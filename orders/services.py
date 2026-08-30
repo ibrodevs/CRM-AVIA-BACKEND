@@ -84,6 +84,68 @@ def _resolve_participants(tenant_id, participants: list[dict]) -> list[dict]:
     return resolved
 
 
+def _participant_name(participant: OrderParticipant) -> str:
+    if participant.person_id:
+        return f"{participant.person.surname} {participant.person.given_name}".strip().lower()
+    snapshot = participant.guest_snapshot or {}
+    return str(snapshot.get("full_name") or snapshot.get("name") or "").strip().lower()
+
+
+def _create_receipt_services(*, order: Order, services: list[dict], user) -> None:
+    """Создаёт услуги из квитанций в той же транзакции, что и заказ."""
+    if not services:
+        return
+
+    from services.models import OrderService, ServicePassenger
+
+    participants = list(order.participants.filter(status="active").select_related("person"))
+    for row in services:
+        service = OrderService.objects.create(
+            tenant_id=order.tenant_id,
+            order=order,
+            kind=row["kind"],
+            status=OrderService.Status.ISSUED,
+            title=row["title"],
+            source=OrderService.Source.IMPORT,
+            starts_at=row.get("starts_at"),
+            supplier_cost=row["supplier_cost"],
+            agency_fee=row.get("agency_fee", 0),
+            markup=row.get("markup", 0),
+            commission=row.get("commission", 0),
+            client_total=row["client_total"],
+            currency=row["currency"],
+            provider_snapshot={
+                "receipt_import_id": str(row["import_id"]),
+                "receipt_precreated": True,
+            },
+            created_by=user,
+            updated_by=user,
+        )
+        passenger_name = str(row.get("passenger_name") or "").strip().lower()
+        matched = [
+            participant
+            for participant in participants
+            if passenger_name
+            and (name := _participant_name(participant))
+            and (name in passenger_name or passenger_name in name)
+        ]
+        for participant in matched or participants:
+            ServicePassenger.objects.create(
+                tenant_id=order.tenant_id,
+                service=service,
+                participant=participant,
+                status="active",
+                currency=row["currency"],
+                price=row["client_total"],
+                created_by=user,
+            )
+        emit_event(
+            "service.updated",
+            service,
+            payload={"action": "created_from_receipt", "order_id": str(order.id)},
+        )
+
+
 @transaction.atomic
 def create_order(*, tenant_id, user, data: dict, request=None) -> Order:
     """Атомарно создаёт заказ, маршрут, участников и договорный snapshot."""
@@ -140,6 +202,8 @@ def create_order(*, tenant_id, user, data: dict, request=None) -> Order:
             is_contact=participant.get("is_contact", False),
             created_by=user,
         )
+
+    _create_receipt_services(order=order, services=data.get("receipt_services", []), user=user)
 
     _record_status(order, "", "", reason="Заказ создан", user=user)
     emit_event("order.updated", order, payload={"action": "created", "number": order.number})

@@ -852,25 +852,54 @@ class ReceiptImportConfirmView(APIView):
                             if parsed_d:
                                 starts_at = timezone.make_aware(datetime.datetime.combine(parsed_d, datetime.time(0, 0)))
 
-                service = OrderService.objects.create(
-                    tenant_id=request.user.tenant_id,
-                    order=order,
-                    kind=service_kind,
-                    status=OrderService.Status.ISSUED,
-                    title=(draft.issuer or service_type or "Услуга") + (
+                service_defaults = {
+                    "kind": service_kind,
+                    "status": OrderService.Status.ISSUED,
+                    "title": (draft.issuer or service_type or "Услуга") + (
                         f" · {draft.passenger_name}" if draft.passenger_name else ""
                     ),
+                    "starts_at": starts_at,
+                    "supplier_cost": quantize(fare + taxes, currency),
+                    "agency_fee": fees,
+                    "markup": Decimal(str(data.get("markup", "0"))),
+                    "commission": Decimal(str(data.get("commission", "0"))),
+                    "client_total": Decimal(str(data.get("client_total", total))),
+                    "currency": currency,
+                    "updated_by": request.user,
+                }
+                service = OrderService.objects.filter(
+                    tenant_id=request.user.tenant_id,
+                    order=order,
                     source=OrderService.Source.IMPORT,
-                    starts_at=starts_at,
-                    supplier_cost=quantize(fare + taxes, currency),
-                    agency_fee=fees,
-                    markup=Decimal(str(data.get("markup", "0"))),
-                    commission=Decimal(str(data.get("commission", "0"))),
-                    client_total=Decimal(str(data.get("client_total", total))),
-                    currency=currency,
-                    created_by=request.user,
-                    updated_by=request.user,
-                )
+                    provider_snapshot__receipt_import_id=str(import_job.id),
+                    archived_at__isnull=True,
+                ).first()
+                if service is None:
+                    service = OrderService.objects.create(
+                        tenant_id=request.user.tenant_id,
+                        order=order,
+                        source=OrderService.Source.IMPORT,
+                        provider_snapshot={"receipt_import_id": str(import_job.id)},
+                        created_by=request.user,
+                        **service_defaults,
+                    )
+                else:
+                    for field, value in service_defaults.items():
+                        setattr(service, field, value)
+                    service.provider_snapshot = {
+                        **(service.provider_snapshot or {}),
+                        "receipt_import_id": str(import_job.id),
+                        "receipt_precreated": False,
+                    }
+                    service.version += 1
+                    service.save(
+                        update_fields=[
+                            *service_defaults,
+                            "provider_snapshot",
+                            "version",
+                            "updated_at",
+                        ]
+                    )
                 matched = False
                 if draft.passenger_name:
                     pax_name = draft.passenger_name.strip().lower()

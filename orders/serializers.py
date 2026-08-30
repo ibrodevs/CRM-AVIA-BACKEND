@@ -3,6 +3,7 @@ from rest_framework import serializers
 from common.money import money_dict
 from crm.models import Agreement, Company, Person
 from orders.models import Order, OrderParticipant, OrderTask, Route, RoutePoint
+from services.models import SERVICE_KIND_CHOICES
 
 
 class RoutePointSerializer(serializers.ModelSerializer):
@@ -189,6 +190,22 @@ class OrderDetailSerializer(OrderListSerializer):
         ).data
 
 
+class ReceiptOrderServiceCreateSerializer(serializers.Serializer):
+    """Услуга, уже подтверждённая загруженной квитанцией."""
+
+    import_id = serializers.UUIDField()
+    kind = serializers.ChoiceField(choices=SERVICE_KIND_CHOICES)
+    title = serializers.CharField(max_length=255)
+    passenger_name = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    starts_at = serializers.DateTimeField(required=False, allow_null=True)
+    currency = serializers.CharField(max_length=3)
+    supplier_cost = serializers.DecimalField(max_digits=14, decimal_places=2)
+    agency_fee = serializers.DecimalField(max_digits=14, decimal_places=2, default=0)
+    markup = serializers.DecimalField(max_digits=14, decimal_places=2, default=0)
+    commission = serializers.DecimalField(max_digits=14, decimal_places=2, default=0)
+    client_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+
+
 class OrderCreateSerializer(serializers.Serializer):
     request_type = serializers.ChoiceField(
         choices=Order.RequestType.choices, default=Order.RequestType.INDIVIDUAL
@@ -215,6 +232,7 @@ class OrderCreateSerializer(serializers.Serializer):
     comment = serializers.CharField(required=False, allow_blank=True)
     route = serializers.DictField(required=False, allow_null=True)
     participants = serializers.ListField(child=serializers.DictField(), required=False)
+    receipt_services = ReceiptOrderServiceCreateSerializer(many=True, required=False)
 
     def validate(self, attrs):
         person, company = attrs.get("client_person"), attrs.get("client_company")

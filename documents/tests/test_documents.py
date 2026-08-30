@@ -409,6 +409,59 @@ class TestDocuments:
         assert overview["services"][0]["supplier_cost"] == "292.50"
         assert overview["services"][0]["agency_fee"] == "15.00"
 
+    def test_receipt_confirm_reuses_service_created_atomically_with_order(self, admin_client, order):
+        from documents.models import ReceiptImportJob
+        from services.models import OrderService
+
+        receipt = upload_file(
+            "precreated-service.txt",
+            b"Passenger: IVANOV IVAN\nCarrier: Test Air\nCurrency: USD\nFare: 250.00\nTaxes: 42.50\nTotal: 292.50\n",
+        )
+        imported = admin_client.post("/api/v1/receipt-imports/", {"file": receipt}, format="multipart")
+        assert imported.status_code == 201, imported.content
+        import_job = ReceiptImportJob.objects.get(pk=imported.json()["id"])
+        service = OrderService.objects.create(
+            tenant_id=import_job.tenant_id,
+            order_id=order["id"],
+            kind="avia",
+            status=OrderService.Status.ISSUED,
+            title="Услуга из квитанции",
+            source=OrderService.Source.IMPORT,
+            supplier_cost="292.50",
+            client_total="292.50",
+            currency="USD",
+            provider_snapshot={
+                "receipt_import_id": str(import_job.id),
+                "receipt_precreated": True,
+            },
+            created_by=import_job.created_by,
+        )
+
+        confirmed = admin_client.post(
+            f"/api/v1/receipt-imports/{import_job.id}/confirm/",
+            {
+                "issuer": "Test Air",
+                "passenger_name": "IVANOV IVAN",
+                "segments": [],
+                "fare": "250.00",
+                "taxes": "42.50",
+                "fees": "15.00",
+                "currency": "USD",
+                "order": order["id"],
+                "create_services": True,
+                "service_type": "Авиа",
+                "client_total": "320.00",
+            },
+            format="json",
+        )
+
+        assert confirmed.status_code == 200, confirmed.content
+        assert confirmed.json()["service_id"] == str(service.id)
+        assert OrderService.objects.filter(order_id=order["id"]).count() == 1
+        service.refresh_from_db()
+        assert service.client_total == service.client_total.__class__("320.00")
+        assert service.provider_snapshot["receipt_precreated"] is False
+
     def test_receipt_editor_update_persists_binding_finances_and_output_settings(
         self,
         admin_client,

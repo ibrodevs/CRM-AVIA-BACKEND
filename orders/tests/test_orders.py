@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 import pytest
 
 from conftest import auth_client
@@ -75,6 +77,41 @@ class TestOrderCreate:
         assert detail.json()["id"] == created["id"]
         assert listing.status_code == 200, listing.content
         assert any(item["id"] == created["id"] for item in listing.json()["results"])
+
+    def test_receipt_order_is_created_with_its_services_atomically(self, admin_client, order_payload):
+        from services.models import OrderService
+
+        import_id = uuid4()
+        payload = {
+            **order_payload,
+            "receipt_services": [
+                {
+                    "import_id": str(import_id),
+                    "kind": "avia",
+                    "title": "Test Air · IVANOV IVAN",
+                    "passenger_name": "Иванов Пётр",
+                    "currency": "USD",
+                    "supplier_cost": "292.50",
+                    "agency_fee": "15.00",
+                    "markup": "10.00",
+                    "commission": "7.00",
+                    "client_total": "317.50",
+                }
+            ],
+        }
+
+        response = admin_client.post("/api/v1/orders/", payload, format="json")
+
+        assert response.status_code == 201, response.content
+        body = response.json()
+        assert body["services_count"] == 1
+        service = OrderService.objects.get(order_id=body["id"])
+        assert service.source == OrderService.Source.IMPORT
+        assert service.provider_snapshot["receipt_import_id"] == str(import_id)
+        assert service.passengers.count() == 1
+        overview = admin_client.get(f"/api/v1/orders/{body['id']}/overview/")
+        assert overview.status_code == 200, overview.content
+        assert [item["id"] for item in overview.json()["services"]] == [str(service.id)]
 
 
 class TestOrderStatusMachine:
