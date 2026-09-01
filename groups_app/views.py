@@ -103,6 +103,8 @@ class GroupOrderListCreateView(GenericAPIView):
         qs = GroupOrder.objects.filter(
             tenant_id=request.user.tenant_id, archived_at__isnull=True
         ).select_related("order")
+        if order_id := request.query_params.get("order"):
+            qs = qs.filter(order_id=order_id)
         if group_status := request.query_params.get("status"):
             qs = qs.filter(status=group_status)
         page = self.paginate_queryset(qs.order_by("-created_at"))

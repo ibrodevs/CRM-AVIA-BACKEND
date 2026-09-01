@@ -397,6 +397,7 @@ class OrderOverviewView(APIView):
                         "to_stage": h.to_stage,
                         "reason": h.reason,
                         "changed_by": str(h.changed_by_id) if h.changed_by_id else None,
+                        "changed_by_name": h.changed_by.get_full_name() if h.changed_by_id else "Система",
                         "changed_at": h.changed_at,
                     }
                     for h in history
@@ -433,6 +434,7 @@ class OrderHistoryView(GenericAPIView):
                     "to_stage": h.to_stage,
                     "reason": h.reason,
                     "changed_by": str(h.changed_by_id) if h.changed_by_id else None,
+                    "changed_by_name": h.changed_by.get_full_name() if h.changed_by_id else "Система",
                     "changed_at": h.changed_at,
                 }
                 for h in page

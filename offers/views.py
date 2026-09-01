@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
-from accounts.permissions import require
+from accounts.permissions import has_permission, require
 from common.audit import audit
 from common.errors import ApiError, TransitionForbiddenError
 from common.idempotency import idempotent_command
@@ -596,6 +596,9 @@ class ProposalTemplateDetailView(APIView):
 
 
 class ServiceCardSerializer(serializers.ModelSerializer):
+    deliveries = serializers.SerializerMethodField()
+    responses = serializers.SerializerMethodField()
+
     class Meta:
         model = ServiceCard
         fields = [
@@ -611,14 +614,54 @@ class ServiceCardSerializer(serializers.ModelSerializer):
             "content",
             "card_version",
             "created_at",
+            "deliveries",
+            "responses",
         ]
         read_only_fields = ["id", "status", "card_version", "created_at"]
 
+    def get_deliveries(self, obj):
+        return [
+            {
+                "id": str(delivery.id),
+                "channel": delivery.channel,
+                "recipient": delivery.recipient,
+                "state": delivery.state,
+                "error": delivery.error,
+                "sent_at": delivery.sent_at,
+                "created_at": delivery.created_at,
+            }
+            for delivery in obj.deliveries.all().order_by("created_at")
+        ]
+
+    def get_responses(self, obj):
+        return [
+            {
+                "id": response.id,
+                "action": response.action,
+                "comment": response.comment,
+                "channel": response.channel,
+                "created_at": response.created_at,
+            }
+            for response in obj.responses.all().order_by("created_at")
+        ]
+
 
 class ServiceCardCreateView(APIView):
-    permission_classes = [require("offers.create")]
+    permission_classes = [require("offers.view", "offers.create")]
+
+    def get(self, request):
+        cards = ServiceCard.objects.filter(tenant_id=request.user.tenant_id).prefetch_related(
+            "deliveries", "responses"
+        )
+        if order_id := request.query_params.get("order"):
+            cards = cards.filter(order_id=order_id)
+        if service_id := request.query_params.get("service"):
+            cards = cards.filter(service_id=service_id)
+        return Response(ServiceCardSerializer(cards.order_by("-created_at"), many=True).data)
 
     def post(self, request):
+        if not has_permission(request.user, "offers.create"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права offers.create", status_code=403)
         serializer = ServiceCardSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         card = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
