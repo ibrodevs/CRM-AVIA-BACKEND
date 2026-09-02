@@ -1,9 +1,39 @@
 from rest_framework import serializers
 
+from accounts.models import User
 from common.money import money_dict
 from crm.models import Agreement, Company, Person
 from orders.models import Order, OrderParticipant, OrderTask, Route, RoutePoint
 from services.models import SERVICE_KIND_CHOICES
+
+
+PERSON_DOCUMENT_KIND_LABEL = {
+    "foreign_passport": "Загранпаспорт",
+    "national_passport": "Общегражданский паспорт",
+    "id_card": "ID-карта",
+    "birth_certificate": "Свидетельство о рождении",
+    "visa": "Виза",
+    "other": "Документ",
+}
+
+
+def _document_payload(document, request=None) -> dict:
+    from accounts.permissions import has_permission
+    from common.fields import mask_tail
+
+    number = document.number if request and has_permission(request.user, "crm.view_person_documents") else mask_tail(document.number)
+    return {
+        "id": str(document.id),
+        "type": document.type,
+        "docType": PERSON_DOCUMENT_KIND_LABEL.get(document.type, document.type),
+        "number": number,
+        "docNo": number,
+        "expires_at": document.expires_at,
+        "docExpiry": document.expires_at.strftime("%d.%m.%Y") if document.expires_at else "",
+        "issuing_country": document.issuing_country,
+        "citizenship": document.nationality or document.issuing_country,
+        "status": document.status,
+    }
 
 
 class RoutePointSerializer(serializers.ModelSerializer):
@@ -31,6 +61,12 @@ class RouteSerializer(serializers.ModelSerializer):
 
 class ParticipantSerializer(serializers.ModelSerializer):
     person_name = serializers.CharField(source="person.full_name", read_only=True, default="")
+    person_birth_date = serializers.DateField(source="person.birth_date", read_only=True)
+    person_citizenship = serializers.CharField(source="person.citizenship", read_only=True, default="")
+    person_phone = serializers.CharField(source="person.phone", read_only=True, default="")
+    person_email = serializers.CharField(source="person.email", read_only=True, default="")
+    booking_document_detail = serializers.SerializerMethodField()
+    documents = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderParticipant
@@ -38,16 +74,37 @@ class ParticipantSerializer(serializers.ModelSerializer):
             "id",
             "person",
             "person_name",
+            "person_birth_date",
+            "person_citizenship",
+            "person_phone",
+            "person_email",
             "guest_snapshot",
             "role",
             "group_name",
             "subgroup_name",
             "is_contact",
             "booking_document",
+            "booking_document_detail",
+            "documents",
             "status",
             "notes",
         ]
         read_only_fields = ["id", "status"]
+
+    def get_booking_document_detail(self, obj):
+        if not obj.booking_document_id:
+            return None
+        return _document_payload(obj.booking_document, self.context.get("request"))
+
+    def get_documents(self, obj):
+        request = self.context.get("request")
+        if obj.person_id:
+            documents = [doc for doc in obj.person.documents.all() if doc.status == "active"]
+            if obj.booking_document_id and all(doc.id != obj.booking_document_id for doc in documents):
+                documents.insert(0, obj.booking_document)
+            return [_document_payload(document, request) for document in documents]
+        snapshot = obj.guest_snapshot or {}
+        return snapshot.get("documents") or []
 
     def validate(self, attrs):
         instance = getattr(self, "instance", None)
@@ -93,6 +150,9 @@ class ParticipantSerializer(serializers.ModelSerializer):
 
 
 class OrderTaskSerializer(serializers.ModelSerializer):
+    assignee_name = serializers.SerializerMethodField()
+    assignee_email = serializers.EmailField(source="assignee.email", read_only=True)
+
     class Meta:
         model = OrderTask
         fields = [
@@ -100,6 +160,8 @@ class OrderTaskSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "assignee",
+            "assignee_name",
+            "assignee_email",
             "due_at",
             "priority",
             "status",
@@ -107,6 +169,25 @@ class OrderTaskSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "completed_at", "created_at"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        queryset = User.objects.all()
+        if request and getattr(request.user, "tenant_id", None):
+            queryset = queryset.filter(tenant_id=request.user.tenant_id)
+        self.fields["assignee"].queryset = queryset
+
+    def get_assignee_name(self, obj) -> str:
+        if not obj.assignee_id:
+            return ""
+        return obj.assignee.get_full_name() or obj.assignee.email
+
+    def validate_assignee(self, value):
+        request = self.context.get("request")
+        if value is not None and request and value.tenant_id != request.user.tenant_id:
+            raise serializers.ValidationError("Сотрудник относится к другому tenant")
+        return value
 
 
 class OrderListSerializer(serializers.ModelSerializer):
@@ -186,7 +267,11 @@ class OrderDetailSerializer(OrderListSerializer):
 
     def get_participants(self, obj):
         return ParticipantSerializer(
-            obj.participants.filter(status="active").select_related("person"), many=True
+            obj.participants.filter(status="active")
+            .select_related("person", "booking_document")
+            .prefetch_related("person__documents"),
+            many=True,
+            context=self.context,
         ).data
 
 

@@ -27,7 +27,7 @@ class OrderTaskDetailView(APIView):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change", status_code=403)
 
         order, task = self._task(request, order_id, task_id)
-        serializer = OrderTaskSerializer(task, data=request.data, partial=True)
+        serializer = OrderTaskSerializer(task, data=request.data, partial=True, context={"request": request})
         serializer.is_valid(raise_exception=True)
         next_status = serializer.validated_data.get("status", task.status)
         completed_at = task.completed_at
@@ -38,7 +38,7 @@ class OrderTaskDetailView(APIView):
         task = serializer.save(updated_by=request.user, completed_at=completed_at)
         emit_event("order.updated", order, payload={"action": "task_updated", "task_id": str(task.id)})
         audit("order.task_updated", actor=request.user, resource=order, request=request)
-        return Response(OrderTaskSerializer(task).data)
+        return Response(OrderTaskSerializer(task, context={"request": request}).data)
 
     def delete(self, request, order_id, task_id):
         if not has_permission(request.user, "orders.change"):

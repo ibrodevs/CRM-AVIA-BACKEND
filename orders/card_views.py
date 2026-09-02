@@ -104,16 +104,21 @@ class OrderTaskCollectionView(GenericAPIView):
         if task_status := request.query_params.get("status"):
             qs = qs.filter(status=task_status)
         page = self.paginate_queryset(qs)
-        return self.get_paginated_response(OrderTaskSerializer(page, many=True).data)
+        return self.get_paginated_response(
+            OrderTaskSerializer(page, many=True, context={"request": request}).data
+        )
 
     def post(self, request, order_id):
         if not has_permission(request.user, "orders.change"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change", status_code=403)
 
         order = get_order_or_404(request.user, order_id)
-        serializer = OrderTaskSerializer(data=request.data)
+        serializer = OrderTaskSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         task = serializer.save(tenant_id=order.tenant_id, order=order, created_by=request.user)
         emit_event("order.updated", order, payload={"action": "task_created", "task_id": str(task.id)}, audience_user=task.assignee)
         audit("order.task_created", actor=request.user, resource=order, request=request)
-        return Response(OrderTaskSerializer(task).data, status=http.HTTP_201_CREATED)
+        return Response(
+            OrderTaskSerializer(task, context={"request": request}).data,
+            status=http.HTTP_201_CREATED,
+        )

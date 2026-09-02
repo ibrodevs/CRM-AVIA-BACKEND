@@ -41,8 +41,12 @@ class OrderParticipantsView(APIView):
 
     def get(self, request, order_id):
         order = get_order_or_404(request.user, order_id)
-        participants = order.participants.filter(status="active").select_related("person")
-        return Response(ParticipantSerializer(participants, many=True).data)
+        participants = (
+            order.participants.filter(status="active")
+            .select_related("person", "booking_document")
+            .prefetch_related("person__documents")
+        )
+        return Response(ParticipantSerializer(participants, many=True, context={"request": request}).data)
 
     def post(self, request, order_id):
         if not has_permission(request.user, "orders.change"):
@@ -55,7 +59,10 @@ class OrderParticipantsView(APIView):
         participant = serializer.save(tenant_id=order.tenant_id, order=order, created_by=request.user)
         emit_event("order.updated", order, payload={"action": "participant_added"})
         audit("order.participant_added", actor=request.user, resource=order, request=request)
-        return Response(ParticipantSerializer(participant).data, status=http.HTTP_201_CREATED)
+        return Response(
+            ParticipantSerializer(participant, context={"request": request}).data,
+            status=http.HTTP_201_CREATED,
+        )
 
 
 class OrderParticipantDetailView(APIView):
@@ -82,7 +89,7 @@ class OrderParticipantDetailView(APIView):
         updated = serializer.save(updated_by=request.user)
         emit_event("order.updated", order, payload={"action": "participant_updated"})
         audit("order.participant_updated", actor=request.user, resource=order, request=request)
-        return Response(ParticipantSerializer(updated).data)
+        return Response(ParticipantSerializer(updated, context={"request": request}).data)
 
     def delete(self, request, order_id, participant_id):
         order, participant = self._participant(request, order_id, participant_id)
