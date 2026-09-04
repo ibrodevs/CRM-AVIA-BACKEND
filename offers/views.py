@@ -619,6 +619,26 @@ class ServiceCardSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "status", "card_version", "created_at"]
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if request is None:
+            return attrs
+        tenant_id = request.user.tenant_id
+        order = attrs.get("order", getattr(self.instance, "order", None))
+        service = attrs.get("service", getattr(self.instance, "service", None))
+        offer = attrs.get("offer", getattr(self.instance, "offer", None))
+        for field, value in (("order", order), ("service", service), ("offer", offer)):
+            if value is not None and value.tenant_id != tenant_id:
+                raise serializers.ValidationError({field: ["Объект относится к другой организации"]})
+        if service is not None:
+            if order is not None and service.order_id != order.id:
+                raise serializers.ValidationError({"service": ["Услуга не принадлежит выбранному заказу"]})
+            if order is None:
+                attrs["order"] = service.order
+        if offer is not None and attrs.get("kind") and offer.kind != attrs["kind"]:
+            raise serializers.ValidationError({"offer": ["Тип оффера не совпадает с типом карточки"]})
+        return attrs
+
     def get_deliveries(self, obj):
         return [
             {
@@ -662,9 +682,30 @@ class ServiceCardCreateView(APIView):
     def post(self, request):
         if not has_permission(request.user, "offers.create"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права offers.create", status_code=403)
-        serializer = ServiceCardSerializer(data=request.data)
+        serializer = ServiceCardSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        card = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
+        validated = serializer.validated_data
+        with transaction.atomic():
+            previous = ServiceCard.objects.select_for_update().filter(
+                tenant_id=request.user.tenant_id,
+                service=validated.get("service"),
+                order=validated.get("order"),
+                kind=validated.get("kind"),
+            ).order_by("-card_version").first()
+            next_version = (previous.card_version + 1) if previous else 1
+            if previous and previous.status not in (
+                ServiceCard.Status.CHOSEN,
+                ServiceCard.Status.DECLINED,
+                ServiceCard.Status.EXPIRED,
+                ServiceCard.Status.ISSUED,
+            ):
+                previous.status = ServiceCard.Status.PRICE_CHANGED
+                previous.save(update_fields=["status"])
+            card = serializer.save(
+                tenant_id=request.user.tenant_id,
+                created_by=request.user,
+                card_version=next_version,
+            )
         audit("offers.card_created", actor=request.user, resource=card, request=request)
         return Response(
             {**ServiceCardSerializer(card).data, "public_token": card.public_token},

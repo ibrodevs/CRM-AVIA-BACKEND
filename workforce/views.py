@@ -8,10 +8,13 @@ from rest_framework.views import APIView
 from accounts.permissions import require
 from common.audit import audit
 from common.errors import ApiError
+from common.pagination import DefaultPagination
 from workforce.models import MotivationAccrual, MotivationRule, Shift, SlaInstance
 
 
 class ShiftSerializer(serializers.ModelSerializer):
+    operations = serializers.SerializerMethodField()
+
     class Meta:
         model = Shift
         fields = [
@@ -25,6 +28,21 @@ class ShiftSerializer(serializers.ModelSerializer):
             "status",
             "closing_report",
             "discrepancy_confirmed",
+            "operations",
+        ]
+
+    def get_operations(self, obj):
+        return [
+            {
+                "id": operation.id,
+                "kind": operation.kind,
+                "resource_type": operation.resource_type,
+                "resource_id": operation.resource_id,
+                "amount": str(operation.amount) if operation.amount is not None else None,
+                "currency": operation.currency,
+                "created_at": operation.created_at,
+            }
+            for operation in obj.operations.all().order_by("created_at")
         ]
 
 
@@ -36,7 +54,7 @@ class SlaQueueView(APIView):
                 tenant_id=request.user.tenant_id,
                 resolved_at__isnull=True,
             )
-            .select_related("assignee")
+            .select_related("assignee", "policy")
             .order_by("response_deadline")
         )
         if request.query_params.get("scope") != "team":
@@ -49,6 +67,8 @@ class SlaQueueView(APIView):
                     "resource_id": s.resource_id,
                     "assignee": str(s.assignee_id) if s.assignee_id else None,
                     "response_deadline": s.response_deadline,
+                    "started_at": s.started_at,
+                    "limit_minutes": s.policy.response_minutes,
                     "breached": bool(
                         s.breached_at
                         or (s.response_deadline and s.response_deadline < now and s.responded_at is None)
@@ -66,6 +86,23 @@ class ShiftCurrentView(APIView):
         if shift is None:
             return Response({"shift": None})
         return Response({"shift": ShiftSerializer(shift).data})
+
+
+class ShiftListView(APIView):
+    """История реальных смен текущего пользователя или выбранного оператора."""
+
+    def get(self, request):
+        from accounts.permissions import has_permission
+
+        qs = Shift.objects.filter(tenant_id=request.user.tenant_id).prefetch_related("operations")
+        user_id = request.query_params.get("user")
+        if has_permission(request.user, "users.manage") and user_id:
+            qs = qs.filter(user_id=user_id)
+        else:
+            qs = qs.filter(user=request.user)
+        paginator = DefaultPagination()
+        page = paginator.paginate_queryset(qs.order_by("-started_at"), request, view=self)
+        return paginator.get_paginated_response(ShiftSerializer(page, many=True).data)
 
 
 class ShiftStartView(APIView):
@@ -158,8 +195,6 @@ class ShiftReportView(APIView):
 
 
 class MotivationRulesView(APIView):
-    permission_classes = [require("settings.manage")]
-
     def get(self, request):
         rules = MotivationRule.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
         return Response(
@@ -171,12 +206,17 @@ class MotivationRulesView(APIView):
                     "markup_percent": str(r.markup_percent),
                     "commission_percent": str(r.commission_percent),
                     "is_active": r.is_active,
+                    "updated_at": r.updated_at,
                 }
                 for r in rules
             ]
         )
 
     def post(self, request):
+        from accounts.permissions import has_permission
+
+        if not has_permission(request.user, "settings.manage"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права settings.manage", status_code=403)
         rule = MotivationRule.objects.create(
             tenant_id=request.user.tenant_id,
             service_kind=str(request.data.get("service_kind", "*")),
@@ -188,6 +228,40 @@ class MotivationRulesView(APIView):
         audit("workforce.motivation_rule_created", actor=request.user, resource=rule, request=request)
         return Response({"id": str(rule.id)}, status=http.HTTP_201_CREATED)
 
+    def put(self, request):
+        from accounts.permissions import has_permission
+
+        if not has_permission(request.user, "settings.manage"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права settings.manage", status_code=403)
+        rows = request.data.get("rules")
+        if not isinstance(rows, list):
+            raise ApiError(code="VALIDATION_ERROR", message="rules должен быть массивом", status_code=400)
+        created = []
+        with transaction.atomic():
+            MotivationRule.objects.filter(
+                tenant_id=request.user.tenant_id, archived_at__isnull=True
+            ).update(archived_at=timezone.now(), updated_by=request.user)
+            for row in rows:
+                created.append(
+                    MotivationRule.objects.create(
+                        tenant_id=request.user.tenant_id,
+                        service_kind=str(row.get("service_kind", "*")),
+                        fee_percent=row.get("fee_percent", 0),
+                        markup_percent=row.get("markup_percent", 0),
+                        commission_percent=row.get("commission_percent", 0),
+                        is_active=bool(row.get("is_active", True)),
+                        created_by=request.user,
+                    )
+                )
+        audit(
+            "workforce.motivation_rules_replaced",
+            actor=request.user,
+            resource=created[0] if created else None,
+            request=request,
+            after={"count": len(created)},
+        )
+        return self.get(request)
+
 
 class MotivationAccrualsView(APIView):
     def get(self, request):
@@ -196,6 +270,12 @@ class MotivationAccrualsView(APIView):
 
         if not has_permission(request.user, "users.manage"):
             qs = qs.filter(user=request.user)
+        elif user_id := request.query_params.get("user"):
+            qs = qs.filter(user_id=user_id)
+        if date_from := request.query_params.get("from"):
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to := request.query_params.get("to"):
+            qs = qs.filter(created_at__date__lte=date_to)
         return Response(
             [
                 {

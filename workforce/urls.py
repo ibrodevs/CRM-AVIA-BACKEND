@@ -4,6 +4,7 @@ from workforce import views as v
 
 urlpatterns = [
     path("sla/queue/", v.SlaQueueView.as_view(), name="sla-queue"),
+    path("shifts/", v.ShiftListView.as_view(), name="shift-list"),
     path("shifts/current/", v.ShiftCurrentView.as_view(), name="shift-current"),
     path("shifts/start/", v.ShiftStartView.as_view(), name="shift-start"),
     path(

@@ -18,6 +18,8 @@ from integrations.models import (
 
 
 class IncidentSerializer(serializers.ModelSerializer):
+    timeline = serializers.SerializerMethodField()
+
     class Meta:
         model = IntegrationIncident
         fields = [
@@ -43,6 +45,20 @@ class IncidentSerializer(serializers.ModelSerializer):
             "occurrences",
             "created_at",
             "updated_at",
+            "timeline",
+        ]
+
+    def get_timeline(self, obj):
+        return [
+            {
+                "id": entry.id,
+                "action": entry.action,
+                "details": entry.details,
+                "actor": str(entry.actor_id) if entry.actor_id else None,
+                "actor_name": entry.actor.get_full_name() if entry.actor else "Система",
+                "created_at": entry.created_at,
+            }
+            for entry in obj.timeline.select_related("actor").all()
         ]
 
 
@@ -89,7 +105,7 @@ class IncidentListView(GenericAPIView):
     serializer_class = IncidentSerializer
 
     def get(self, request):
-        qs = IntegrationIncident.objects.filter(tenant_id=request.user.tenant_id)
+        qs = IntegrationIncident.objects.filter(tenant_id=request.user.tenant_id).prefetch_related("timeline__actor")
         params = request.query_params
         if incident_status := params.get("status"):
             qs = qs.filter(status=incident_status)

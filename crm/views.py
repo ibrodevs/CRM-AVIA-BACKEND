@@ -1,4 +1,6 @@
+import csv
 import hashlib
+import io
 
 from django.db import transaction
 from django.db.models import Q
@@ -37,6 +39,45 @@ from crm.serializers import (
     PersonSerializer,
     SettlementProfileSerializer,
 )
+
+
+def _spreadsheet_rows(upload):
+    """Return normalized dictionaries from a UTF-8 CSV or XLSX upload."""
+    filename = (upload.name or "").lower()
+    if upload.size > 5 * 1024 * 1024:
+        raise ApiError(code="FILE_TOO_LARGE", message="Файл больше 5 МБ", status_code=400)
+    if filename.endswith(".csv"):
+        try:
+            text = upload.read().decode("utf-8-sig")
+        except UnicodeDecodeError as error:
+            raise ApiError(code="INVALID_FILE", message="CSV должен быть в UTF-8", status_code=400) from error
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;")
+        except csv.Error:
+            dialect = csv.excel
+        return list(csv.DictReader(io.StringIO(text), dialect=dialect))
+    if filename.endswith(".xlsx"):
+        from openpyxl import load_workbook
+
+        try:
+            sheet = load_workbook(upload, read_only=True, data_only=True).active
+        except Exception as error:
+            raise ApiError(code="INVALID_FILE", message="Не удалось прочитать XLSX", status_code=400) from error
+        values = list(sheet.iter_rows(values_only=True))
+        if not values:
+            return []
+        headers = [str(value or "").strip() for value in values[0]]
+        return [dict(zip(headers, row, strict=False)) for row in values[1:] if any(value not in (None, "") for value in row)]
+    raise ApiError(code="UNSUPPORTED_FILE", message="Поддерживаются только CSV и XLSX", status_code=400)
+
+
+def _row_value(row, *names):
+    normalized = {str(key).strip().lower(): value for key, value in row.items()}
+    for name in names:
+        value = normalized.get(name.lower())
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
 
 
 def _tenant_qs(model, request):
@@ -350,6 +391,105 @@ class CompanyEmployeesView(GenericAPIView):
         employee = serializer.save(tenant_id=request.user.tenant_id, company=company, created_by=request.user)
         audit("crm.employee_created", actor=request.user, resource=company, request=request)
         return Response(EmployeeSerializer(employee).data, status=http.HTTP_201_CREATED)
+
+
+class CompanyEmployeesImportView(APIView):
+    permission_classes = [require("crm.change")]
+
+    def post(self, request, company_id):
+        company = _get_company(request, company_id)
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise ApiError(code="VALIDATION_ERROR", message="Выберите файл", status_code=400)
+        rows = _spreadsheet_rows(upload)
+        if not rows:
+            raise ApiError(code="EMPTY_FILE", message="В файле нет сотрудников", status_code=400)
+
+        created = updated = 0
+        errors = []
+        with transaction.atomic():
+            for index, row in enumerate(rows, start=2):
+                full_name = _row_value(row, "full_name", "фио")
+                surname = _row_value(row, "surname", "фамилия")
+                given_name = _row_value(row, "given_name", "имя")
+                middle_name = _row_value(row, "middle_name", "отчество")
+                if full_name and not (surname and given_name):
+                    parts = full_name.split()
+                    surname = surname or (parts[0] if parts else "")
+                    given_name = given_name or (parts[1] if len(parts) > 1 else "")
+                    middle_name = middle_name or " ".join(parts[2:])
+                if not surname or not given_name:
+                    errors.append({"row": index, "message": "Нужны фамилия и имя"})
+                    continue
+                email = _row_value(row, "email", "e-mail", "почта")
+                phone = _row_value(row, "phone", "телефон")
+                person_qs = Person.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
+                person = person_qs.filter(email__iexact=email).first() if email else None
+                if person is None and phone:
+                    person = person_qs.filter(phone=phone).first()
+                person_created = person is None
+                if person_created:
+                    person = Person.objects.create(
+                        tenant_id=request.user.tenant_id,
+                        surname=surname,
+                        given_name=given_name,
+                        middle_name=middle_name,
+                        email=email,
+                        phone=phone,
+                        created_by=request.user,
+                    )
+                department_name = _row_value(row, "department", "подразделение", "отдел")
+                department = None
+                if department_name:
+                    department = company.departments.filter(
+                        name__iexact=department_name, archived_at__isnull=True
+                    ).first()
+                    if department is None:
+                        department = Department.objects.create(
+                            tenant_id=request.user.tenant_id,
+                            company=company,
+                            name=department_name,
+                            created_by=request.user,
+                        )
+                employee = company.employees.filter(person=person, archived_at__isnull=True).first()
+                values = {
+                    "department": department,
+                    "position": _row_value(row, "position", "должность"),
+                    "personnel_number": _row_value(row, "personnel_number", "табельный номер"),
+                    "status": "active",
+                }
+                if employee is None:
+                    Employee.objects.create(
+                        tenant_id=request.user.tenant_id,
+                        company=company,
+                        person=person,
+                        created_by=request.user,
+                        **values,
+                    )
+                    created += 1
+                else:
+                    for field, value in values.items():
+                        setattr(employee, field, value)
+                    employee.updated_by = request.user
+                    employee.version += 1
+                    employee.save()
+                    updated += 1
+
+        if errors and not (created or updated):
+            raise ApiError(
+                code="IMPORT_VALIDATION_ERROR",
+                message="Не удалось импортировать сотрудников",
+                details={"rows": errors},
+                status_code=400,
+            )
+        audit(
+            "crm.employees_imported",
+            actor=request.user,
+            resource=company,
+            request=request,
+            after={"created": created, "updated": updated, "errors": len(errors)},
+        )
+        return Response({"created": created, "updated": updated, "errors": errors})
 
 
 def _get_employee(request, company, employee_id) -> Employee:

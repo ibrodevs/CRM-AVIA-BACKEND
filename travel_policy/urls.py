@@ -9,6 +9,11 @@ urlpatterns = [
         name="company-travel-policies",
     ),
     path(
+        "companies/<uuid:company_id>/travel-policies/import/",
+        v.CompanyTravelPolicyImportView.as_view(),
+        name="company-travel-policy-import",
+    ),
+    path(
         "travel-policies/<uuid:policy_id>/", v.TravelPolicyDetailView.as_view(), name="travel-policy-detail"
     ),
     path(

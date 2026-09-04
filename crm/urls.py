@@ -31,6 +31,11 @@ urlpatterns = [
         "companies/<uuid:company_id>/employees/", v.CompanyEmployeesView.as_view(), name="company-employees"
     ),
     path(
+        "companies/<uuid:company_id>/employees/import/",
+        v.CompanyEmployeesImportView.as_view(),
+        name="company-employees-import",
+    ),
+    path(
         "companies/<uuid:company_id>/employees/<uuid:employee_id>/",
         v.CompanyEmployeeDetailView.as_view(),
         name="company-employee-detail",
