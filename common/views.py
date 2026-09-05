@@ -12,7 +12,7 @@ from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import require
+from accounts.permissions import has_permission, require
 from common.audit import audit
 from common.errors import ApiError, EventCursorExpiredError
 from common.jobs import get_handler
@@ -150,19 +150,26 @@ class JobCancelView(JobDetailView):
 class WorkspaceSettingView(APIView):
     permission_classes = [require("orders.view", "settings.manage")]
 
+    @staticmethod
+    def _owner(request):
+        return None if request.query_params.get("scope") == "tenant" else request.user
+
     def get(self, request, namespace):
         setting = WorkspaceSetting.objects.filter(
-            tenant_id=request.user.tenant_id, owner=request.user, namespace=namespace
+            tenant_id=request.user.tenant_id, owner=self._owner(request), namespace=namespace
         ).first()
         return Response({"namespace": namespace, "value": setting.value if setting else {}, "version": setting.version if setting else 0})
 
     def patch(self, request, namespace):
+        owner = self._owner(request)
+        if owner is None and not has_permission(request.user, "settings.manage"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права settings.manage", status_code=403)
         value = request.data.get("value")
         if not isinstance(value, dict):
             raise ApiError(code="VALIDATION_ERROR", message="value должен быть объектом", status_code=400)
         setting, created = WorkspaceSetting.objects.get_or_create(
             tenant_id=request.user.tenant_id,
-            owner=request.user,
+            owner=owner,
             namespace=namespace,
             defaults={"value": value, "created_by": request.user},
         )
