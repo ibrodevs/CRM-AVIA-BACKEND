@@ -49,6 +49,7 @@ urlpatterns = [
     path("services/<uuid:service_id>/manual-book/", v.ServiceManualBookView.as_view(), name="service-manual-book"),
     path("services/<uuid:service_id>/manual-issue/", v.ServiceManualIssueView.as_view(), name="service-manual-issue"),
     path("services/<uuid:service_id>/extras/", v.ServiceExtrasView.as_view(), name="service-extras"),
+    path("service-extra-catalog/", v.ServiceExtraCatalogView.as_view(), name="service-extra-catalog"),
     path(
         "services/<uuid:service_id>/responsible/",
         v.ServiceResponsibleView.as_view(),

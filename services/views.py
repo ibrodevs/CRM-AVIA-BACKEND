@@ -25,6 +25,7 @@ from services.models import (
     OrderService,
     SearchSession,
     ServiceExtra,
+    ServiceExtraCatalogItem,
     ServiceOffer,
     ServicePassenger,
 )
@@ -80,6 +81,7 @@ class OrderServiceSerializer(serializers.ModelSerializer):
     supplier_name = serializers.CharField(source="supplier.name", read_only=True, default="")
     passengers_count = serializers.SerializerMethodField()
     passengers = serializers.SerializerMethodField()
+    responsible_name = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderService
@@ -110,12 +112,16 @@ class OrderServiceSerializer(serializers.ModelSerializer):
             "payment_deadline",
             "ticketing_deadline",
             "responsible",
+            "responsible_name",
             "policy_compliance",
             "cancellation_rules",
             "version",
             "created_at",
         ]
         read_only_fields = ["id", "order", "status", "version", "created_at"]
+
+    def get_responsible_name(self, obj):
+        return obj.responsible.get_full_name() if obj.responsible_id else ""
 
     def get_passengers_count(self, obj) -> int:
         return obj.passengers.exclude(status__in=["cancelled", "replaced"]).count()
@@ -177,6 +183,30 @@ class ServiceExtraSerializer(serializers.ModelSerializer):
             "emd_reference",
         ]
         read_only_fields = ["id", "status"]
+
+
+class ServiceExtraCatalogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ServiceExtraCatalogItem
+        fields = ["id", "kind", "code", "name", "stage", "default_fee", "currency", "is_active"]
+        read_only_fields = ["id"]
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if request is None:
+            return attrs
+        code = attrs.get("code") or getattr(self.instance, "code", "")
+        qs = ServiceExtraCatalogItem.objects.filter(tenant_id=request.user.tenant_id, code=code)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Дополнительная услуга с таким кодом уже существует",
+                fields={"code": ["Код должен быть уникальным"]},
+                status_code=400,
+            )
+        return attrs
 
 
 class SearchCreateView(APIView):
@@ -850,6 +880,31 @@ class ServiceExtrasView(APIView):
         extra = serializer.save(tenant_id=service.tenant_id, service=service, created_by=request.user)
         emit_event("service.updated", service, payload={"action": "extra_added"})
         return Response(ServiceExtraSerializer(extra).data, status=http.HTTP_201_CREATED)
+
+
+class ServiceExtraCatalogView(GenericAPIView):
+    permission_classes = [require("orders.view")]
+    pagination_class = DefaultPagination
+    serializer_class = ServiceExtraCatalogSerializer
+
+    def get(self, request):
+        qs = ServiceExtraCatalogItem.objects.filter(
+            tenant_id=request.user.tenant_id,
+            archived_at__isnull=True,
+        )
+        if kind := request.query_params.get("kind"):
+            qs = qs.filter(kind=kind)
+        page = self.paginate_queryset(qs.order_by("kind", "name"))
+        return self.get_paginated_response(ServiceExtraCatalogSerializer(page, many=True).data)
+
+    def post(self, request):
+        if not has_permission(request.user, "orders.change"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.change", status_code=403)
+        serializer = ServiceExtraCatalogSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        item = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
+        audit("services.extra_catalog_created", actor=request.user, resource=item, request=request)
+        return Response(ServiceExtraCatalogSerializer(item).data, status=http.HTTP_201_CREATED)
 
 
 class ServiceResponsibleView(APIView):

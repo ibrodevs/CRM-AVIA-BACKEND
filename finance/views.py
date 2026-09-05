@@ -326,6 +326,8 @@ class ObligationListCreateView(GenericAPIView):
         params = request.query_params
         if order_id := params.get("order"):
             qs = qs.filter(order_id=order_id)
+        if company_id := params.get("company"):
+            qs = qs.filter(order__client_company_id=company_id)
         if direction := params.get("direction"):
             qs = qs.filter(direction=direction)
         if ob_status := params.get("status"):
