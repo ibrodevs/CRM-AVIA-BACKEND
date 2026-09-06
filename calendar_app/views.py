@@ -1,3 +1,4 @@
+from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
@@ -16,6 +17,17 @@ from common.pagination import DefaultPagination
 
 class TripSerializer(serializers.ModelSerializer):
     order_number = serializers.CharField(source="order.number", read_only=True)
+    client_name = serializers.SerializerMethodField()
+    company_name = serializers.SerializerMethodField()
+    operator_name = serializers.SerializerMethodField()
+    order_status = serializers.CharField(source="order.status", read_only=True)
+    request_type = serializers.CharField(source="order.request_type", read_only=True)
+    participants = serializers.SerializerMethodField()
+    services = serializers.SerializerMethodField()
+    documents = serializers.SerializerMethodField()
+    conflicts = serializers.SerializerMethodField()
+    incidents = serializers.SerializerMethodField()
+    group_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = Trip
@@ -23,13 +35,149 @@ class TripSerializer(serializers.ModelSerializer):
             "id",
             "order",
             "order_number",
+            "client_name",
+            "company_name",
+            "operator_name",
+            "order_status",
+            "request_type",
             "title",
             "starts_at",
             "ends_at",
             "status",
             "criticality",
             "computed_at",
+            "participants",
+            "services",
+            "documents",
+            "conflicts",
+            "incidents",
+            "group_summary",
         ]
+
+    def get_client_name(self, obj):
+        order = obj.order
+        if order.client_company_id:
+            return str(order.client_company)
+        return order.client_person.full_name if order.client_person_id else ""
+
+    def get_company_name(self, obj):
+        return str(obj.order.client_company) if obj.order.client_company_id else ""
+
+    def get_operator_name(self, obj):
+        operator = obj.order.operator
+        return (operator.get_full_name() or operator.email) if operator else ""
+
+    def get_participants(self, obj):
+        rows = []
+        for participant in obj.order.participants.all():
+            if participant.status != "active":
+                continue
+            snapshot = participant.guest_snapshot or {}
+            name = (
+                participant.person.full_name
+                if participant.person_id
+                else snapshot.get("full_name")
+                or snapshot.get("name")
+                or " ".join(
+                    value
+                    for value in (snapshot.get("surname"), snapshot.get("given_name"))
+                    if value
+                )
+            )
+            rows.append({"id": str(participant.id), "name": name, "role": participant.role})
+        return rows
+
+    def get_services(self, obj):
+        rows = []
+        ticketed_statuses = {"issued", "refund_in_progress", "refunded"}
+        for service in obj.order.services.all():
+            if service.archived_at is not None:
+                continue
+            obligations = [
+                obligation
+                for obligation in service.obligations.all()
+                if obligation.direction == "client_receivable"
+            ]
+            rows.append(
+                {
+                    "id": str(service.id),
+                    "kind": service.kind,
+                    "title": service.title,
+                    "status": service.status,
+                    "supplier": str(service.supplier_id) if service.supplier_id else None,
+                    "supplier_name": service.supplier.name if service.supplier_id else "",
+                    "external_id": service.external_id,
+                    "starts_at": service.starts_at,
+                    "ends_at": service.ends_at,
+                    "payment_deadline": service.payment_deadline,
+                    "ticketing_deadline": service.ticketing_deadline,
+                    "paid": None
+                    if not obligations
+                    else not any(
+                        obligation.status in {"open", "partial"}
+                        and obligation.outstanding_amount > 0
+                        for obligation in obligations
+                    ),
+                    "ticketed": service.status in ticketed_statuses,
+                }
+            )
+        return rows
+
+    def get_documents(self, obj):
+        return [
+            {
+                "id": str(document.id),
+                "name": document.title,
+                "kind": document.kind,
+                "status": document.status,
+            }
+            for document in obj.order.documents.all()
+            if document.archived_at is None
+        ]
+
+    def get_conflicts(self, obj):
+        return TripConflictSerializer(
+            [conflict for conflict in obj.conflicts.all() if conflict.resolved_at is None],
+            many=True,
+        ).data
+
+    def get_incidents(self, obj):
+        return [
+            {
+                "id": incident.id,
+                "error_code": incident.error_code,
+                "severity": incident.severity,
+                "operation": incident.operation,
+                "message": incident.sanitized_error,
+                "status": incident.status,
+                "service": str(incident.service_id) if incident.service_id else None,
+                "service_title": incident.service.title if incident.service_id else "",
+                "supplier_name": incident.supplier.name if incident.supplier_id else "",
+                "created_at": incident.created_at,
+            }
+            for incident in obj.order.incidents.all()
+            if incident.status != "resolved"
+        ]
+
+    def get_group_summary(self, obj):
+        try:
+            group_order = obj.order.group_order
+        except ObjectDoesNotExist:
+            return None
+        blocks = list(group_order.blocks.all())
+        assignments = [
+            assignment
+            for block in blocks
+            for assignment in block.assignments.all()
+            if assignment.status not in {"removed", "replaced"}
+        ]
+        return {
+            "bookings": group_order.requested_seats,
+            "requested": group_order.requested_seats,
+            "confirmed": group_order.confirmed_seats,
+            "issued": sum(1 for assignment in assignments if assignment.ticket_number),
+            "without_seat": max(group_order.requested_seats - group_order.confirmed_seats, 0),
+        }
 
 
 class TripConflictSerializer(serializers.ModelSerializer):
@@ -98,14 +246,34 @@ class CalendarEventSerializer(serializers.ModelSerializer):
         return attrs
 
 
+def _trip_queryset(request):
+    return (
+        Trip.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
+        .select_related(
+            "order",
+            "order__client_person",
+            "order__client_company",
+            "order__operator",
+        )
+        .prefetch_related(
+            "order__participants__person",
+            "order__services__supplier",
+            "order__services__obligations",
+            "order__documents",
+            "order__incidents__service",
+            "order__incidents__supplier",
+            "order__group_order__blocks__assignments",
+            "conflicts",
+        )
+    )
+
+
 class TripListView(GenericAPIView):
     permission_classes = [require("orders.view")]
     pagination_class = DefaultPagination
 
     def get(self, request):
-        qs = Trip.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True).select_related(
-            "order"
-        )
+        qs = _trip_queryset(request)
         params = request.query_params
         if from_date := params.get("from"):
             qs = qs.filter(starts_at__gte=from_date)
@@ -256,9 +424,7 @@ class CalendarFeedView(APIView):
         from_date = request.query_params.get("from")
         to_date = request.query_params.get("to")
         events = _events_qs(request).filter(status="scheduled")
-        trips = Trip.objects.filter(
-            tenant_id=request.user.tenant_id, archived_at__isnull=True
-        ).select_related("order")
+        trips = _trip_queryset(request)
         if from_date:
             events = events.filter(starts_at__gte=from_date)
             trips = trips.filter(starts_at__gte=from_date)
