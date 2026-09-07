@@ -55,6 +55,35 @@ API будет доступно по адресу:
 http://127.0.0.1:8000/
 ```
 
+## Доступ из других сайтов и приложений
+
+API `/api/*` по умолчанию принимает CORS-запросы с любого origin
+(`CORS_ALLOW_ALL_ORIGINS=True`). Авторизация JWT, права ролей и изоляция организаций
+продолжают действовать. Браузерные клиенты передают токен явно:
+
+```javascript
+const response = await fetch(`${backendUrl}/api/v1/me/`, {
+  credentials: "omit",
+  headers: { Authorization: `Bearer ${accessToken}` },
+});
+```
+
+Вход через `/api/v1/auth/login/` и обновление токена доступны с других origins.
+Предварительные OPTIONS-запросы поддерживают Authorization, Content-Type,
+Idempotency-Key, X-Request-ID и If-None-Match. Браузер может прочитать
+X-Request-ID, Content-Disposition, ETag и Retry-After в ответе.
+Cross-origin cookies не используются; существующий frontend BFF продолжает работать.
+Настройка основана на [django-cors-headers](https://github.com/adamchainz/django-cors-headers#configuration).
+
+При необходимости ограничить сайты задайте `CORS_ALLOW_ALL_ORIGINS=False` и
+`CORS_ALLOWED_ORIGINS=https://crm.example.com,http://localhost:3000`.
+`DJANGO_ALLOWED_HOSTS` содержит домены самого backend, а не вызывающих сайтов.
+CORS не заменяет доступность сервера по сети: production должен иметь доступный HTTPS URL.
+
+После обновления кода установите зависимости (`uv sync --locked`) и перезапустите
+backend (для PythonAnywhere — Reload web app, для Docker — пересборка web image).
+Миграции БД для этого изменения не требуются.
+
 ## Фоновые задачи
 
 В отдельном терминале запустите обработчик фоновых заданий:

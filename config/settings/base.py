@@ -2,6 +2,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from corsheaders.defaults import default_headers, default_methods
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -25,6 +26,7 @@ DJANGO_APPS = [
 ]
 
 THIRD_PARTY_APPS = [
+    "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "django_filters",
@@ -61,6 +63,7 @@ LOCAL_APPS = [
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "common.middleware.RequestIDMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -71,6 +74,15 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+# Public API clients authenticate explicitly with Bearer JWT, not browser cookies.
+CORS_ALLOW_ALL_ORIGINS = env.bool("CORS_ALLOW_ALL_ORIGINS", default=True)
+CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+CORS_URLS_REGEX = r"^/api/.*$"
+CORS_ALLOW_CREDENTIALS = False
+CORS_ALLOW_METHODS = (*default_methods, "HEAD")
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key", "x-request-id", "if-none-match")
+CORS_EXPOSE_HEADERS = ("X-Request-ID", "Content-Disposition", "ETag", "Retry-After")
 
 ROOT_URLCONF = "config.urls"
 

@@ -22,6 +22,8 @@ services:
       DATABASE_URL: postgres://travelhub:${POSTGRES_PASSWORD:-travelhub}@db:5432/travelhub
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set in .env}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost}
+      CORS_ALLOW_ALL_ORIGINS: ${CORS_ALLOW_ALL_ORIGINS:-True}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY:?set in .env}
       SECURE_SSL_REDIRECT: ${SECURE_SSL_REDIRECT:-False}
     depends_on:

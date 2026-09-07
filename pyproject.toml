@@ -24,6 +24,7 @@ dependencies = [
     "pypdf>=6.0",
     "pypdfium2>=4.30",
     "gunicorn>=23.0",
+    "django-cors-headers>=4.9,<5",
 ]
 
 # This repository is deployed and executed directly from its checkout.  The
