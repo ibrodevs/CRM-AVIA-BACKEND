@@ -71,6 +71,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     work_phone = models.CharField(max_length=32, blank=True)
     internal_phone = models.CharField(max_length=16, blank=True)
     telegram = models.CharField(max_length=64, blank=True)
+    max = models.CharField(max_length=64, blank=True)
+    whatsapp = models.CharField(max_length=32, blank=True)
     hired_at = models.DateField(null=True, blank=True)
     work_status = models.CharField(max_length=12, choices=WorkStatus.choices, default=WorkStatus.WORKING)
     presence = models.CharField(max_length=8, choices=Presence.choices, default=Presence.OFFLINE)

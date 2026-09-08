@@ -117,8 +117,7 @@ class NotificationRulesView(APIView):
 
     def get(self, request):
         rules = NotificationRule.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
-        return Response(
-            [
+        data = [
                 {
                     "id": str(r.id),
                     "event_type": r.event_type,
@@ -130,7 +129,13 @@ class NotificationRulesView(APIView):
                 }
                 for r in rules
             ]
-        )
+        from common.models import WorkspaceSetting
+
+        setting = WorkspaceSetting.objects.filter(tenant_id=request.user.tenant_id, owner__isnull=True, namespace="notification-delivery").first()
+        if setting:
+            data = [row for row in data if not row["event_type"].startswith("ui.preference.")]
+            data.extend({"event_type": f"ui.preference.{index}", "is_active": enabled} for index, enabled in enumerate(setting.value.get("rules", [])))
+        return Response(data)
 
     def post(self, request):
         rule = NotificationRule.objects.create(
@@ -145,26 +150,22 @@ class NotificationRulesView(APIView):
         return Response({"id": str(rule.id)}, status=http.HTTP_201_CREATED)
 
     def put(self, request):
+        from common.models import WorkspaceSetting
+
         rules = request.data.get("rules")
-        if not isinstance(rules, list):
-            raise ApiError(code="VALIDATION_ERROR", message="rules должен быть массивом", status_code=400)
-        labels = [
-            "Новые заказы", "Платежи", "SMS", "E-mail дайджест", "Telegram", "SLA",
-        ]
+        if not isinstance(rules, list) or len(rules) != 6 or any(not isinstance(value, bool) for value in rules):
+            raise ApiError(code="VALIDATION_ERROR", message="Ожидаются шесть переключателей true/false", status_code=400)
+        channels = ["desktop"] + (["sms"] if rules[2] else []) + (["email"] if rules[3] else []) + (["telegram"] if rules[4] else [])
         with transaction.atomic():
-            NotificationRule.objects.filter(tenant_id=request.user.tenant_id).delete()
-            created = [
-                NotificationRule.objects.create(
-                    tenant_id=request.user.tenant_id,
-                    event_type=f"ui.preference.{index}",
-                    name=labels[index] if index < len(labels) else f"Правило {index + 1}",
-                    priority="medium",
-                    recipients={"users": [str(request.user.id)]},
-                    channels=["desktop"],
-                    is_active=bool(enabled),
-                    created_by=request.user,
+            setting, _ = WorkspaceSetting.objects.get_or_create(tenant_id=request.user.tenant_id, owner=None, namespace="notification-delivery", defaults={"created_by": request.user})
+            setting.value = {"rules": rules}
+            setting.save(update_fields=["value", "updated_at"])
+            # Replace only the six legacy UI preference rows. Preserve custom event rules.
+            NotificationRule.objects.filter(tenant_id=request.user.tenant_id, event_type__startswith="ui.preference.").delete()
+            for index, pattern in [(0, "order.updated"), (1, "order.updated"), (5, "sla.*")]:
+                NotificationRule.objects.update_or_create(
+                    tenant_id=request.user.tenant_id, name=f"settings:{index}", event_type=pattern,
+                    defaults={"priority": "medium", "recipients": {"roles": ["admin", "operator", "manager", "accountant"]}, "channels": channels, "is_active": rules[index], "created_by": request.user},
                 )
-                for index, enabled in enumerate(rules)
-            ]
-        audit("notifications.rules_replaced", request=request, resource=request.user, after={"rules": rules})
-        return Response({"rules": [rule.is_active for rule in created]})
+        audit("notifications.preferences_saved", request=request, resource=request.user, after={"rules": rules})
+        return Response({"rules": rules})

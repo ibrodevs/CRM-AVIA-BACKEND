@@ -444,9 +444,11 @@ class DocumentReceiptUpdateView(APIView):
 
 
 class DocumentTemplatesView(APIView):
-    permission_classes = [require("documents.view")]
+    permission_classes = [require("documents.view", "settings.manage")]
 
     def get(self, request):
+        from accounts.permissions import has_permission
+
         templates = DocumentTemplate.objects.filter(
             tenant_id=request.user.tenant_id, archived_at__isnull=True
         )
@@ -459,6 +461,7 @@ class DocumentTemplatesView(APIView):
                     "kind": t.kind,
                     "template_version": t.template_version,
                     "status": t.status,
+                    "body": t.body if has_permission(request.user, "settings.manage") else "",
                 }
                 for t in templates
             ]

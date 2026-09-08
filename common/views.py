@@ -3,7 +3,7 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import connection
+from django.db import connection, transaction
 from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
@@ -160,6 +160,7 @@ class WorkspaceSettingView(APIView):
         ).first()
         return Response({"namespace": namespace, "value": setting.value if setting else {}, "version": setting.version if setting else 0})
 
+    @transaction.atomic
     def patch(self, request, namespace):
         owner = self._owner(request)
         if owner is None and not has_permission(request.user, "settings.manage"):
@@ -167,6 +168,14 @@ class WorkspaceSettingView(APIView):
         value = request.data.get("value")
         if not isinstance(value, dict):
             raise ApiError(code="VALIDATION_ERROR", message="value должен быть объектом", status_code=400)
+        if namespace == "finance-currencies":
+            from common.settings_validation import validate_currency_settings
+            from finance.models import ExchangeRate
+
+            value = validate_currency_settings(value)
+            if owner is None:
+                for code, rate in value["rates"].items():
+                    ExchangeRate.objects.create(tenant_id=request.user.tenant_id, source="manual", from_currency=code, to_currency=value["base"], rate=rate, as_of=timezone.now(), created_by=request.user)
         setting, created = WorkspaceSetting.objects.get_or_create(
             tenant_id=request.user.tenant_id,
             owner=owner,
@@ -194,6 +203,10 @@ class WorkspaceActionListCreateView(APIView):
     def get(self, request):
         rows = WorkspaceAction.objects.filter(tenant_id=request.user.tenant_id)
         if action := request.query_params.get("action"):
+            if action == "integration.api_key.generate":
+                if not has_permission(request.user, "integrations.manage") and not has_permission(request.user, "settings.manage"):
+                    raise ApiError(code="PERMISSION_DENIED", message="Нет права управлять ключами", status_code=403)
+                rows = rows.exclude(status="revoked")
             rows = rows.filter(action=action)
         if resource_type := request.query_params.get("resource_type"):
             rows = rows.filter(resource_type=resource_type)
@@ -209,9 +222,27 @@ class WorkspaceActionListCreateView(APIView):
         payload = request.data.get("payload") or {}
         if not isinstance(payload, dict):
             raise ApiError(code="VALIDATION_ERROR", message="payload должен быть объектом", status_code=400)
+        if action in ("integration.api_key.generate", "settings.api_access.update", "settings.api_access.revoke"):
+            if not has_permission(request.user, "integrations.manage") and not has_permission(request.user, "settings.manage"):
+                raise ApiError(code="PERMISSION_DENIED", message="Нет права управлять ключами", status_code=403)
+        if action in ("settings.api_access.update", "settings.api_access.revoke"):
+            record = WorkspaceAction.objects.filter(pk=request.data.get("resource_id"), tenant_id=request.user.tenant_id, action="integration.api_key.generate", status="completed").first()
+            if record is None:
+                raise ApiError(code="NOT_FOUND", message="API-доступ не найден", status_code=404)
+            if action.endswith("revoke"):
+                record.status = "revoked"
+                record.save(update_fields=["status"])
+            else:
+                organization = str(payload.get("org", "")).strip()
+                if not organization:
+                    raise ApiError(code="VALIDATION_ERROR", message="Укажите организацию", status_code=400)
+                record.payload = {**record.payload, "organization": organization}
+                record.save(update_fields=["payload"])
         persisted_result = {"accepted": True}
         response_result = persisted_result
         if action == "integration.api_key.generate":
+            if not str(payload.get("organization", "")).strip() or not isinstance(payload.get("access", []), list):
+                raise ApiError(code="VALIDATION_ERROR", message="Укажите организацию и список доступов", status_code=400)
             api_token = secrets.token_urlsafe(24)
             activation_key = secrets.token_urlsafe(12)
             persisted_result = {

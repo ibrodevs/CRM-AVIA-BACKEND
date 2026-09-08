@@ -10,6 +10,9 @@ CHALLENGE_LIFETIME = timedelta(minutes=5)
 
 def issue_session_tokens(user: User, request) -> dict:
     """Создаёт UserSession и пару токенов access/refresh."""
+    user.last_login = timezone.now()
+    user.presence = User.Presence.ONLINE
+    user.save(update_fields=["last_login", "presence"])
     refresh = RefreshToken.for_user(user)
     session = UserSession.objects.create(
         user=user,

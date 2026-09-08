@@ -389,8 +389,12 @@ class PasswordResetConfirmView(APIView):
                 fields={"new_password": exc.messages},
                 status_code=400,
             ) from None
+        if user.status in (User.Status.SUSPENDED, User.Status.ARCHIVED):
+            raise ApiError(code="USER_INACTIVE", message="Учётная запись заблокирована", status_code=403)
         user.set_password(serializer.validated_data["new_password"])
-        user.save(update_fields=["password"])
+        if user.status == User.Status.INVITED:
+            user.status = User.Status.ACTIVE
+        user.save(update_fields=["password", "status"])
         record.used_at = timezone.now()
         record.save(update_fields=["used_at"])
         UserSession.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())

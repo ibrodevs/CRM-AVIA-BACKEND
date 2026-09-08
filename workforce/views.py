@@ -5,7 +5,6 @@ from rest_framework import status as http
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import require
 from common.audit import audit
 from common.errors import ApiError
 from common.pagination import DefaultPagination
@@ -194,72 +193,64 @@ class ShiftReportView(APIView):
         return Response({"report": shift.closing_report or _build_shift_report(shift)})
 
 
+class MotivationRuleInput(serializers.Serializer):
+    service_kind = serializers.CharField(max_length=16)
+    fee_percent = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=0, max_value=100)
+    markup_percent = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=0, max_value=100)
+    commission_percent = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=0, max_value=100)
+    is_active = serializers.BooleanField(default=True)
+
+
 class MotivationRulesView(APIView):
+    def target(self, request):
+        from accounts.models import User
+        from accounts.permissions import has_permission
+
+        user_id = request.query_params.get("user") or request.data.get("user")
+        if not user_id:
+            return None
+        if str(user_id) != str(request.user.pk) and not has_permission(request.user, "settings.manage"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет доступа к мотивации другого сотрудника", status_code=403)
+        user = User.objects.filter(pk=user_id, tenant_id=request.user.tenant_id).first()
+        if user is None:
+            raise ApiError(code="NOT_FOUND", message="Сотрудник не найден", status_code=404)
+        return user
+
     def get(self, request):
-        rules = MotivationRule.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
-        return Response(
-            [
-                {
-                    "id": str(r.id),
-                    "service_kind": r.service_kind,
-                    "fee_percent": str(r.fee_percent),
-                    "markup_percent": str(r.markup_percent),
-                    "commission_percent": str(r.commission_percent),
-                    "is_active": r.is_active,
-                    "updated_at": r.updated_at,
-                }
-                for r in rules
-            ]
-        )
+        user = self.target(request)
+        all_rules = MotivationRule.objects.filter(tenant_id=request.user.tenant_id)
+        if request.query_params.get("history") != "1":
+            all_rules = all_rules.filter(archived_at__isnull=True)
+        rules = all_rules.filter(user=user)
+        if user and not rules.exists():
+            rules = all_rules.filter(user__isnull=True)
+        return Response([{"id": str(rule.id), "user": str(rule.user_id) if rule.user_id else None, "service_kind": rule.service_kind, "fee_percent": str(rule.fee_percent), "markup_percent": str(rule.markup_percent), "commission_percent": str(rule.commission_percent), "is_active": rule.is_active, "updated_at": rule.updated_at, "archived_at": rule.archived_at} for rule in rules])
 
     def post(self, request):
-        from accounts.permissions import has_permission
-
-        if not has_permission(request.user, "settings.manage"):
-            raise ApiError(code="PERMISSION_DENIED", message="Нет права settings.manage", status_code=403)
-        rule = MotivationRule.objects.create(
-            tenant_id=request.user.tenant_id,
-            service_kind=str(request.data.get("service_kind", "*")),
-            fee_percent=request.data.get("fee_percent", 0),
-            markup_percent=request.data.get("markup_percent", 0),
-            commission_percent=request.data.get("commission_percent", 0),
-            created_by=request.user,
-        )
-        audit("workforce.motivation_rule_created", actor=request.user, resource=rule, request=request)
-        return Response({"id": str(rule.id)}, status=http.HTTP_201_CREATED)
+        return self.save(request, replace=False)
 
     def put(self, request):
+        return self.save(request, replace=True)
+
+    def save(self, request, replace):
         from accounts.permissions import has_permission
 
         if not has_permission(request.user, "settings.manage"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права settings.manage", status_code=403)
-        rows = request.data.get("rules")
-        if not isinstance(rows, list):
-            raise ApiError(code="VALIDATION_ERROR", message="rules должен быть массивом", status_code=400)
-        created = []
+        user = self.target(request)
+        data = request.data.get("rules") if replace else [request.data]
+        serializer = MotivationRuleInput(data=data, many=True)
+        serializer.is_valid(raise_exception=True)
+        kinds = [row["service_kind"] for row in serializer.validated_data]
+        if len(kinds) != len(set(kinds)):
+            raise ApiError(code="VALIDATION_ERROR", message="Виды услуг не должны повторяться", status_code=400)
         with transaction.atomic():
-            MotivationRule.objects.filter(
-                tenant_id=request.user.tenant_id, archived_at__isnull=True
-            ).update(archived_at=timezone.now(), updated_by=request.user)
-            for row in rows:
-                created.append(
-                    MotivationRule.objects.create(
-                        tenant_id=request.user.tenant_id,
-                        service_kind=str(row.get("service_kind", "*")),
-                        fee_percent=row.get("fee_percent", 0),
-                        markup_percent=row.get("markup_percent", 0),
-                        commission_percent=row.get("commission_percent", 0),
-                        is_active=bool(row.get("is_active", True)),
-                        created_by=request.user,
-                    )
-                )
-        audit(
-            "workforce.motivation_rules_replaced",
-            actor=request.user,
-            resource=created[0] if created else None,
-            request=request,
-            after={"count": len(created)},
-        )
+            if replace:
+                MotivationRule.objects.filter(tenant_id=request.user.tenant_id, user=user, archived_at__isnull=True).update(archived_at=timezone.now(), updated_by=request.user)
+            created = [MotivationRule.objects.create(tenant_id=request.user.tenant_id, user=user, created_by=request.user, **row) for row in serializer.validated_data]
+            audit("workforce.motivation_rules_replaced", actor=request.user, resource=created[0] if created else None, request=request, after={"count": len(created), "user": str(user.pk) if user else None})
+        if not replace:
+            return Response({"id": str(created[0].pk)}, status=http.HTTP_201_CREATED)
         return self.get(request)
 
 

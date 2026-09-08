@@ -20,18 +20,67 @@ _TITLES = {
 }
 
 
+_KIND_LABELS = {"avia": "Авиа", "rail": "ЖД", "hotel": "Гостиницы", "transfer": "Трансферы", "visa": "Визы", "insurance": "Страхование"}
+_ACTION_LABELS = {"book": "Бронирование", "manual_booked": "Бронирование", "issue": "Выписка", "manual_issued": "Выписка", "cancel": "Отмена", "exchange": "Обмен", "refund": "Возврат", "cancellation": "Отмена", "document_generated": "Корректировка документов", "document_sent": "Отправка документов клиенту"}
+
+
+def _preference_keys(event):
+    action = event.payload.get("action", "")
+    if action == "aftersale_status" or event.event_type.startswith(("aftersales.", "after_sales.")):
+        category = "exchRet"
+    elif "deadline" in event.event_type or event.event_type.startswith("sla."):
+        category = "overdue"
+    elif event.event_type.startswith("chat."):
+        category = "chat"
+    elif event.event_type == "order.updated" and action == "created":
+        category = "newReq"
+    elif event.event_type.startswith(("order.", "service.")):
+        category = "orderChg"
+    else:
+        category = None
+    service = None
+    if event.resource_type == "OrderService" and event.resource_id:
+        from services.models import OrderService
+        service = OrderService.objects.filter(pk=event.resource_id, tenant_id=event.tenant_id).first()
+    elif event.payload.get("document"):
+        from documents.models import Document
+        document = Document.objects.filter(pk=event.payload["document"], tenant_id=event.tenant_id).select_related("service").first()
+        service = document.service if document else None
+    elif event.payload.get("case"):
+        from aftersales.models import AfterSaleCase
+        case = AfterSaleCase.objects.filter(pk=event.payload["case"], tenant_id=event.tenant_id).select_related("service").first()
+        service = case.service if case else None
+        action = case.type if case else action
+    if action == "status_changed":
+        action = {"booked": "book", "issued": "issue", "cancelled": "cancel"}.get(event.payload.get("to"), action)
+    specific = f"svc:{_KIND_LABELS[service.kind]}:{_ACTION_LABELS[action]}" if service and service.kind in _KIND_LABELS and action in _ACTION_LABELS else None
+    return category, specific
+
+
 @outbox_processor("*")
 def create_notifications(event: OutboxEvent) -> None:
     """Применяет NotificationRule к событию и создаёт персональные уведомления."""
     if event.tenant_id is None or event.event_type.startswith("notification."):
         return
+    category, specific = _preference_keys(event)
     rules = NotificationRule.objects.filter(
         tenant_id=event.tenant_id, is_active=True, archived_at__isnull=True
     )
     for rule in rules:
         if not fnmatch.fnmatch(event.event_type, rule.event_type):
             continue
+        if rule.name == "settings:0" and event.payload.get("action") != "created":
+            continue
+        if rule.name == "settings:1" and event.payload.get("action") not in ("payment_confirmed", "refund_executed"):
+            continue
         for user in _resolve_recipients(rule, event):
+            from accounts.models import UserPreference
+
+            preference = UserPreference.objects.filter(user=user).first()
+            categories = preference.notification_categories if preference else {}
+            channels = preference.notification_channels if preference else {}
+            if (specific and categories.get(specific) is False) or (not specific and category and categories.get(category) is False):
+                continue
             notification = Notification.objects.create(
                 tenant_id=event.tenant_id,
                 user=user,
@@ -44,7 +93,8 @@ def create_notifications(event: OutboxEvent) -> None:
                 resource_id=event.resource_id,
             )
             for channel in rule.channels or ["desktop"]:
-                NotificationDelivery.objects.create(notification=notification, channel=channel)
+                if channels.get(channel, True):
+                    NotificationDelivery.objects.create(notification=notification, channel=channel)
             from common.outbox import emit_event
 
             emit_event(
@@ -76,6 +126,12 @@ def _resolve_recipients(rule: NotificationRule, event: OutboxEvent):
     return users
 
 
+def _wants_deadlines(user):
+    from accounts.models import UserPreference
+    preference = UserPreference.objects.filter(user=user).first()
+    return user.is_active and (not preference or preference.notification_categories.get("overdue") is not False)
+
+
 @scheduled_task("notifications.check_deadlines")
 def check_deadlines() -> str:
     """Дедлайны выписки/оплаты без дублей: unique threshold key (ТЗ §18)."""
@@ -91,7 +147,7 @@ def check_deadlines() -> str:
         ).select_related("order")
         for service in services:
             recipient = service.responsible or service.order.operator
-            if recipient is None:
+            if recipient is None or not _wants_deadlines(recipient):
                 continue
             _, was_created = DeadlineThreshold.objects.get_or_create(
                 rule_key="ticketing_deadline",
@@ -120,7 +176,7 @@ def check_deadlines() -> str:
     ).select_related("order")
     for service in overdue:
         recipient = service.responsible or service.order.operator
-        if recipient is None:
+        if recipient is None or not _wants_deadlines(recipient):
             continue
         _, was_created = DeadlineThreshold.objects.get_or_create(
             rule_key="ticketing_deadline",

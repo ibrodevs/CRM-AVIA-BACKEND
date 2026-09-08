@@ -76,6 +76,7 @@ class MeView(APIView):
     def get(self, request):
         return Response(MeSerializer(request.user).data)
 
+    @transaction.atomic
     def patch(self, request):
         allowed = {
             "first_name",
@@ -85,6 +86,8 @@ class MeView(APIView):
             "work_phone",
             "internal_phone",
             "telegram",
+            "max",
+            "whatsapp",
             "position",
             "department",
             "hired_at",
@@ -97,6 +100,10 @@ class MeView(APIView):
         serializer = MeSerializer(request.user, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        if "language" in serializer.validated_data:
+            preference, _ = UserPreference.objects.get_or_create(user=request.user)
+            preference.language = request.user.language
+            preference.save(update_fields=["language"])
         return Response(serializer.data)
 
 
@@ -108,14 +115,30 @@ class MePreferencesView(APIView):
     def get(self, request):
         return Response(UserPreferenceSerializer(self._get(request.user)).data)
 
+    @transaction.atomic
     def patch(self, request):
         serializer = UserPreferenceSerializer(self._get(request.user), data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        if "language" in serializer.validated_data:
+            request.user.language = serializer.validated_data["language"]
+            request.user.save(update_fields=["language"])
         return Response(serializer.data)
 
 
 class MeAvatarView(APIView):
+    def get(self, request):
+        from django.http import FileResponse
+
+        if not request.user.avatar:
+            raise ApiError(code="NOT_FOUND", message="Аватар не загружен", status_code=404)
+        try:
+            response = FileResponse(request.user.avatar.open("rb"))
+        except FileNotFoundError:
+            raise ApiError(code="NOT_FOUND", message="Файл аватара не найден", status_code=404) from None
+        response["Cache-Control"] = "private, no-store"
+        return response
+
     def put(self, request):
         file = request.FILES.get("avatar")
         if file is None:
@@ -124,6 +147,16 @@ class MeAvatarView(APIView):
             raise ApiError(code="FILE_TOO_LARGE", message="Максимальный размер аватара 5 МБ", status_code=400)
         if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
             raise ApiError(code="UNSUPPORTED_FILE_TYPE", message="Допустимы JPEG/PNG/WebP", status_code=400)
+        from PIL import Image, UnidentifiedImageError
+
+        try:
+            with Image.open(file) as image:
+                if image.format not in ("JPEG", "PNG", "WEBP"):
+                    raise ValueError("unsupported image")
+                image.verify()
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+            raise ApiError(code="INVALID_IMAGE", message="Файл не является допустимым изображением", status_code=400) from None
+        file.seek(0)
         request.user.avatar = file
         request.user.save(update_fields=["avatar"])
         return Response({"avatar": request.user.avatar.url})
@@ -159,11 +192,33 @@ class UserListCreateView(GenericAPIView):
     def post(self, request):
         serializer = UserCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = User(tenant_id=request.user.tenant_id, status=User.Status.INVITED, **serializer.validated_data)
-        user.set_unusable_password()
-        user.save()
-        audit("users.created", request=request, resource=user)
+        data = dict(serializer.validated_data)
+        codes = data.pop("roles", [])
+        roles = list(Role.objects.filter(tenant_id=request.user.tenant_id, code__in=codes))
+        if set(codes) != {role.code for role in roles}:
+            raise ApiError(code="UNKNOWN_ROLE", message="Неизвестная роль", status_code=400)
+        password = data.pop("password", None)
+        target_status = data.pop("status", User.Status.INVITED)
+        user = User(tenant_id=request.user.tenant_id, status=target_status, **data)
+        if target_status == User.Status.ACTIVE and not password:
+            raise ApiError(code="VALIDATION_ERROR", message="Для активного пользователя задайте пароль", status_code=400)
+        if password:
+            from django.contrib.auth.password_validation import validate_password
+            from django.core.exceptions import ValidationError
+
+            try:
+                validate_password(password, user=user)
+            except ValidationError as error:
+                raise ApiError(code="WEAK_PASSWORD", message="; ".join(error.messages), status_code=400) from None
+            user.set_password(password)
+        else:
+            user.set_unusable_password()
+        with transaction.atomic():
+            user.save()
+            UserRole.objects.bulk_create([UserRole(user=user, role=role, assigned_by=request.user) for role in roles])
+            audit("users.created", request=request, resource=user)
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+
 
 
 class UserDetailView(APIView):
@@ -185,6 +240,8 @@ class UserDetailView(APIView):
             "work_phone",
             "internal_phone",
             "telegram",
+            "max",
+            "whatsapp",
             "hired_at",
             "work_status",
             "timezone",
@@ -248,6 +305,19 @@ class UserSuspendView(APIView):
         return Response(UserSerializer(user).data)
 
 
+class UserActivateView(APIView):
+    permission_classes = [require("users.manage")]
+
+    def post(self, request, user_id):
+        user = _get_user_or_404(request, user_id)
+        if user.status != User.Status.SUSPENDED:
+            raise ApiError(code="INVALID_USER_STATUS", message="Пользователь не заблокирован", status_code=409)
+        user.status = User.Status.ACTIVE if user.has_usable_password() else User.Status.INVITED
+        user.save(update_fields=["status"])
+        audit("users.activated", request=request, resource=user)
+        return Response(UserSerializer(user).data)
+
+
 class UserRolesView(APIView):
     permission_classes = [require("roles.manage", "users.manage")]
 
@@ -299,6 +369,9 @@ class UserServiceAccessView(APIView):
         user = _get_user_or_404(request, user_id)
         serializer = UserServiceAccessSerializer(data=request.data, many=True)
         serializer.is_valid(raise_exception=True)
+        kinds = [row["service_kind"] for row in serializer.validated_data]
+        if len(kinds) != len(set(kinds)):
+            raise ApiError(code="VALIDATION_ERROR", message="Виды услуг не должны повторяться", status_code=400)
         with transaction.atomic():
             user.service_access.all().delete()
             UserServiceAccess.objects.bulk_create(
@@ -314,7 +387,12 @@ class UserServiceAccessView(APIView):
 
 
 class UserSlaView(APIView):
-    permission_classes = [require("users.manage")]
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if request.method == "GET" and str(self.kwargs.get("user_id")) == str(request.user.pk):
+            return
+        if not require("users.manage")().has_permission(request, self):
+            self.permission_denied(request)
 
     def get(self, request, user_id):
         user = _get_user_or_404(request, user_id)
@@ -337,7 +415,6 @@ class UserSlaView(APIView):
 
 
 class RoleListView(APIView):
-    permission_classes = [require("roles.manage", "users.manage")]
 
     def get(self, request):
         roles = Role.objects.filter(tenant_id=request.user.tenant_id).prefetch_related("permissions")

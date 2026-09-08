@@ -81,7 +81,7 @@ CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 CORS_URLS_REGEX = r"^/api/.*$"
 CORS_ALLOW_CREDENTIALS = False
 CORS_ALLOW_METHODS = (*default_methods, "HEAD")
-CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key", "x-request-id", "if-none-match")
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key", "x-request-id", "if-none-match", "x-api-token", "x-api-key")
 CORS_EXPOSE_HEADERS = ("X-Request-ID", "Content-Disposition", "ETag", "Retry-After")
 
 ROOT_URLCONF = "config.urls"
@@ -142,6 +142,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "accounts.api_keys.IntegrationKeyAuthentication",
         "accounts.authentication.SessionAwareJWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [

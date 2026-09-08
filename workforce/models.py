@@ -76,6 +76,7 @@ class ShiftOperation(models.Model):
 
 
 class MotivationRule(TenantModel):
+    user = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.CASCADE, related_name="motivation_rules")
     service_kind = models.CharField(max_length=16, default="*")
     fee_percent = models.DecimalField(max_digits=6, decimal_places=3, default=0)
     markup_percent = models.DecimalField(max_digits=6, decimal_places=3, default=0)
