@@ -32,10 +32,12 @@ class PersonSerializer(serializers.ModelSerializer):
             "full_name",
             "latin_surname",
             "latin_given_name",
+            "latin_middle_name",
             "birth_date",
             "gender",
             "citizenship",
             "phone",
+            "secondary_phone",
             "email",
             "city",
             "preferred_language",
@@ -59,6 +61,8 @@ class PersonDocumentSerializer(serializers.ModelSerializer):
             "type",
             "number",
             "number_masked",
+            "notes",
+            "file",
             "series",
             "issued_at",
             "expires_at",
@@ -70,6 +74,14 @@ class PersonDocumentSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "verified_at", "created_at"]
+
+    def validate_file(self, value):
+        request = self.context.get("request")
+        if value and (not request or value.tenant_id != request.user.tenant_id or value.archived_at):
+            raise serializers.ValidationError("Файл недоступен")
+        if value and not has_permission(request.user, "crm.view_person_documents"):
+            raise serializers.ValidationError("Нет доступа к файлам личных документов")
+        return value
 
     def get_number_masked(self, obj) -> str:
         request = self.context.get("request")
@@ -96,6 +108,24 @@ class LoyaltyCardSerializer(serializers.ModelSerializer):
 
 
 class ClientProfileSerializer(serializers.ModelSerializer):
+    def validate_person(self, value):
+        request = self.context.get("request")
+        if not request or value.tenant_id != request.user.tenant_id or value.archived_at:
+            raise serializers.ValidationError("Клиент недоступен")
+        return value
+
+    def validate_assigned_manager(self, value):
+        request = self.context.get("request")
+        if value and (not request or value.tenant_id != request.user.tenant_id):
+            raise serializers.ValidationError("Менеджер недоступен")
+        return value
+
+    metrics = serializers.SerializerMethodField()
+
+    def get_metrics(self, obj):
+        from crm.entity_metrics import customer_metrics
+        return customer_metrics(obj.tenant_id, client_person=obj.person_id)
+
     person_detail = PersonSerializer(source="person", read_only=True)
 
     class Meta:
@@ -104,6 +134,7 @@ class ClientProfileSerializer(serializers.ModelSerializer):
             "id",
             "person",
             "person_detail",
+            "metrics",
             "client_type",
             "status",
             "source",
@@ -114,6 +145,13 @@ class ClientProfileSerializer(serializers.ModelSerializer):
 
 
 class CompanySerializer(serializers.ModelSerializer):
+    metrics = serializers.SerializerMethodField()
+
+    def get_metrics(self, obj):
+        from crm.entity_metrics import customer_metrics
+        from crm.models import Contract, Employee
+        return {**customer_metrics(obj.tenant_id, client_company=obj.id), "employees": Employee.objects.filter(company=obj, tenant_id=obj.tenant_id, archived_at__isnull=True, status="active").count(), "contracts": list(Contract.objects.filter(company=obj, tenant_id=obj.tenant_id, archived_at__isnull=True).values_list("number", flat=True))}
+
     bank_account_masked = serializers.SerializerMethodField()
     bank_account = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
@@ -132,6 +170,7 @@ class CompanySerializer(serializers.ModelSerializer):
             "bank_name",
             "bank_account",
             "bank_account_masked",
+            "metrics",
             "director",
             "phone",
             "email",

@@ -129,11 +129,20 @@ def run_search(job: BackgroundJob) -> dict:
                 continue
             seen_hashes.add(dedup)
 
+            itinerary = raw.get("itinerary") or {}
+            segments = itinerary.get("segments") or []
+            first_segment = segments[0] if segments else {}
+            countries = [value for segment in segments for value in (segment.get("origin_country"), segment.get("destination_country"))]
+            geography = raw.get("geography", "")
+            if countries and all(countries):
+                geography = "domestic" if all(country == "RU" for country in countries) else "intl"
             markup_rules = resolve_markup_rules(
                 supplier,
                 kind=session.kind,
                 route=_criteria_route(session.criteria),
                 cabin=str(session.criteria.get("cabin", "")),
+                airline=str(first_segment.get("airline") or raw.get("airline") or ""),
+                geography=geography,
             )
             offer = ServiceOffer.objects.create(
                 tenant_id=session.tenant_id,

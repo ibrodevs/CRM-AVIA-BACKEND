@@ -1,5 +1,7 @@
 import csv
 import io
+import json
+from zipfile import BadZipFile
 
 from django.db import transaction
 from django.http import HttpResponse
@@ -10,7 +12,7 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import require
+from accounts.permissions import has_permission, require
 from common.audit import audit
 from common.errors import ApiError, TransitionForbiddenError
 from common.outbox import emit_event
@@ -32,11 +34,42 @@ from orders.models import OrderParticipant
 from orders.selectors import get_order_or_404
 
 
+class RosterField(serializers.Field):
+    def to_representation(self, value):
+        rows = json.loads(value or "[]")
+        request = self.context.get("request")
+        if request and has_permission(request.user, "crm.view_person_documents"):
+            return rows
+        def redact(value):
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, dict):
+                return {key: ("••••" if key in {"docNo", "no", "number", "document_number"} and item else redact(item)) for key, item in value.items()}
+            return value
+        return redact(rows)
+
+    def to_internal_value(self, value):
+        if not isinstance(value, list) or len(value) > 2000 or any(not isinstance(row, dict) or not str(row.get("name", "")).strip() for row in value):
+            raise serializers.ValidationError("Ожидается список пассажиров с ФИО (до 2000 строк)")
+        request = self.context.get("request")
+        if not request or not has_permission(request.user, "crm.view_person_documents"):
+            raise serializers.ValidationError("Для изменения списка требуется доступ к документам пассажиров")
+        return json.dumps(value, ensure_ascii=False)
+
+
 class PassengerGroupSerializer(serializers.ModelSerializer):
+    members = RosterField(source="roster", required=False)
+    subgroups = serializers.ListField(source="roster_subgroups", child=serializers.DictField(), required=False)
+
+    def validate_company(self, value):
+        if value and value.tenant_id != self.context["request"].user.tenant_id:
+            raise serializers.ValidationError("Компания недоступна")
+        return value
+
     class Meta:
         model = PassengerGroup
-        fields = ["id", "type", "company", "name", "owner", "created_at"]
-        read_only_fields = ["id", "created_at"]
+        fields = ["id", "type", "company", "name", "owner", "created_at", "members", "subgroups", "version"]
+        read_only_fields = ["id", "created_at", "owner", "version"]
 
 
 class GroupBlockSerializer(serializers.ModelSerializer):
@@ -78,20 +111,24 @@ class GroupOrderSerializer(serializers.ModelSerializer):
 
 
 class PassengerGroupListCreateView(GenericAPIView):
-    permission_classes = [require("orders.view")]
+    permission_classes = [require("orders.view", "crm.view", "crm.change", "orders.change")]
     pagination_class = DefaultPagination
     serializer_class = PassengerGroupSerializer
 
     def get(self, request):
         qs = PassengerGroup.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
+        if company := request.query_params.get("company"):
+            qs = qs.filter(company_id=company)
         page = self.paginate_queryset(qs.order_by("name"))
-        return self.get_paginated_response(PassengerGroupSerializer(page, many=True).data)
+        return self.get_paginated_response(PassengerGroupSerializer(page, many=True, context={"request": request}).data)
 
     def post(self, request):
-        serializer = PassengerGroupSerializer(data=request.data)
+        self.permission_classes = [require("crm.change", "orders.change")]
+        self.check_permissions(request)
+        serializer = PassengerGroupSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         group = serializer.save(tenant_id=request.user.tenant_id, owner=request.user, created_by=request.user)
-        return Response(PassengerGroupSerializer(group).data, status=http.HTTP_201_CREATED)
+        return Response(PassengerGroupSerializer(group, context={"request": request}).data, status=http.HTTP_201_CREATED)
 
 
 class GroupOrderListCreateView(GenericAPIView):
@@ -622,4 +659,102 @@ class RosterImportExportView(APIView):
             writer.writerow(["'" + c if isinstance(c, str) and c[:1] in "=+-@" else c for c in cells])
         response = HttpResponse(output.getvalue(), content_type="text/csv; charset=utf-8")
         response["Content-Disposition"] = 'attachment; filename="roster.csv"'
+        return response
+
+
+class PassengerGroupDetailView(APIView):
+    permission_classes = [require("crm.change", "orders.change")]
+
+    def get_group(self, request, group_id):
+        group = PassengerGroup.objects.filter(pk=group_id, tenant_id=request.user.tenant_id, archived_at__isnull=True).first()
+        if not group:
+            raise ApiError(code="NOT_FOUND", message="Группа не найдена", status_code=404)
+        return group
+
+    @transaction.atomic
+    def patch(self, request, group_id):
+        group = PassengerGroup.objects.select_for_update().get(pk=self.get_group(request, group_id).pk)
+        if request.data.get("version") != group.version:
+            raise ApiError(code="VERSION_CONFLICT", message="Группа изменена. Откройте её заново", status_code=409)
+        serializer = PassengerGroupSerializer(group, data=request.data, partial=True, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user, version=group.version + 1)
+        audit("passenger_group.updated", actor=request.user, resource=group, request=request)
+        return Response(serializer.data)
+
+    def delete(self, request, group_id):
+        group = self.get_group(request, group_id)
+        group.archived_at = timezone.now()
+        group.save(update_fields=["archived_at"])
+        audit("passenger_group.archived", actor=request.user, resource=group, request=request)
+        return Response(status=204)
+
+
+class RosterParseView(APIView):
+    permission_classes = [require("crm.change", "orders.change")]
+
+    def post(self, request):
+        file = request.FILES.get("file")
+        if not file or file.size > 10 * 1024 * 1024 or not file.name.lower().endswith((".csv", ".xlsx")):
+            raise ApiError(code="VALIDATION_ERROR", message="Загрузите CSV или XLSX до 10 МБ", status_code=400)
+        try:
+            _, rows = parse_file(file.read(), file.name)
+        except (ValueError, UnicodeError, KeyError, csv.Error, BadZipFile) as error:
+            raise ApiError(code="VALIDATION_ERROR", message="Не удалось прочитать список", status_code=400) from error
+        if len(rows) > 2000:
+            raise ApiError(code="VALIDATION_ERROR", message="В списке допускается до 2000 пассажиров", status_code=400)
+        return Response({"results": rows})
+
+
+class RosterFileExportView(APIView):
+    permission_classes = [require("crm.view", "orders.view")]
+
+    def post(self, request):
+        from xml.sax.saxutils import escape
+        from zipfile import ZIP_DEFLATED, ZipFile
+
+        from openpyxl import Workbook
+
+        headers, rows = request.data.get("headers"), request.data.get("rows")
+        fmt = request.data.get("format")
+        if not isinstance(headers, list) or not 1 <= len(headers) <= 50 or not isinstance(rows, list) or len(rows) > 2000 or any(not isinstance(row, list) or len(row) != len(headers) for row in rows):
+            raise ApiError(code="VALIDATION_ERROR", message="Некорректная таблица", status_code=400)
+        table = [[str(cell or "")[:10000] for cell in row] for row in [headers, *rows]]
+        stream = io.BytesIO()
+        if fmt == "Excel":
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Пассажиры"
+            for row in table:
+                sheet.append(row)
+                for cell in sheet[sheet.max_row]:
+                    cell.data_type = "s"
+            workbook.save(stream)
+            mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            extension = "xlsx"
+        elif fmt == "Word":
+            body = "".join("<w:tr>" + "".join("<w:tc><w:p><w:r><w:t xml:space=\"preserve\">" + escape(cell) + "</w:t></w:r></w:p></w:tc>" for cell in row) + "</w:tr>" for row in table)
+            with ZipFile(stream, "w", ZIP_DEFLATED) as archive:
+                archive.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+                archive.writestr("_rels/.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+                archive.writestr("word/document.xml", '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl>' + body + '</w:tbl></w:body></w:document>')
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            extension = "docx"
+        elif fmt == "CSV":
+            delimiter = request.data.get("delimiter", ";")
+            if delimiter not in {",", ";", "\t", "|"}:
+                raise ApiError(code="VALIDATION_ERROR", message="Некорректный разделитель", status_code=400)
+            output = io.StringIO()
+            writer = csv.writer(output, delimiter=delimiter)
+            writer.writerows([["'" + cell if cell[:1] in "=+-@" else cell for cell in row] for row in table])
+            encoding = "cp1251" if request.data.get("encoding") == "Windows-1251" else "utf-8-sig"
+            try:
+                stream.write(output.getvalue().encode(encoding))
+            except UnicodeEncodeError as error:
+                raise ApiError(code="VALIDATION_ERROR", message="Для этих символов выберите UTF-8", status_code=400) from error
+            mime, extension = "text/csv", "csv"
+        else:
+            raise ApiError(code="VALIDATION_ERROR", message="Неизвестный формат", status_code=400)
+        response = HttpResponse(stream.getvalue(), content_type=mime)
+        response["Content-Disposition"] = f'attachment; filename="passengers.{extension}"'
         return response

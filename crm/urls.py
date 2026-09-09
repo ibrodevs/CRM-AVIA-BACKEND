@@ -19,6 +19,7 @@ urlpatterns = [
         PersonDocumentRecognizeView.as_view(),
         name="person-document-recognize",
     ),
+    path("clients/<uuid:client_id>/", v.ClientDetailView.as_view(), name="client-detail"),
     path("clients/", v.ClientListCreateView.as_view(), name="client-list"),
     path("companies/", v.CompanyListCreateView.as_view(), name="company-list"),
     path("companies/<uuid:company_id>/", v.CompanyDetailView.as_view(), name="company-detail"),

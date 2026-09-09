@@ -125,6 +125,7 @@ class PersonListCreateView(GenericAPIView):
         page = self.paginate_queryset(qs)
         return self.get_paginated_response(PersonSerializer(page, many=True).data)
 
+    @transaction.atomic
     def post(self, request):
         if not has_permission(request.user, "crm.change"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
@@ -155,6 +156,7 @@ class PersonListCreateView(GenericAPIView):
                 )
 
         person = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
+        _save_client_documents(request, person, request.data.get("documents", []))
         audit(
             "crm.person_created",
             actor=request.user,
@@ -177,6 +179,7 @@ class PersonDetailView(APIView):
     def get(self, request, person_id):
         return Response(PersonSerializer(self._get(request, person_id)).data)
 
+    @transaction.atomic
     def patch(self, request, person_id):
         if not has_permission(request.user, "crm.change"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
@@ -184,6 +187,8 @@ class PersonDetailView(APIView):
         serializer = PersonSerializer(person, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=request.user, version=person.version + 1)
+        if "documents" in request.data:
+            _save_client_documents(request, person, request.data["documents"])
         audit("crm.person_updated", actor=request.user, resource=person, request=request)
         return Response(serializer.data)
 
@@ -197,6 +202,7 @@ class PersonDocumentsView(APIView):
         )
         return Response(PersonDocumentSerializer(documents, many=True, context={"request": request}).data)
 
+    @transaction.atomic
     def post(self, request, person_id):
         if not has_permission(request.user, "crm.change"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
@@ -222,6 +228,10 @@ class PersonDocumentsView(APIView):
                 details={"person_id": str(existing.person_id)},
                 status_code=409,
             )
+        if request.data.get("person_data"):
+            person_serializer = PersonSerializer(person, data=request.data["person_data"], partial=True)
+            person_serializer.is_valid(raise_exception=True)
+            person_serializer.save(updated_by=request.user, version=person.version + 1)
         document = serializer.save(tenant_id=request.user.tenant_id, person=person, created_by=request.user)
         audit(
             "crm.person_document_added",
@@ -284,6 +294,7 @@ class ClientListCreateView(GenericAPIView):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права crm.change", status_code=403)
         payload = request.data.copy()
         person_data = payload.pop("person_data", None)
+        documents = payload.pop("documents", [])
         with transaction.atomic():
             if person_data is not None:
                 person_serializer = PersonSerializer(data=person_data)
@@ -300,9 +311,10 @@ class ClientListCreateView(GenericAPIView):
                     tenant_id=request.user.tenant_id, created_by=request.user
                 )
                 payload["person"] = str(person.id)
-            serializer = ClientProfileSerializer(data=payload)
+            serializer = ClientProfileSerializer(data=payload, context={"request": request})
             serializer.is_valid(raise_exception=True)
             profile = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
+            _save_client_documents(request, profile.person, documents)
         audit("crm.client_created", actor=request.user, resource=profile, request=request)
         return Response(ClientProfileSerializer(profile).data, status=http.HTTP_201_CREATED)
 
@@ -705,3 +717,42 @@ class FeeTemplateListCreateView(APIView):
             )
         template.refresh_from_db()
         return Response(FeeTemplateSerializer(template).data, status=http.HTTP_201_CREATED)
+
+
+class ClientDetailView(APIView):
+    permission_classes = [require("crm.change")]
+
+    @transaction.atomic
+    def patch(self, request, client_id):
+        profile = _tenant_qs(ClientProfile, request).select_related("person").filter(pk=client_id).first()
+        if profile is None:
+            raise ApiError(code="NOT_FOUND", message="Клиент не найден", status_code=404)
+        data = request.data.copy()
+        person_data = data.pop("person_data", None)
+        if person_data is not None:
+            person = PersonSerializer(profile.person, data=person_data, partial=True)
+            person.is_valid(raise_exception=True)
+            person.save(updated_by=request.user, version=profile.person.version + 1)
+        allowed = {key: value for key, value in data.items() if key in {"status", "client_type", "source"}}
+        serializer = ClientProfileSerializer(profile, data=allowed, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user)
+        if "documents" in data:
+            _save_client_documents(request, profile.person, data["documents"])
+        audit("crm.client_updated", actor=request.user, resource=profile, request=request)
+        return Response(serializer.data)
+
+
+def _save_client_documents(request, person, documents):
+    if not isinstance(documents, list) or len(documents) > 100:
+        raise ApiError(code="VALIDATION_ERROR", message="Некорректный список документов", status_code=400)
+    for data in documents:
+        if not isinstance(data, dict):
+            raise ApiError(code="VALIDATION_ERROR", message="Некорректный документ", status_code=400)
+        if data.get("id"):
+            if not PersonDocument.objects.filter(pk=data["id"], person=person, tenant_id=request.user.tenant_id, archived_at__isnull=True).exists():
+                raise ApiError(code="VALIDATION_ERROR", message="Документ недоступен", status_code=400)
+            continue
+        serializer = PersonDocumentSerializer(data=data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save(tenant_id=request.user.tenant_id, person=person, created_by=request.user)

@@ -3,6 +3,9 @@ from django.urls import path
 from groups_app import views as v
 
 urlpatterns = [
+    path("roster-export/", v.RosterFileExportView.as_view(), name="roster-export"),
+    path("passenger-groups/<uuid:group_id>/", v.PassengerGroupDetailView.as_view(), name="passenger-group-detail"),
+    path("roster-parse/", v.RosterParseView.as_view(), name="roster-parse"),
     path("passenger-groups/", v.PassengerGroupListCreateView.as_view(), name="passenger-groups"),
     path("group-orders/", v.GroupOrderListCreateView.as_view(), name="group-orders"),
     path("group-orders/<uuid:group_order_id>/", v.GroupOrderDetailView.as_view(), name="group-order-detail"),

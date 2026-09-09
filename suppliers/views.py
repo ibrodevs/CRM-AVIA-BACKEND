@@ -1,5 +1,6 @@
 import json
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
@@ -17,11 +18,18 @@ from suppliers.models import Supplier, SupplierCredential, SupplierMarkupRule, S
 
 
 class SupplierSerializer(serializers.ModelSerializer):
+    metrics = serializers.SerializerMethodField()
+
+    def get_metrics(self, obj):
+        from crm.entity_metrics import supplier_metrics
+        return supplier_metrics(obj)
+
     class Meta:
         model = Supplier
         fields = [
             "id",
             "name",
+            "metrics",
             "legal_name",
             "tax_id",
             "status",
@@ -246,3 +254,89 @@ class SearchPriorityListCreateView(APIView):
         priority = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
         audit("suppliers.search_priority_changed", actor=request.user, request=request, resource=priority)
         return Response(SearchPrioritySerializer(priority).data, status=http.HTTP_201_CREATED)
+
+
+class SupplierSettingsView(APIView):
+    permission_classes = [require('suppliers.view')]
+
+    def get(self, request, supplier_id):
+        from common.models import WorkspaceSetting
+        supplier = _get_supplier(request, supplier_id)
+        namespace = f'supplier-ext-{supplier.id}'
+        setting = WorkspaceSetting.objects.filter(tenant_id=supplier.tenant_id, owner__isnull=True, namespace=namespace).first()
+        if setting is None:
+            setting = WorkspaceSetting.objects.filter(tenant_id=supplier.tenant_id, owner=request.user, namespace=namespace).first()
+        value = dict(setting.value) if setting else {}
+        if 'api' in value:
+            value['api'] = {key: entry for key, entry in value['api'].items() if key in {'url', 'version'}}
+        return Response({'value': value})
+
+    def patch(self, request, supplier_id):
+        from django.db import transaction
+
+        from common.models import WorkspaceSetting
+        self.permission_classes = [require('suppliers.change')]
+        self.check_permissions(request)
+        supplier = _get_supplier(request, supplier_id)
+        value = request.data.get('value')
+        if not isinstance(value, dict):
+            raise ApiError(code='VALIDATION_ERROR', message='Ожидается объект настроек', status_code=400)
+        value = {key: entry for key, entry in value.items() if key in {'supType', 'kinds', 'priority', 'useDefault', 'country', 'city', 'api', 'local', 'fin', 'ops', 'automation', 'searchPriority', 'sla', 'legal'}}
+        for field in ('api', 'local', 'fin', 'ops', 'searchPriority', 'sla', 'legal'):
+            if field in value and not isinstance(value[field], dict):
+                raise ApiError(code='VALIDATION_ERROR', message=f'{field}: ожидается объект', status_code=400)
+        # Credentials belong exclusively in encrypted SupplierCredential storage.
+        value['api'] = {key: entry for key, entry in value.get('api', {}).items() if key in {'url', 'version'}}
+        legal, local, fin = value.get('legal', {}), value.get('local', {}), value.get('fin', {})
+        with transaction.atomic():
+            fields = {'tax_id': legal.get('inn', supplier.tax_id), 'legal_name': legal.get('legalName', supplier.legal_name), 'contract_number': legal.get('contractNo', supplier.contract_number), 'phone': legal.get('phone', supplier.phone), 'email': legal.get('email', supplier.email), 'contact_person': local.get('contact', supplier.contact_person), 'work_hours': local.get('hours', supplier.work_hours)}
+            serializer = SupplierSerializer(supplier, data=fields, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(updated_by=request.user, automation_capabilities={**supplier.automation_capabilities, 'finance': fin, 'search_mode': value.get('automation', supplier.automation_capabilities.get('search_mode', 'manual')), 'operations': value.get('ops', {}), 'search_priority': value.get('searchPriority', {})})
+            WorkspaceSetting.objects.update_or_create(tenant_id=supplier.tenant_id, owner=None, namespace=f'supplier-ext-{supplier.id}', defaults={'value': value, 'updated_by': request.user})
+            audit('suppliers.settings_updated', actor=request.user, resource=supplier, request=request)
+        return Response({'value': value})
+
+
+class SupplierAviaMarkupsView(APIView):
+    permission_classes = [require("suppliers.view")]
+
+    def get(self, request, supplier_id):
+        from common.models import WorkspaceSetting
+        supplier = _get_supplier(request, supplier_id)
+        setting = WorkspaceSetting.objects.filter(tenant_id=supplier.tenant_id, owner__isnull=True, namespace=f"supplier-avia-{supplier.pk}").first()
+        return Response({"value": setting.value.get("config", {}) if setting else {}})
+
+    @transaction.atomic
+    def patch(self, request, supplier_id):
+        from django.utils import timezone
+
+        from common.models import WorkspaceSetting
+        self.permission_classes = [require("suppliers.change")]
+        self.check_permissions(request)
+        supplier = _get_supplier(request, supplier_id)
+        config = request.data.get("value")
+        if not isinstance(config, dict) or len(config) > 300:
+            raise ApiError(code="VALIDATION_ERROR", message="Некорректные наценки", status_code=400)
+        setting, _ = WorkspaceSetting.objects.select_for_update().get_or_create(tenant_id=supplier.tenant_id, owner=None, namespace=f"supplier-avia-{supplier.pk}", defaults={"value": {}})
+        ids = []
+        for airline, entry in config.items():
+            if not isinstance(entry, dict) or not isinstance(entry.get("routes", []), list):
+                raise ApiError(code="VALIDATION_ERROR", message="Некорректные наценки", status_code=400)
+            buckets = [(key, entry.get(key, {})) for key in ("domestic", "intl")]
+            buckets += [("route", row) for row in entry.get("routes", [])]
+            for bucket, row in buckets:
+                if not isinstance(row, dict):
+                    raise ApiError(code="VALIDATION_ERROR", message="Некорректная наценка", status_code=400)
+                if bucket == "route" and (not row.get("from") or not row.get("to")):
+                    raise ApiError(code="VALIDATION_ERROR", message="Укажите оба аэропорта маршрута", status_code=400)
+                data = {"service_kind": "avia", "airline": airline, "geography": bucket if bucket != "route" else "", "route": f"{row.get('from')}-{row.get('to')}" if bucket == "route" else "", "amount_type": row.get("type", "percent"), "amount_value": row.get("value", 0), "currency": "USD", "priority": 10 if bucket == "route" else 100}
+                serializer = MarkupRuleSerializer(data=data)
+                serializer.is_valid(raise_exception=True)
+                rule = serializer.save(tenant_id=supplier.tenant_id, supplier=supplier, created_by=request.user)
+                ids.append(str(rule.pk))
+        supplier.markup_rules.filter(pk__in=setting.value.get("rule_ids", [])).update(archived_at=timezone.now())
+        setting.value = {"config": config, "rule_ids": ids}
+        setting.save(update_fields=["value", "updated_at"])
+        audit("suppliers.avia_markups_saved", actor=request.user, resource=supplier, request=request)
+        return Response({"value": config})

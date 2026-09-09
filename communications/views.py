@@ -149,14 +149,38 @@ class ThreadListCreateView(GenericAPIView):
         )
 
     def post(self, request):
-        serializer = ThreadSerializer(data=request.data, context={"request": request})
+        payload = request.data.copy()
+        person_id, supplier_id = payload.pop("client_person", None), payload.pop("supplier", None)
+        entity = None
+        person = None
+        if person_id:
+            from crm.models import Person
+            person = Person.objects.filter(pk=person_id, tenant_id=request.user.tenant_id, archived_at__isnull=True).first()
+            if person is None:
+                raise ApiError(code="NOT_FOUND", message="Клиент не найден", status_code=404)
+            entity = f"person:{person.id}"
+            payload["type"] = "client"
+            payload["external_channel"] = ""
+        elif supplier_id:
+            from suppliers.models import Supplier
+            supplier = Supplier.objects.filter(pk=supplier_id, tenant_id=request.user.tenant_id, archived_at__isnull=True).first()
+            if supplier is None:
+                raise ApiError(code="NOT_FOUND", message="Поставщик не найден", status_code=404)
+            entity = f"supplier:{supplier.id}"
+            payload["type"] = "supplier"
+            payload["external_channel"] = ""
+        serializer = ThreadSerializer(data=payload, context={"request": request})
         serializer.is_valid(raise_exception=True)
         thread_type = serializer.validated_data.get("type")
         needed = "communications.view_client" if thread_type == "client" else "communications.view_internal"
         if not has_permission(request.user, needed):
             raise ApiError(code="PERMISSION_DENIED", message=f"Нет права {needed}", status_code=403)
+        if entity:
+            existing = ChatThread.objects.filter(tenant_id=request.user.tenant_id, type=thread_type, external_account=entity, archived_at__isnull=True, participants__user=request.user, participants__left_at__isnull=True).first()
+            if existing:
+                return Response(ThreadSerializer(existing, context={"request": request}).data)
         with transaction.atomic():
-            thread = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user)
+            thread = serializer.save(tenant_id=request.user.tenant_id, created_by=request.user, external_account=entity or "")
             ThreadParticipant.objects.create(
                 tenant_id=request.user.tenant_id,
                 thread=thread,
@@ -164,6 +188,8 @@ class ThreadListCreateView(GenericAPIView):
                 role="owner",
                 created_by=request.user,
             )
+            if person:
+                ThreadParticipant.objects.create(tenant_id=request.user.tenant_id, thread=thread, person=person, role="member", created_by=request.user)
         return Response(
             ThreadSerializer(thread, context={"request": request}).data, status=http.HTTP_201_CREATED
         )

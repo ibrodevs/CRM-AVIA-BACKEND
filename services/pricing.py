@@ -14,6 +14,7 @@ def resolve_markup_rules(
     airline: str = "",
     cabin: str = "",
     passenger_category: str = "",
+    geography: str = "",
     on_date=None,
 ):
     """Возвращает применимые правила наценки поставщика по приоритету с объяснением."""
@@ -28,6 +29,8 @@ def resolve_markup_rules(
         if rule.effective_from and rule.effective_from > on_date:
             continue
         if rule.effective_to and rule.effective_to < on_date:
+            continue
+        if rule.geography and rule.geography != geography:
             continue
         if rule.airline and rule.airline != airline:
             continue
@@ -91,7 +94,10 @@ def calculate_price(
         if rule.amount_type == "percent":
             amount = quantize(base * rule.amount_value / Decimal(100), currency)
         else:
-            amount = quantize(rule.amount_value, currency)
+            fixed = rule.amount_value
+            if rule.currency and rule.currency != currency and fixed:
+                fixed *= _markup_exchange_rate(rule.tenant_id, rule.currency, currency)
+            amount = quantize(fixed, currency)
         total += amount
         components.append(
             {
@@ -133,3 +139,20 @@ def calculate_price(
         "components": components,
         "snapshot_id": snapshot.id if snapshot else None,
     }
+
+
+def _markup_exchange_rate(tenant_id, source, target):
+    from common.errors import ApiError
+    from finance.models import ExchangeRate
+
+    latest = {}
+    for row in ExchangeRate.objects.filter(tenant_id=tenant_id, archived_at__isnull=True, as_of__lte=timezone.now(), rate__gt=0).order_by("-as_of"):
+        latest.setdefault((row.from_currency, row.to_currency), row.rate)
+    for (origin, destination), rate in list(latest.items()):
+        latest.setdefault((destination, origin), Decimal(1) / rate)
+    if (source, target) in latest:
+        return latest[source, target]
+    for origin, intermediate in latest:
+        if origin == source and (intermediate, target) in latest:
+            return latest[source, intermediate] * latest[intermediate, target]
+    raise ApiError(code="EXCHANGE_RATE_REQUIRED", message=f"Задайте курс {source}/{target} для наценки поставщика", status_code=400)

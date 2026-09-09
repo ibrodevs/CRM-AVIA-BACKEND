@@ -17,10 +17,12 @@ class Person(TenantModel):
     middle_name = models.CharField(max_length=100, blank=True)
     latin_surname = models.CharField(max_length=100, blank=True)
     latin_given_name = models.CharField(max_length=100, blank=True)
+    latin_middle_name = models.CharField(max_length=100, blank=True)
     birth_date = models.DateField(null=True, blank=True)
     gender = models.CharField(max_length=6, choices=Gender.choices, blank=True)
     citizenship = models.CharField(max_length=2, blank=True)
     phone = models.CharField(max_length=32, blank=True)
+    secondary_phone = models.CharField(max_length=32, blank=True)
     email = models.EmailField(blank=True)
     city = models.CharField(max_length=100, blank=True)
     preferred_language = models.CharField(max_length=8, blank=True)
@@ -46,6 +48,7 @@ class Person(TenantModel):
 
 
 class PersonDocument(TenantModel):
+    notes = models.TextField(blank=True)
     """Документ лица. Номер шифруется; в обычных ответах маскируется (ТЗ §6.1).
 
     number_norm — нормализованный номер (без пробелов, верхний регистр) для

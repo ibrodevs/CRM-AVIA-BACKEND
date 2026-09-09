@@ -1,9 +1,12 @@
 from django.db import models
 
+from common.fields import EncryptedTextField
 from common.models import TenantModel
 
 
 class PassengerGroup(TenantModel):
+    roster = EncryptedTextField(default="[]", blank=True)
+    roster_subgroups = models.JSONField(default=list, blank=True)
     type = models.CharField(max_length=32, default="tourist")
     company = models.ForeignKey(
         "crm.Company", null=True, blank=True, on_delete=models.PROTECT, related_name="passenger_groups"

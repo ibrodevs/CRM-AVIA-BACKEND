@@ -3,6 +3,8 @@ from django.urls import path
 from suppliers import views as v
 
 urlpatterns = [
+    path("suppliers/<uuid:supplier_id>/avia-markups/", v.SupplierAviaMarkupsView.as_view(), name="supplier-avia-markups"),
+    path("suppliers/<uuid:supplier_id>/settings/", v.SupplierSettingsView.as_view(), name="supplier-settings"),
     path("suppliers/", v.SupplierListCreateView.as_view(), name="supplier-list"),
     path("suppliers/<uuid:supplier_id>/", v.SupplierDetailView.as_view(), name="supplier-detail"),
     path(
