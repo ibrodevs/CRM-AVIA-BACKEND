@@ -6,7 +6,6 @@ from crm.models import Agreement, Company, Person
 from orders.models import Order, OrderParticipant, OrderTask, Route, RoutePoint
 from services.models import SERVICE_KIND_CHOICES
 
-
 PERSON_DOCUMENT_KIND_LABEL = {
     "foreign_passport": "Загранпаспорт",
     "national_passport": "Общегражданский паспорт",
@@ -196,6 +195,7 @@ class OrderListSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     services_count = serializers.SerializerMethodField()
     total_amount = serializers.SerializerMethodField()
+    totals_by_currency = serializers.SerializerMethodField()
     service_kind = serializers.SerializerMethodField()
 
     class Meta:
@@ -218,6 +218,7 @@ class OrderListSerializer(serializers.ModelSerializer):
             "base_currency",
             "services_count",
             "total_amount",
+            "totals_by_currency",
             "service_kind",
             "is_group",
             "created_at",
@@ -237,8 +238,20 @@ class OrderListSerializer(serializers.ModelSerializer):
     def get_services_count(self, obj) -> int:
         return len(self._services(obj))
 
+    def get_totals_by_currency(self, obj):
+        from decimal import Decimal
+
+        totals = {}
+        for service in self._services(obj):
+            if service.status in {"cancelled", "failed"}:
+                continue
+            totals[service.currency] = totals.get(service.currency, Decimal(0)) + (service.client_total or 0)
+        return [money_dict(amount, currency) for currency, amount in sorted(totals.items())]
+
     def get_total_amount(self, obj):
-        return sum((service.client_total or 0) for service in self._services(obj))
+        # The scalar is denominated in base_currency; other currencies stay separate.
+        return next((row["amount"] for row in self.get_totals_by_currency(obj)
+                     if row["currency"] == obj.base_currency), "0.00")
 
     def get_service_kind(self, obj) -> str:
         services = self._services(obj)
@@ -350,16 +363,15 @@ def order_finance_summary(order: Order) -> dict:
             totals[service.currency] = totals.get(service.currency, Decimal(0)) + service.client_total
     paid: dict[str, Decimal] = {}
     outstanding: dict[str, Decimal] = {}
-    try:
-        from finance.models import FinancialObligation
+    from finance.models import FinancialObligation
 
-        for obligation in FinancialObligation.objects.filter(order=order, direction="client_receivable"):
-            paid[obligation.currency] = paid.get(obligation.currency, Decimal(0)) + obligation.paid_amount
-            outstanding[obligation.currency] = (
-                outstanding.get(obligation.currency, Decimal(0)) + obligation.outstanding_amount
-            )
-    except Exception:
-        pass
+    for obligation in FinancialObligation.objects.filter(
+        order=order, direction="client_receivable"
+    ).exclude(status="cancelled"):
+        paid[obligation.currency] = paid.get(obligation.currency, Decimal(0)) + obligation.paid_amount
+        outstanding[obligation.currency] = (
+            outstanding.get(obligation.currency, Decimal(0)) + obligation.outstanding_amount
+        )
     return {
         "services_total": [money_dict(v, k) for k, v in totals.items()],
         "paid": [money_dict(v, k) for k, v in paid.items()],

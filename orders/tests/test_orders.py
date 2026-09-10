@@ -265,3 +265,29 @@ class TestOrderMisc:
         assert admin_client.get("/api/v1/orders/?status=new").json()["count"] == 1
         assert admin_client.get("/api/v1/orders/?status=paid").json()["count"] == 0
         assert admin_client.get("/api/v1/orders/?q=Командировка").json()["count"] == 1
+
+
+class TestOrderCurrencyTotals:
+    def test_list_detail_and_summary_keep_currency_totals(self, admin_client, order_payload, tenant, admin_user):
+        from services.models import OrderService
+
+        order_id = admin_client.post('/api/v1/orders/', {**order_payload, 'base_currency': 'USD'}, format='json').json()['id']
+        for currency, amount, status in [('RUB', '120.35', 'issued'), ('USD', '3.40', 'confirmed'), ('RUB', '999.00', 'cancelled'), ('USD', '999.00', 'failed')]:
+            OrderService.objects.create(tenant=tenant, created_by=admin_user, order_id=order_id, kind='avia', title='Currency test', currency=currency, client_total=amount, status=status)
+        detail = admin_client.get(f'/api/v1/orders/{order_id}/').json()
+        listing = admin_client.get('/api/v1/orders/').json()['results'][0]
+        expected = [{'amount': '120.35', 'currency': 'RUB'}, {'amount': '3.40', 'currency': 'USD'}]
+        assert detail['totals_by_currency'] == listing['totals_by_currency'] == expected
+        assert str(detail['total_amount']) == '3.40'
+        summary = admin_client.get(f'/api/v1/orders/{order_id}/finance-summary/').json()
+        assert sorted(summary['services_total'], key=lambda row: row['currency']) == expected
+
+    def test_cancelled_obligations_do_not_create_debt(self, admin_client, order_payload, tenant, admin_user):
+        from finance.models import FinancialObligation
+
+        order_id = admin_client.post('/api/v1/orders/', order_payload, format='json').json()['id']
+        for currency, amount, paid, status in [('RUB', '100.50', '20.25', 'partial'), ('USD', '50', '0', 'cancelled')]:
+            FinancialObligation.objects.create(tenant=tenant, created_by=admin_user, order_id=order_id, direction='client_receivable', currency=currency, original_amount=amount, paid_amount=paid, status=status)
+        summary = admin_client.get(f'/api/v1/orders/{order_id}/finance-summary/').json()
+        assert summary['paid'] == [{'amount': '20.25', 'currency': 'RUB'}]
+        assert summary['outstanding'] == [{'amount': '80.25', 'currency': 'RUB'}]
