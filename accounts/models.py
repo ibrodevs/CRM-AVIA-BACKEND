@@ -177,7 +177,7 @@ class UserPreference(models.Model):
     theme = models.CharField(max_length=16, default="light")
     date_format = models.CharField(max_length=16, default="DD.MM.YYYY")
     time_format = models.CharField(max_length=8, default="24h")
-    base_currency = models.CharField(max_length=3, default="USD")
+    base_currency = models.CharField(max_length=3, default="RUB")
     language = models.CharField(max_length=8, default="ru")
     page_size = models.PositiveSmallIntegerField(default=25)
     start_page = models.CharField(max_length=64, default="dashboard")

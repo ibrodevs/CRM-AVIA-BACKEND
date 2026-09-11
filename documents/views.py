@@ -34,6 +34,10 @@ class DocumentListCreateView(GenericAPIView):
         params = request.query_params
         if order_id := params.get("order"):
             qs = qs.filter(order_id=order_id)
+        if company_id := params.get("company"):
+            qs = qs.filter(company_id=company_id)
+        if person_id := params.get("person"):
+            qs = qs.filter(person_id=person_id)
         if kind := params.get("kind"):
             qs = qs.filter(kind=kind)
         if doc_status := params.get("status"):
