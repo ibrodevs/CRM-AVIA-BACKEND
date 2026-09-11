@@ -221,6 +221,30 @@ class UserListCreateView(GenericAPIView):
 
 
 
+class UserAvatarView(APIView):
+    """Аватар сотрудника для списков и карточек.
+
+    До этого файл отдавался только по /me/avatar/, то есть всегда аватар
+    текущего пользователя, а в списке сотрудников поле avatar приходило именем
+    файла в хранилище — показать его в интерфейсе было нечем.
+    """
+
+    permission_classes = [require("users.manage")]
+
+    def get(self, request, user_id):
+        from django.http import FileResponse
+
+        user = _get_user_or_404(request, user_id)
+        if not user.avatar:
+            raise ApiError(code="NOT_FOUND", message="Аватар не загружен", status_code=404)
+        try:
+            response = FileResponse(user.avatar.open("rb"))
+        except FileNotFoundError:
+            raise ApiError(code="NOT_FOUND", message="Файл аватара не найден", status_code=404) from None
+        response["Cache-Control"] = "private, no-store"
+        return response
+
+
 class UserDetailView(APIView):
     permission_classes = [require("users.manage")]
 

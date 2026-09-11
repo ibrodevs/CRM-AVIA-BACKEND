@@ -24,6 +24,7 @@ class UserBriefSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    avatar = serializers.SerializerMethodField()
     full_name = serializers.CharField(source="get_full_name", read_only=True)
     roles = serializers.SerializerMethodField()
 
@@ -70,6 +71,11 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_roles(self, obj) -> list[str]:
         return [ur.role.code for ur in obj.user_roles.all()]
+
+    def get_avatar(self, obj):
+        # Ссылка на файл, а не имя в хранилище: по имени интерфейс картинку
+        # показать не может. ?v= меняется вместе с файлом и сбрасывает кэш.
+        return f"/api/v1/users/{obj.id}/avatar/?v={obj.avatar.name}" if obj.avatar else None
 
 
 class MeSerializer(UserSerializer):
