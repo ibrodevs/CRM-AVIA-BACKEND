@@ -25,6 +25,12 @@ SERVICE_KIND_LABELS = {
     "rail": "ЖД",
     "hotel": "Гостиница",
     "transfer": "Трансфер",
+    "bus": "Автобус",
+    "tour": "Тур",
+    "visa": "Виза",
+    "insurance": "Страховка",
+    "aeroexpress": "Аэроэкспресс",
+    "lounge": "Бизнес-зал",
     "other": "Прочее",
 }
 RU_MONTHS = {
