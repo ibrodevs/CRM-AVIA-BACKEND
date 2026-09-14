@@ -103,6 +103,59 @@ _IT_CLOSED_FIELDS = _IT_FARE_FIELDS
 _FARE_CURRENCIES = ("RUB", "РУБ.", "РУБ", "EUR", "USD", "KGS", "KZT", "CNY", "₽", "$", "€")
 
 
+def _alias_owner_length(context: str) -> int:
+    """Длина самой точной подписи бланка, встреченной в строке.
+
+    Подписи пересекаются как подстроки: «ТАРИФ» входит в «ЭКВИВ. ТАРИФА»,
+    а «СБОР» — в «СБОР/TAX/FEE/CHARGE». Из-за этого правка одного поля
+    переписывала соседнюю строку, которая менять не должна была, и на бланке
+    оказывались две суммы одна поверх другой. Строку определяет самая длинная
+    (то есть самая конкретная) подпись, которая в ней встретилась.
+    """
+
+    upper = context.upper()
+    best = 0
+    for _key, aliases in (*_FINANCIAL_FIELDS, *_BREAKDOWNS):
+        for alias in aliases:
+            if alias and alias.upper() in upper and len(alias) > best:
+                best = len(alias)
+    return best
+
+
+def _target_owns_context(target, context: str) -> bool:
+    """Можно ли править сумму в этой строке под подписью этого поля.
+
+    Поле владеет строкой, если его собственная подпись и есть самая точная
+    в ней. Поля-синонимы (`fare` и `publishedFare` — одна и та же графа
+    «Тариф/Fare») друг друга не блокируют: у более конкретного поля набор
+    подписей включает подписи общего.
+    """
+
+    if not target.aliases:
+        return True
+    upper = context.upper()
+    own = max(
+        (len(alias) for alias in target.aliases if alias and alias.upper() in upper),
+        default=0,
+    )
+    if not own:
+        return False
+    owner = _alias_owner_length(context)
+    if own >= owner:
+        return True
+    own_aliases = {alias.upper() for alias in target.aliases if alias}
+    for _key, aliases in (*_FINANCIAL_FIELDS, *_BREAKDOWNS):
+        upper_aliases = {alias.upper() for alias in aliases if alias}
+        matched = max(
+            (len(alias) for alias in aliases if alias and alias.upper() in upper),
+            default=0,
+        )
+        # Владелец строки включает в себя это поле — значит графа та же.
+        if matched == owner and own_aliases <= upper_aliases:
+            return True
+    return False
+
+
 def _decimal(value) -> Decimal | None:
     if value in (None, ""):
         return None

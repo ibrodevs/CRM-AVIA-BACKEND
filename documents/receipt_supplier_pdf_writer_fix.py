@@ -370,6 +370,16 @@ def _is_financial_alias_line(target, line_text: str) -> bool:
     return True
 
 
+def _on_alias_row(box, alias_line) -> bool:
+    """Стоит ли сумма на той же строке бланка, что и её подпись."""
+
+    line_y0, line_y1 = alias_line["bbox"][1], alias_line["bbox"][3]
+    overlap = min(box["y1"], line_y1) - max(box["y0"], line_y0)
+    box_height = max(box["y1"] - box["y0"], 0.01)
+    line_height = max(line_y1 - line_y0, 0.01)
+    return overlap >= 0.5 * min(box_height, line_height)
+
+
 def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
     """Visually replace amounts when a supplier's font cannot be re-encoded.
 
@@ -437,6 +447,11 @@ def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tu
                 line for line in lines
                 if _is_financial_alias_line(target, line["text"])
                 and any(_token(alias) and _token(alias) in _token(line["text"]) for alias in target.aliases)
+                # Подписи граф пересекаются как подстроки, поэтому строку
+                # получает поле с самой точной подписью: иначе правка тарифа
+                # переписывала и строку «Эквив. тарифа», а на бланке оказывались
+                # две суммы одна поверх другой.
+                and supplier_pdf._target_owns_context(target, line["text"])
             ]
             selected = []
             for alias_line in alias_lines:
@@ -448,7 +463,10 @@ def _patch_supplier_pdf_overlay(content: bytes, before: dict, after: dict) -> tu
                         abs(box["x0"] - alias_line["bbox"][2]),
                     ),
                 )
-                if nearby and abs(((nearby[0]["y0"] + nearby[0]["y1"]) / 2) - alias_y) <= 35:
+                # Сумма должна стоять на строке своей подписи. Прежний допуск в
+                # 35 пунктов — это пять строк такого бланка: подпись забирала
+                # число из чужой графы.
+                if nearby and _on_alias_row(nearby[0], alias_line):
                     for box in _overlapping_amount_boxes(nearby[0], nearby):
                         selected.append({
                             **box,
