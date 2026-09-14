@@ -11,6 +11,7 @@ from common.audit import audit
 from common.errors import ApiError
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
+from documents.delivery import queue_document_send
 from documents.models import (
     Document,
     DocumentTemplate,
@@ -189,19 +190,67 @@ class DocumentSendView(APIView):
         if document.current_version == 0:
             raise ApiError(code="NO_VERSION", message="Нет файла для отправки", status_code=409)
         channel = str(request.data.get("channel", "email"))
+        queued = queue_document_send(
+            document,
+            channel=channel,
+            recipient=str(request.data.get("recipient", "")),
+            requested_by=request.user,
+        )
         emit_event(
             "order.updated",
             document.order or document,
-            payload={"action": "document_sent", "document": str(document.id), "channel": channel},
+            payload={
+                "action": "document_sent",
+                "document": str(document.id),
+                "channel": channel,
+                "recipient": queued["recipient"],
+                "channel_configured": queued["channel_configured"],
+            },
         )
+        # В аудите фиксируем именно постановку в очередь. Отметка «отправлено»
+        # раньше появлялась независимо от того, ушло ли что-то наружу, и на такой
+        # след нельзя было опираться при разборе претензий.
         audit(
-            "documents.sent",
+            "documents.send_queued",
             actor=request.user,
             resource=document,
             request=request,
-            after={"channel": channel},
+            after={
+                "channel": channel,
+                "recipient": queued["recipient"],
+                "channel_configured": queued["channel_configured"],
+            },
         )
-        return Response({"status": "queued", "channel": channel})
+        return Response(queued)
+
+
+class DocumentDeliveriesView(APIView):
+    """Состояние отправок документа: ушло ли клиенту и почему нет."""
+
+    permission_classes = [require("documents.view")]
+
+    def get(self, request, document_id):
+        from common.models import OutboundDelivery
+
+        document = get_document_or_404(request.user, document_id)
+        deliveries = OutboundDelivery.all_objects.filter(
+            tenant_id=document.tenant_id, resource_type="Document", resource_id=str(document.id)
+        ).order_by("-created_at")[:50]
+        return Response(
+            [
+                {
+                    "id": str(delivery.id),
+                    "channel": delivery.channel,
+                    "recipient": delivery.recipient,
+                    "state": delivery.state,
+                    "attempts": delivery.attempts,
+                    "error": delivery.error,
+                    "sent_at": delivery.sent_at,
+                    "created_at": delivery.created_at,
+                }
+                for delivery in deliveries
+            ]
+        )
 
 
 class DocumentDownloadView(APIView):
@@ -342,9 +391,11 @@ class DocumentReceiptUpdateView(APIView):
 
         if not save_as_draft and document.order is not None and document.service is None:
             import datetime
+
             from django.utils.dateparse import parse_date, parse_datetime
-            from services.models import OrderService, ServicePassenger
+
             from common.money import quantize
+            from services.models import OrderService, ServicePassenger
 
             service_type = str(verified.get("service_type") or (document.metadata or {}).get("receipt_import", {}).get("service_type") or document.kind or "avia")
             kind_map = {

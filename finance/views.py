@@ -15,6 +15,11 @@ from common.idempotency import idempotent_command
 from common.money import money_dict
 from common.pagination import DefaultPagination
 from finance import services as finance_service
+from finance.exports import (
+    build_accounting_workbook,
+    reconciliation_text,
+    resolve_counterpart_email,
+)
 from finance.models import (
     FinancialAccount,
     FinancialObligation,
@@ -251,8 +256,18 @@ class FinanceDocumentView(APIView):
             request=request,
             after={"kind": kind, "counterpart": counterpart},
         )
-        if kind in {"accounting_export", "reconciliation_send"}:
-            return Response({"status": "queued", "kind": kind, "counterpart": counterpart})
+        if kind == "accounting_export":
+            # Выгрузка — это файл, а не обещание. Отдаём готовый XLSX.
+            content = build_accounting_workbook(counterpart, payload)
+            response = HttpResponse(
+                content,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            response["Content-Disposition"] = 'attachment; filename="accounting-export.xlsx"'
+            return response
+
+        if kind == "reconciliation_send":
+            return Response(self._queue_reconciliation(request, counterpart, payload))
 
         titles = {"reconciliation": "Акт сверки", "invoice": "Счёт", "upd": "УПД"}
         lines = [
@@ -273,6 +288,53 @@ class FinanceDocumentView(APIView):
         response = HttpResponse("\ufeff" + "\n".join(lines), content_type="text/plain; charset=utf-8")
         response["Content-Disposition"] = f'attachment; filename="finance-{kind}.txt"'
         return response
+
+    def _queue_reconciliation(self, request, counterpart: str, payload: dict) -> dict:
+        """Ставит акт сверки в очередь отправки контрагенту и сообщает,
+        настроен ли канал: молча отвечать «queued» нельзя."""
+        from common.models import OutboundDelivery
+        from common.transports import is_configured, not_configured_reason
+
+        channel = str(payload.get("channel", "email"))
+        recipient = resolve_counterpart_email(request.user.tenant_id, payload)
+        text = reconciliation_text(counterpart, payload)
+        delivery = OutboundDelivery.objects.create(
+            tenant_id=request.user.tenant_id,
+            resource_type="Reconciliation",
+            resource_id=str(payload.get("company") or payload.get("supplier") or ""),
+            purpose="reconciliation",
+            channel=channel,
+            recipient=recipient,
+            subject=f"Акт сверки: {counterpart}"[:255],
+            body=text[:4000],
+            payload={
+                "inline_attachment": {
+                    "filename": "reconciliation.txt",
+                    "text": text,
+                    "content_type": "text/plain; charset=utf-8",
+                },
+                "counterpart": counterpart,
+            },
+            requested_by=request.user,
+            created_by=request.user,
+        )
+        configured = is_configured(channel)
+        if not recipient:
+            detail = "Не удалось определить адрес контрагента — укажите e-mail в карточке или в запросе"
+        elif configured:
+            detail = "Акт сверки поставлен в очередь отправки"
+        else:
+            detail = not_configured_reason(channel)
+        return {
+            "status": "queued",
+            "kind": "reconciliation_send",
+            "counterpart": counterpart,
+            "channel": channel,
+            "recipient": recipient,
+            "delivery": str(delivery.id),
+            "channel_configured": configured,
+            "detail": detail,
+        }
 
 
 class AccountListView(APIView):

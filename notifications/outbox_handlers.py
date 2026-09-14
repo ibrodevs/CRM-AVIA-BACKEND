@@ -6,19 +6,8 @@ from django.utils import timezone
 from common.models import OutboxEvent
 from common.outbox_processors import outbox_processor
 from common.scheduled import scheduled_task
+from notifications.messages import render_body, render_title
 from notifications.models import DeadlineThreshold, Notification, NotificationDelivery, NotificationRule
-
-_TITLES = {
-    "order.updated": "Обновление заказа",
-    "booking.updated": "Обновление бронирования",
-    "ticketing.updated": "Обновление выписки",
-    "search.completed": "Поиск завершён",
-    "search.failed": "Поиск не удался",
-    "chat.mention": "Вас упомянули в чате",
-    "chat.message.created": "Новое сообщение",
-    "notification.created": "Уведомление",
-}
-
 
 _KIND_LABELS = {"avia": "Авиа", "rail": "ЖД", "hotel": "Гостиницы", "transfer": "Трансферы", "visa": "Визы", "insurance": "Страхование"}
 _ACTION_LABELS = {"book": "Бронирование", "manual_booked": "Бронирование", "issue": "Выписка", "manual_issued": "Выписка", "cancel": "Отмена", "exchange": "Обмен", "refund": "Возврат", "cancellation": "Отмена", "document_generated": "Корректировка документов", "document_sent": "Отправка документов клиенту"}
@@ -87,8 +76,8 @@ def create_notifications(event: OutboxEvent) -> None:
                 priority=rule.priority,
                 source=event.event_type.split(".")[0],
                 event_type=event.event_type,
-                title=_TITLES.get(event.event_type, rule.name),
-                body=str(event.payload)[:500],
+                title=render_title(event, rule.name),
+                body=render_body(event),
                 resource_type=event.resource_type,
                 resource_id=event.resource_id,
             )

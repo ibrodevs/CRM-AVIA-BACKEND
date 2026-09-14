@@ -24,4 +24,10 @@ urlpatterns = [
         name="notification-dismiss-read",
     ),
     path("notification-rules/", v.NotificationRulesView.as_view(), name="notification-rules"),
+    path("notification-channels/", v.NotificationChannelsView.as_view(), name="notification-channels"),
+    path(
+        "notification-deliveries/",
+        v.NotificationDeliveryLogView.as_view(),
+        name="notification-deliveries",
+    ),
 ]

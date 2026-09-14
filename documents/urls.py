@@ -18,6 +18,11 @@ urlpatterns = [
     path("documents/<uuid:document_id>/void/", v.DocumentVoidView.as_view(), name="document-void"),
     path("documents/<uuid:document_id>/send/", v.DocumentSendView.as_view(), name="document-send"),
     path(
+        "documents/<uuid:document_id>/deliveries/",
+        v.DocumentDeliveriesView.as_view(),
+        name="document-deliveries",
+    ),
+    path(
         "documents/<uuid:document_id>/download/", v.DocumentDownloadView.as_view(), name="document-download"
     ),
     path(

@@ -1,11 +1,15 @@
 from datetime import timedelta
 
 from django.db.models import Count, Q, Sum
+from django.http import HttpResponse
 from django.utils import timezone
+from rest_framework import status as http
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import require
+from common.audit import audit
+from common.errors import ApiError
 from common.money import money_dict
 
 
@@ -225,3 +229,97 @@ class DashboardView(APIView):
                 "recent_activity": recent_activity,
             }
         )
+
+
+class ReportSummaryView(APIView):
+    """Сводный отчёт по услугам с группировкой и выгрузкой.
+
+    `group_by`: period | operator | supplier | kind | client.
+    `format`: json (по умолчанию) | xlsx | csv.
+    """
+
+    permission_classes = [require("finance.view")]
+
+    def get(self, request):
+        from reports.analytics import build_report
+
+        report = build_report(request.user, request.query_params)
+        export_format = request.query_params.get("format", "json")
+        if export_format == "json":
+            return Response(report)
+
+        from accounts.permissions import has_permission
+
+        if not has_permission(request.user, "finance.export"):
+            raise ApiError(
+                code="PERMISSION_DENIED",
+                message="Требуется право «Экспорт финансовых данных»",
+                status_code=403,
+            )
+        audit(
+            "reports.exported",
+            actor=request.user,
+            resource=request.user.tenant,
+            request=request,
+            after={"group_by": report["group_by"], "format": export_format},
+        )
+        from reports.export import to_csv, to_xlsx
+
+        if export_format == "xlsx":
+            response = HttpResponse(
+                to_xlsx(report),
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            response["Content-Disposition"] = f'attachment; filename="report-{report["group_by"]}.xlsx"'
+            return response
+        if export_format == "csv":
+            response = HttpResponse(to_csv(report), content_type="text/csv; charset=utf-8")
+            response["Content-Disposition"] = f'attachment; filename="report-{report["group_by"]}.csv"'
+            return response
+        raise ApiError(code="VALIDATION_ERROR", message="format: json, xlsx или csv", status_code=400)
+
+
+class SavedReportsView(APIView):
+    """Сохранённые параметры отчётов пользователя.
+
+    Хранятся в существующих настройках рабочего пространства, отдельной таблицы
+    для этого не нужно.
+    """
+
+    permission_classes = [require("finance.view")]
+    NAMESPACE = "reports.saved"
+
+    def _setting(self, request):
+        from common.models import WorkspaceSetting
+
+        setting, _ = WorkspaceSetting.objects.get_or_create(
+            tenant_id=request.user.tenant_id,
+            namespace=self.NAMESPACE,
+            owner=request.user,
+            defaults={"value": {"items": []}, "created_by": request.user},
+        )
+        return setting
+
+    def get(self, request):
+        return Response({"results": self._setting(request).value.get("items", [])})
+
+    def post(self, request):
+        name = str(request.data.get("name", "")).strip()
+        if not name:
+            raise ApiError(code="VALIDATION_ERROR", message="name обязателен", status_code=400)
+        setting = self._setting(request)
+        items = [item for item in setting.value.get("items", []) if item.get("name") != name]
+        items.append({"name": name, "params": request.data.get("params") or {}})
+        setting.value = {"items": items}
+        setting.updated_by = request.user
+        setting.save(update_fields=["value", "updated_by", "updated_at"])
+        return Response({"results": items}, status=http.HTTP_201_CREATED)
+
+    def delete(self, request):
+        name = str(request.query_params.get("name", "")).strip()
+        setting = self._setting(request)
+        items = [item for item in setting.value.get("items", []) if item.get("name") != name]
+        setting.value = {"items": items}
+        setting.updated_by = request.user
+        setting.save(update_fields=["value", "updated_by", "updated_at"])
+        return Response({"results": items})

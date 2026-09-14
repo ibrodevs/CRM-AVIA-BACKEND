@@ -10,14 +10,30 @@ from accounts.permissions import require
 from common.audit import audit
 from common.errors import ApiError
 from common.pagination import DefaultPagination
-from notifications.models import Notification, NotificationRule
+from common.transports import channel_status
+from notifications.models import Notification, NotificationDelivery, NotificationRule
 
 
 class NotificationSerializer(serializers.ModelSerializer):
     responsible_name = serializers.SerializerMethodField()
+    deliveries = serializers.SerializerMethodField()
 
     def get_responsible_name(self, obj):
         return obj.user.get_full_name() or obj.user.email
+
+    def get_deliveries(self, obj) -> list:
+        """Состояние доставки по каналам: интерфейс не должен утверждать
+        «отправлено», если письмо не ушло или канал не настроен."""
+        return [
+            {
+                "channel": delivery.channel,
+                "state": delivery.state,
+                "attempts": delivery.attempts,
+                "sent_at": delivery.sent_at,
+                "error": delivery.error,
+            }
+            for delivery in obj.deliveries.all()
+        ]
 
     class Meta:
         model = Notification
@@ -36,6 +52,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "dismissed_at",
             "created_at",
             "responsible_name",
+            "deliveries",
         ]
 
 
@@ -47,7 +64,7 @@ class NotificationListView(GenericAPIView):
     pagination_class = DefaultPagination
 
     def get(self, request):
-        qs = _my_notifications(request).filter(dismissed_at__isnull=True).select_related("user")
+        qs = _my_notifications(request).filter(dismissed_at__isnull=True).select_related("user").prefetch_related("deliveries")
         params = request.query_params
         if params.get("unread") in ("true", "1"):
             qs = qs.filter(read_at__isnull=True)
@@ -169,3 +186,64 @@ class NotificationRulesView(APIView):
                 )
         audit("notifications.preferences_saved", request=request, resource=request.user, after={"rules": rules})
         return Response({"rules": rules})
+
+
+class NotificationChannelsView(APIView):
+    """Какие каналы доставки реально настроены на этом стенде.
+
+    Переключатели каналов в профиле и настройках сохраняются независимо от того,
+    есть ли у канала реквизиты. Интерфейс берёт отсюда признак `configured`,
+    чтобы показать «канал не настроен» вместо молчаливого обещания доставки.
+    """
+
+    def get(self, request):  # noqa: ARG002
+        statuses = channel_status()
+        return Response(
+            {
+                "channels": [
+                    {"channel": channel, **status} for channel, status in statuses.items()
+                ],
+                "configured": [c for c, status in statuses.items() if status["configured"]],
+                "unconfigured": [
+                    c for c, status in statuses.items() if not status["configured"]
+                ],
+            }
+        )
+
+
+class NotificationDeliveryLogView(GenericAPIView):
+    """Журнал доставки: что ушло, что не ушло и почему."""
+
+    pagination_class = DefaultPagination
+
+    def get(self, request):
+        qs = NotificationDelivery.objects.filter(
+            notification__tenant_id=request.user.tenant_id
+        ).select_related("notification", "notification__user")
+        from accounts.permissions import has_permission
+
+        if not has_permission(request.user, "users.manage"):
+            qs = qs.filter(notification__user=request.user)
+        if state := request.query_params.get("state"):
+            qs = qs.filter(state=state)
+        if channel := request.query_params.get("channel"):
+            qs = qs.filter(channel=channel)
+        page = self.paginate_queryset(qs.order_by("-id"))
+        return self.get_paginated_response(
+            [
+                {
+                    "id": delivery.id,
+                    "notification": delivery.notification_id,
+                    "title": delivery.notification.title,
+                    "recipient_name": delivery.notification.user.get_full_name()
+                    or delivery.notification.user.email,
+                    "channel": delivery.channel,
+                    "state": delivery.state,
+                    "attempts": delivery.attempts,
+                    "error": delivery.error,
+                    "sent_at": delivery.sent_at,
+                    "created_at": delivery.notification.created_at,
+                }
+                for delivery in page
+            ]
+        )

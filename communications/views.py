@@ -18,6 +18,7 @@ from common.errors import ApiError
 from common.models import AuditEvent
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
+from common.transports import is_configured, not_configured_reason
 from communications.models import (
     ChatThread,
     Message,
@@ -249,12 +250,17 @@ class ThreadSendView(APIView):
                 created_by=request.user,
             )
 
+            delivery = None
             if thread.type == "client" and thread.external_channel and not internal_note:
-                OutboundMessageDelivery.objects.create(
+                delivery = OutboundMessageDelivery.objects.create(
                     message=message,
                     channel=thread.external_channel,
                     recipient=thread.external_account,
                 )
+                # Пока очередь не разобрана, сообщение не считается доставленным:
+                # состояние «отправлено» проставит воркер после реальной отправки.
+                message.delivery_state = Message.DeliveryState.QUEUED
+                message.save(update_fields=["delivery_state"])
             thread.updated_by = request.user
             thread.save(update_fields=["updated_at", "updated_by"])
             emit_event(
@@ -265,7 +271,19 @@ class ThreadSendView(APIView):
 
             for mention in _extract_mentions(body):
                 emit_event("chat.mention", message, payload={"thread_id": str(thread.id), "mention": mention})
-        return Response(MessageSerializer(message).data, status=http.HTTP_201_CREATED)
+        payload = MessageSerializer(message).data
+        if delivery is not None:
+            configured = is_configured(thread.external_channel)
+            payload["delivery"] = {
+                "channel": thread.external_channel,
+                "recipient": delivery.recipient,
+                "state": delivery.state,
+                "channel_configured": configured,
+                "detail": "Поставлено в очередь отправки"
+                if configured
+                else not_configured_reason(thread.external_channel),
+            }
+        return Response(payload, status=http.HTTP_201_CREATED)
 
 
 class ThreadPinView(APIView):

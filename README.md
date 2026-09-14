@@ -100,6 +100,30 @@ uv run python manage.py run_scheduled_jobs
 
 В production эту команду необходимо запускать через cron или Kubernetes CronJob каждую минуту.
 
+### Доставка во внешние каналы
+
+`run_scheduled_jobs` разбирает три очереди доставки:
+
+| Задача | Очередь | Что отправляет |
+| --- | --- | --- |
+| `notifications.dispatch_deliveries` | `NotificationDelivery` | уведомления по правилам (e-mail, Telegram, SMS, WhatsApp, MAX) |
+| `communications.dispatch_outbound` | `OutboundMessageDelivery` | сообщения клиенту из чата |
+| `common.dispatch_outbound_deliveries` | `OutboundDelivery` | документы клиенту, акты сверки |
+
+Каналы настраиваются переменными окружения (см. `.env.example`). **Канал без
+реквизитов ничего не отправляет и не притворяется, что отправил:** запись
+переходит в состояние `skipped` с текстом требования, интерфейс показывает
+«канал не настроен». Проверить, что именно включено, можно запросом
+`GET /api/v1/notification-channels/`, а состояние доставки —
+`GET /api/v1/notification-deliveries/` и
+`GET /api/v1/documents/<id>/deliveries/`.
+
+Отдельную задачу можно запустить точечно:
+
+```bash
+uv run python manage.py run_scheduled_jobs --only notifications.dispatch_deliveries
+```
+
 ## Демо-данные
 
 После выполнения миграций можно создать тестовые данные:

@@ -202,6 +202,40 @@ ALLOW_MOCK_ADAPTER = env.bool("ALLOW_MOCK_ADAPTER", default=False)
 FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default="")
 
 
+# ——— Исходящие каналы доставки ———————————————————————————————————————————
+# Каждый канал включается наличием своих реквизитов. Пустое значение означает
+# «канал не настроен»: доставка помечается skipped, а интерфейс показывает это
+# оператору вместо слова «отправлено» (см. common/transports.py).
+EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = env("EMAIL_HOST", default="")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+EMAIL_USE_SSL = env.bool("EMAIL_USE_SSL", default=False)
+EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=20)
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="")
+
+TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default="")
+TELEGRAM_API_URL = env("TELEGRAM_API_URL", default="https://api.telegram.org")
+
+WHATSAPP_API_URL = env("WHATSAPP_API_URL", default="")
+WHATSAPP_API_TOKEN = env("WHATSAPP_API_TOKEN", default="")
+
+MAX_API_URL = env("MAX_API_URL", default="")
+MAX_API_TOKEN = env("MAX_API_TOKEN", default="")
+
+SMS_GATEWAY_URL = env("SMS_GATEWAY_URL", default="")
+SMS_GATEWAY_TOKEN = env("SMS_GATEWAY_TOKEN", default="")
+SMS_GATEWAY_SENDER = env("SMS_GATEWAY_SENDER", default="")
+
+# Подписи входящих webhook мессенджеров: "telegram=secret,whatsapp=secret".
+WEBHOOK_SECRETS = env.dict("WEBHOOK_SECRETS", default={})
+
+DELIVERY_MAX_ATTEMPTS = env.int("DELIVERY_MAX_ATTEMPTS", default=5)
+DELIVERY_BATCH_SIZE = env.int("DELIVERY_BATCH_SIZE", default=100)
+
+
 JOB_RUNNER = {
     "BATCH_SIZE": env.int("JOB_BATCH_SIZE", default=10),
     "HEARTBEAT_SECONDS": env.int("JOB_HEARTBEAT_SECONDS", default=30),

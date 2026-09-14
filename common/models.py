@@ -267,3 +267,47 @@ class WorkspaceAction(TenantModel):
             models.Index(fields=["tenant", "action", "-created_at"], name="common_work_tenant__d501e7_idx"),
             models.Index(fields=["tenant", "resource_type", "resource_id"], name="common_work_tenant__7c2f59_idx"),
         ]
+
+
+class OutboundDelivery(TenantModel):
+    """Очередь отправки клиенту всего, что не является уведомлением или
+    сообщением чата: документов, актов сверки, бухгалтерских выгрузок.
+
+    Уведомления и сообщения имеют собственные очереди (`NotificationDelivery`,
+    `OutboundMessageDelivery`); эта — для отправок, привязанных к произвольному
+    ресурсу. Состояния и обработчик у всех трёх общие (common/delivery.py).
+    """
+
+    class State(models.TextChoices):
+        QUEUED = "queued", "В очереди"
+        SENT = "sent", "Отправлено"
+        FAILED = "failed", "Ошибка"
+        SKIPPED = "skipped", "Канал не настроен"
+
+    resource_type = models.CharField(max_length=100)
+    resource_id = models.CharField(max_length=64, blank=True)
+    purpose = models.CharField(max_length=32, help_text="document | reconciliation | accounting_export")
+    channel = models.CharField(max_length=16)
+    recipient = models.CharField(max_length=255, blank=True)
+    subject = models.CharField(max_length=255, blank=True)
+    body = models.TextField(blank=True)
+    document = models.ForeignKey(
+        "documents.Document", null=True, blank=True, on_delete=models.CASCADE, related_name="deliveries"
+    )
+    payload = models.JSONField(default=dict, blank=True)
+    state = models.CharField(max_length=10, choices=State.choices, default=State.QUEUED)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    error = models.CharField(max_length=255, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    class Meta:
+        db_table = "common_outbound_delivery"
+        indexes = [
+            models.Index(fields=["tenant", "state"], name="idx_outbound_delivery_state"),
+            models.Index(
+                fields=["tenant", "resource_type", "resource_id"], name="idx_outbound_delivery_res"
+            ),
+        ]

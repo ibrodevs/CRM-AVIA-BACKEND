@@ -14,6 +14,11 @@ PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
 FIELD_ENCRYPTION_KEY = "3jJ0deI6M0y5d3G7Zbb8xxL4wXO2ldeYmyIQXjmdKF0="
 
+# Тесты не должны открывать SMTP-соединение: письма собираются в памяти.
+EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+EMAIL_HOST = "smtp.test.local"
+DEFAULT_FROM_EMAIL = "crm@test.local"
+
 
 REST_FRAMEWORK = {
     **REST_FRAMEWORK,  # noqa: F405
