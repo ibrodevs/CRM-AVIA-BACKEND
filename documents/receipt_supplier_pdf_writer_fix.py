@@ -641,6 +641,10 @@ def _replace_combined_text_all(
         and not any(alias.upper() in upper_context for alias in target.aliases)
     ):
         return 0
+    # Подписи граф вкладываются друг в друга («ТАРИФ» внутри «ЭКВИВ. ТАРИФА»),
+    # поэтому правка тарифа переписывала и соседнюю графу, которая не менялась.
+    if supplier_pdf._blocked_by_row_owner(target, combined.upper()):
+        return 0
 
     for variant in supplier_pdf._amount_variants(target.old):
         pattern = supplier_pdf._target_amount_pattern(variant, target)
@@ -873,6 +877,8 @@ def _replace_text_operand(
         and not any(alias.upper() in upper_context for alias in target.aliases)
     ):
         return None, 0
+    if supplier_pdf._blocked_by_row_owner(target, visible.upper()):
+        return None, 0
 
     raw = supplier_pdf._original_bytes(value)
     spans: list[tuple[int, int]] = []
@@ -1040,6 +1046,11 @@ def _replace_fragmented_text_all(
                 and not allow_unlabeled
                 and not any(alias.upper() in context for alias in target.aliases)
             ):
+                continue
+            # Строка бланка вокруг самой суммы: если она принадлежит другой
+            # графе, правку сюда переносить нельзя.
+            row = combined[max(0, match.start() - 60): match.end() + 20].upper()
+            if supplier_pdf._blocked_by_row_owner(target, row):
                 continue
             selected_matches.append((match.start(), match.end(), replacement))
         if selected_matches:

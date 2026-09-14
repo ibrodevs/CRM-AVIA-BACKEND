@@ -156,6 +156,22 @@ def _target_owns_context(target, context: str) -> bool:
     return False
 
 
+def _blocked_by_row_owner(target, text: str) -> bool:
+    """Принадлежит ли этот кусок текста другой графе бланка.
+
+    Проверяется только текст самого блока — одной строки бланка. Более широкий
+    контекст охватывает несколько граф сразу, и правило «строкой владеет самая
+    точная подпись» к нему неприменимо.
+    """
+
+    if not target.aliases or not text:
+        return False
+    if _alias_owner_length(text) == 0:
+        # Подписи в строке нет — решать нечего, работает обычная проверка.
+        return False
+    return not _target_owns_context(target, text)
+
+
 def _decimal(value) -> Decimal | None:
     if value in (None, ""):
         return None
