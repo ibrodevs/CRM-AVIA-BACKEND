@@ -232,6 +232,10 @@ SMS_GATEWAY_SENDER = env("SMS_GATEWAY_SENDER", default="")
 # Подписи входящих webhook мессенджеров: "telegram=secret,whatsapp=secret".
 WEBHOOK_SECRETS = env.dict("WEBHOOK_SECRETS", default={})
 
+# Токен внешнего триггера фоновой работы (/internal/worker-pass/).
+# Пусто = эндпоинт выключен и отвечает 404.
+WORKER_TRIGGER_TOKEN = env("WORKER_TRIGGER_TOKEN", default="")
+
 DELIVERY_MAX_ATTEMPTS = env.int("DELIVERY_MAX_ATTEMPTS", default=5)
 DELIVERY_BATCH_SIZE = env.int("DELIVERY_BATCH_SIZE", default=100)
 

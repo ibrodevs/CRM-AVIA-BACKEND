@@ -1,10 +1,12 @@
 import io
+
 import pytest
 from django.core.management import call_command
+
 from accounts.models import Role, User
-from tenancy.models import Organization
-from orders.models import Order
 from crm.models import ClientProfile, Company
+from orders.models import Order
+from tenancy.models import Organization
 
 
 @pytest.mark.django_db

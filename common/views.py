@@ -1,13 +1,18 @@
 import hashlib
+import hmac
+import logging
 import secrets
+import threading
 from datetime import timedelta
 
 from django.conf import settings
+from django.core.management import call_command
 from django.db import connection, transaction
 from django.db.models import Q
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
 from django.utils import timezone
-from django.views.decorators.http import require_GET
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET, require_http_methods
 from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -18,6 +23,8 @@ from common.errors import ApiError, EventCursorExpiredError
 from common.jobs import get_handler
 from common.models import BackgroundJob, OutboxEvent, WorkspaceAction, WorkspaceSetting
 from common.outbox import emit_event
+
+logger = logging.getLogger("travelhub.jobs")
 
 
 @require_GET
@@ -44,6 +51,47 @@ def health_ready(request):  # noqa: ARG001
         checks["job_runner"] = "stale" if stale else "ok"
 
     return JsonResponse({"status": "ok" if ok else "fail", "checks": checks}, status=200 if ok else 503)
+
+
+# ——— Внешний триггер фоновой работы ——————————————————————————————————————
+# На хостинге без постоянного воркера (PythonAnywhere) очереди некому разбирать:
+# консоль закрывается, а бесплатный планировщик даёт один запуск в сутки.
+# Этот эндпоинт позволяет дёргать проход внешним cron-сервисом раз в несколько
+# минут. Он выключен, пока не задан WORKER_TRIGGER_TOKEN, и защищён сравнением
+# токена в постоянное время.
+_worker_pass_lock = threading.Lock()
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def run_worker_pass(request):
+    token = getattr(settings, "WORKER_TRIGGER_TOKEN", "")
+    if not token:
+        raise Http404("Триггер выключен: не задан WORKER_TRIGGER_TOKEN")
+
+    provided = request.headers.get("X-Worker-Token") or request.GET.get("token", "")
+    if not hmac.compare_digest(provided, token):
+        return JsonResponse({"status": "forbidden"}, status=403)
+
+    # Параллельные вызовы не должны накладываться: на SQLite advisory lock,
+    # которым защищён run_scheduled_jobs, недоступен.
+    if not _worker_pass_lock.acquire(blocking=False):
+        return JsonResponse({"status": "busy"}, status=200)
+    try:
+        started = timezone.now()
+        call_command("run_worker_pass", skip_scheduled=bool(request.GET.get("skip_scheduled")))
+        return JsonResponse(
+            {
+                "status": "ok",
+                "started_at": started.isoformat(),
+                "duration_ms": int((timezone.now() - started).total_seconds() * 1000),
+            }
+        )
+    except Exception as exc:
+        logger.exception("worker pass trigger failed")
+        return JsonResponse({"status": "error", "error": str(exc)[:300]}, status=500)
+    finally:
+        _worker_pass_lock.release()
 
 
 class EventSerializer(serializers.ModelSerializer):

@@ -329,3 +329,38 @@ class TestReports:
         response = auth_client(admin_user).get("/api/v1/reports/summary/?group_by=operator&format=xlsx")
         assert response.status_code == 200
         assert response.content[:2] == b"PK"
+
+
+class TestWorkerTrigger:
+    """Внешний триггер фоновой работы для хостинга без постоянного воркера."""
+
+    def test_disabled_without_token(self, client):
+        assert client.get("/internal/worker-pass/").status_code == 404
+
+    @override_settings(WORKER_TRIGGER_TOKEN="s3cret-token")
+    def test_wrong_token_is_rejected(self, client):
+        assert client.get("/internal/worker-pass/?token=wrong").status_code == 403
+        assert client.get("/internal/worker-pass/").status_code == 403
+
+    @override_settings(WORKER_TRIGGER_TOKEN="s3cret-token")
+    def test_valid_token_runs_a_pass(self, client, tenant, operator_user):
+        from notifications.models import Notification, NotificationDelivery
+
+        notification = Notification.objects.create(
+            tenant=tenant, user=operator_user, title="Проверка", body="Тело"
+        )
+        delivery = NotificationDelivery.objects.create(notification=notification, channel="email")
+        mail.outbox.clear()
+
+        response = client.get("/internal/worker-pass/?token=s3cret-token")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+        delivery.refresh_from_db()
+        assert delivery.state == "sent"
+        assert len(mail.outbox) == 1
+
+    @override_settings(WORKER_TRIGGER_TOKEN="s3cret-token")
+    def test_header_token_also_works(self, client):
+        response = client.post("/internal/worker-pass/", HTTP_X_WORKER_TOKEN="s3cret-token")
+        assert response.status_code == 200

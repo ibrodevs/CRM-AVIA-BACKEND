@@ -1182,6 +1182,11 @@ def install_receipt_supplier_pdf_patch() -> None:
             disposition = "attachment" if request.query_params.get("disposition") == "attachment" else "inline"
             response["Content-Disposition"] = f'{disposition}; filename="{version.original_name or document.title}"'
             response["X-Content-Type-Options"] = "nosniff"
+            # Рабочая копия пересобирается при каждой правке стоимости и при
+            # закрытии тарифа на IT, а адрес у неё один и тот же. Без запрета
+            # кеширования браузер показывал бы прежний файл, и правка выглядела
+            # бы непримененной.
+            response["Cache-Control"] = "private, no-store, max-age=0"
             response["X-Supplier-PDF-Mode"] = "source" if version.version == source.version else "corrected"
             response["X-Supplier-Source-Version"] = str(source.version)
             response["X-Supplier-Display-Version"] = str(version.version)

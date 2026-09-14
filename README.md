@@ -124,6 +124,21 @@ uv run python manage.py run_scheduled_jobs
 uv run python manage.py run_scheduled_jobs --only notifications.dispatch_deliveries
 ```
 
+### Хостинг без постоянного воркера
+
+Там, где нельзя держать процесс `run_jobs` (например PythonAnywhere), всю
+фоновую работу выполняет одна завершающаяся команда:
+
+```bash
+python manage.py run_worker_pass                                  # один проход
+python manage.py run_worker_pass --loop --seconds 3300            # для always-on task
+```
+
+Её же можно вызвать по HTTP внешним cron-сервисом —
+`GET /internal/worker-pass/?token=...`. Эндпоинт выключен, пока не задан
+`WORKER_TRIGGER_TOKEN`. Подробности — в `PYTHONANYWHERE.md`, раздел
+«Фоновая работа».
+
 ## Демо-данные
 
 После выполнения миграций можно создать тестовые данные:
