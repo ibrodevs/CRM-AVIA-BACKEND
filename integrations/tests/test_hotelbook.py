@@ -662,6 +662,25 @@ def test_required_end_customer_comes_from_crm_order(admin_client, tenant, hb_sup
     )
 
 
+def test_missing_hotel_search_fails_without_offers_or_booking(admin_client, tenant, hb_supplier, gateway):
+    # Live HB rejects 31687 with ERR001#4; its dictionary entry is now trash.
+    gateway.failure = ("/hotel/gateway/search", (400, "ERR001#4"))
+    search = post(admin_client, "service-searches/", {"kind": "hotel", "criteria": criteria(31687)})
+    jobs()
+    status = admin_client.get(f"/api/v1/service-searches/{search['search_id']}/").json()
+    assert status["status"] == "failed"
+    run = status["provider_runs"][0]
+    assert run["provider_adapter"] == "hotelbook"
+    assert run["error_code"] == "SEARCH_CRITERIA_INVALID"
+    assert not ServiceOffer.objects.filter(session_id=search["search_id"]).exists()
+    assert not OrderService.objects.exists()
+    assert not BookingWorkflowItem.objects.exists()
+    assert not any(c[1].endswith(("/order/gateway/orders", "/hotel/gateway/book")) for c in gateway.calls)
+    error = get_adapter("hotelbook")._error(400, {"details": {"errorCode": "ERR001#4"}}, "search")
+    assert error.category == "validation" and not error.retry_safe
+    assert "не найдены" in str(error)
+
+
 def test_inactive_hotelbook_credentials_never_search_mock(admin_client, tenant, hb_supplier, gateway):
     SupplierCredential.objects.filter(supplier=hb_supplier).update(status="failed")
     search = post(admin_client, "service-searches/", {"kind": "hotel", "criteria": criteria()})

@@ -153,6 +153,12 @@ class HotelbookAdapter(ProviderAdapter):
         code = (response.get("details") or {}).get("errorCode", "") if isinstance(response, dict) else ""
         if status == 401 or code.startswith("ERR013"):
             normalized, category = "AUTH_ERROR", "auth"
+        elif operation == "search" and code == "ERR001#4":
+            return AdapterError(
+                "SEARCH_CRITERIA_INVALID",
+                "Hotelbook: отели с указанными идентификаторами не найдены (ERR001#4)",
+                category="validation",
+            )
         elif code in ("ERR006#2", "ERR006#3"):
             normalized, category = "PRICE_CHANGED", "price"
         elif code in ("ERR006#4", "ERR006#9"):

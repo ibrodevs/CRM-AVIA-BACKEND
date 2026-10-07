@@ -212,6 +212,11 @@ login → search → results → details/revalidate, даты 2026-10-21–2026-
 При первом details изменились штрафы отмены; повторный details стабилен.
 Полный live CRM UI/booking/cancel flow также выполнен 2026-10-07;
 результат и исправления описаны в [HOTELBOOK_LIVE_CASA.md](HOTELBOOK_LIVE_CASA.md).
+Остальные четыре тестовых ID проверены через CRM API/worker в тот же день:
+Hilton Cologne, Haus Mooren и Palazzo Victoria подтверждены и отменены (`CANCELED`).
+Поиск `31687` отклонён HB с `ERR001#4`; в живом справочнике этот ID относится
+к удалённому TULIP INN AMSTERDAM ART (`trash=true`). Бронь для него не создавалась.
+Подробности: [HOTELBOOK_LIVE_TEST_HOTELS.md](HOTELBOOK_LIVE_TEST_HOTELS.md).
 Дополнительные операции HB (изменение брони, платежи HB, финансовые документы,
 переписка и офлайн-бронирование) не входят в эту интеграцию.
 
