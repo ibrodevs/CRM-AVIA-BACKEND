@@ -385,5 +385,5 @@ def _booking_customer(order):
             "address": company.legal_address,
         }
     if order.client_person:
-        return {"type": "PRIVATE", "name": order.client_person.full_name}
+        return {"type": "PRIVATE"}
     return None

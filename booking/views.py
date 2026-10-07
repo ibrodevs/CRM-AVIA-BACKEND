@@ -212,11 +212,17 @@ class WorkflowInquiryView(APIView):
 
     def post(self, request, workflow_id):
         workflow = _get_workflow(request, workflow_id)
-        item = workflow.items.filter(
-            pk=request.data.get("item"), status__in=[BookingWorkflowItem.Status.UNKNOWN, BookingWorkflowItem.Status.BOOKED]
-        ).first()
-        if item is None:
-            raise ApiError(code="VALIDATION_ERROR", message="Нужен item в статусе unknown или booked", status_code=400)
+        item = workflow.items.select_related("service").filter(pk=request.data.get("item")).first()
+        allowed = {BookingWorkflowItem.Status.UNKNOWN, BookingWorkflowItem.Status.BOOKED}
+        if item is not None and item.service.kind == "hotel":
+            # A completed cancellation still needs a fresh supplier inquiry.
+            allowed.add(BookingWorkflowItem.Status.COMPENSATED)
+        if item is None or item.status not in allowed:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Нужен item в статусе unknown/booked или отменённая гостиница",
+                status_code=400,
+            )
         action = "book" if item.service.kind == "hotel" else "issue"
         if not has_permission(request.user, f"services.{action}") or not has_service_action(request.user, item.service.kind, action):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права проверки этой услуги", status_code=403)

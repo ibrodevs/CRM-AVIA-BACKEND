@@ -120,7 +120,7 @@ class Gateway:
             elif url.path.endswith("/order/gateway/orders") and request.method == "POST":
                 assert {"clientOrderId", "payForm", "contactInfo"} <= set(body)
                 if self.current.get("isEndCustomerNeeded"):
-                    assert body["customer"] == {"type": "PRIVATE", "name": "Иванов Пётр"}
+                    assert body["customer"] == {"type": "PRIVATE"}
                 assert body["payForm"] == "CASHLESS"
                 response = {"orderId": 4321}
             elif url.path.endswith("/hotel/gateway/book"):
@@ -323,6 +323,14 @@ def test_full_crm_flow(admin_client, tenant, hb_supplier, gateway, hotel_id):
     assert stored.status == "cancelled"
     assert stored.provider_snapshot["hotelbook_booking"]["items"][0]["itemId"] == ITEM_ID
     assert stored.supplier_cost == Decimal("120.25")
+    post(admin_client, f"booking-workflows/{workflow['id']}/status-inquiry/", {"item": item["id"]})
+    jobs()
+    stored.refresh_from_db()
+    assert stored.status == "cancelled"
+    cancelled_state = admin_client.get(f"/api/v1/booking-workflows/{workflow['id']}/status/").json()
+    assert cancelled_state["status"] == "cancelled"
+    assert cancelled_state["items"][0]["status"] == "compensated"
+    assert stored.provider_snapshot["hotelbook_booking"]["items"][0]["status"] == "CANCELED"
     paths = [r[1] for r in gateway.calls]
     assert paths.count("/api/v1/ru/hotel/gateway/book") == 1
     assert paths.count("/api/v1/ru/gateway/login") == 1
@@ -687,3 +695,16 @@ def test_unknown_booking_blocks_local_order_cancellation(
     assert exc.value.code == "PROVIDER_CANCEL_REQUIRED"
     order.refresh_from_db()
     assert order.status != "cancelled"
+
+
+def test_private_customer_omits_legal_company_fields():
+    from types import SimpleNamespace
+
+    from booking.job_handlers import _booking_customer
+
+    person = SimpleNamespace(full_name="LOCAL HOTELBOOKTEST")
+    assert _booking_customer(SimpleNamespace(client_person=person, client_company=None)) == {"type": "PRIVATE"}
+    company = SimpleNamespace(legal_name="Test Company", tax_id="1234567890", legal_address="Test address")
+    assert _booking_customer(SimpleNamespace(client_person=None, client_company=company)) == {
+        "type": "LEGAL", "name": "Test Company", "inn": "1234567890", "address": "Test address"
+    }
