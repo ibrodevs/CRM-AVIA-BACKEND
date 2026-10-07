@@ -663,9 +663,9 @@ def test_required_end_customer_comes_from_crm_order(admin_client, tenant, hb_sup
 
 
 def test_missing_hotel_search_fails_without_offers_or_booking(admin_client, tenant, hb_supplier, gateway):
-    # Live HB rejects 31687 with ERR001#4; its dictionary entry is now trash.
+    # A missing/deleted hotel must fail safely even if its ID is sandbox-allowlisted.
     gateway.failure = ("/hotel/gateway/search", (400, "ERR001#4"))
-    search = post(admin_client, "service-searches/", {"kind": "hotel", "criteria": criteria(31687)})
+    search = post(admin_client, "service-searches/", {"kind": "hotel", "criteria": criteria(131687)})
     jobs()
     status = admin_client.get(f"/api/v1/service-searches/{search['search_id']}/").json()
     assert status["status"] == "failed"

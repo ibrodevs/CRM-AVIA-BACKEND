@@ -7,7 +7,7 @@ from django.core.management.base import CommandError
 
 from integrations.adapters import AdapterError
 from integrations.hotelbook import HotelbookAdapter
-from integrations.tests.test_hotelbook import context, gateway, hb_supplier  # noqa: F401,F811
+from integrations.tests.test_hotelbook import context, gateway, hb_supplier, offer  # noqa: F401,F811
 from suppliers.models import Supplier, SupplierCredential
 
 pytestmark = pytest.mark.django_db
@@ -70,12 +70,19 @@ def test_db_credentials_take_priority_and_failure_does_not_use_env(tenant, hb_su
         adapter._config(context(tenant, hb_supplier))
 
 
-def test_local_diagnostic_is_read_only_and_rolls_back(tenant, local_env, gateway):  # noqa: F811
+@pytest.mark.parametrize("hotel_id", [1251539, 131687])
+def test_local_diagnostic_is_read_only_and_rolls_back(tenant, local_env, gateway, hotel_id):  # noqa: F811
+    gateway.current = offer(hotel_id)
     out = io.StringIO()
     supplier_count = Supplier.objects.count()
-    call_command("hotelbook_live_test", check_in="2027-03-10", check_out="2027-03-12", stdout=out)
+    call_command(
+        "hotelbook_live_test", hotel_id=hotel_id, check_in="2027-03-10", check_out="2027-03-12", stdout=out
+    )
     assert "login=OK" in out.getvalue()
     assert "results_count=1" in out.getvalue()
+    assert f"hotel_id={hotel_id}" in out.getvalue()
+    if hotel_id == 131687:
+        assert "hotel=Мастер-отель Первомайская" in out.getvalue()
     assert "booking NOT sent" in out.getvalue()
     assert "fixture-password" not in out.getvalue() and "fixture-login" not in out.getvalue()
     assert not any("/orders" in path or "/book" in path for _, path, *_ in gateway.calls)

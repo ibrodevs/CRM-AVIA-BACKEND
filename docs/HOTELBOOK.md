@@ -168,7 +168,7 @@ API действий. Задания асинхронные: между шага
 
 После успешного живого Casa Manzella повторите полный сценарий по отдельности:
 Hilton Cologne `1251542`, Haus Mooren `1251543`, Palazzo Victoria `1251563`,
-Мастер-отель Первомайская `31687`. Не объединяйте страны в один поиск:
+Мастер-отель Первомайская `131687` (исправленный тестовый ID). Не объединяйте страны в один поиск:
 HB запрещает hotels/cities из разных стран. Sandbox/test credentials ограничены этими пятью отелями.
 
 ## Ошибки и неопределённые результаты
@@ -217,6 +217,9 @@ Hilton Cologne, Haus Mooren и Palazzo Victoria подтверждены и от
 Поиск `31687` отклонён HB с `ERR001#4`; в живом справочнике этот ID относится
 к удалённому TULIP INN AMSTERDAM ART (`trash=true`). Бронь для него не создавалась.
 Подробности: [HOTELBOOK_LIVE_TEST_HOTELS.md](HOTELBOOK_LIVE_TEST_HOTELS.md).
+После исправления ID на `131687` Мастер-отель Первомайская прошёл read-only тест
+и полный CRM book/inquiry/cancel/inquiry flow: финальный HB `CANCELED`, CRM `cancelled`.
+Результат: [HOTELBOOK_LIVE_PERVOMAYSKAYA.md](HOTELBOOK_LIVE_PERVOMAYSKAYA.md).
 Дополнительные операции HB (изменение брони, платежи HB, финансовые документы,
 переписка и офлайн-бронирование) не входят в эту интеграцию.
 
