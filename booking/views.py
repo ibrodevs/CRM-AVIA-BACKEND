@@ -4,7 +4,7 @@ from rest_framework import status as http
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import require
+from accounts.permissions import has_permission, has_service_action, require
 from booking.models import BookingWorkflow, BookingWorkflowItem
 from booking.preflight import run_preflight
 from common.audit import audit
@@ -208,15 +208,18 @@ class WorkflowIssueView(APIView):
 
 
 class WorkflowInquiryView(APIView):
-    permission_classes = [require("services.issue")]
+    permission_classes = [require("services.issue", "services.book")]
 
     def post(self, request, workflow_id):
         workflow = _get_workflow(request, workflow_id)
         item = workflow.items.filter(
-            pk=request.data.get("item"), status=BookingWorkflowItem.Status.UNKNOWN
+            pk=request.data.get("item"), status__in=[BookingWorkflowItem.Status.UNKNOWN, BookingWorkflowItem.Status.BOOKED]
         ).first()
         if item is None:
-            raise ApiError(code="VALIDATION_ERROR", message="Нужен item в статусе unknown", status_code=400)
+            raise ApiError(code="VALIDATION_ERROR", message="Нужен item в статусе unknown или booked", status_code=400)
+        action = "book" if item.service.kind == "hotel" else "issue"
+        if not has_permission(request.user, f"services.{action}") or not has_service_action(request.user, item.service.kind, action):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права проверки этой услуги", status_code=403)
         job = enqueue("booking.status_inquiry", {"item_id": str(item.id)}, request=request)
         return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
 

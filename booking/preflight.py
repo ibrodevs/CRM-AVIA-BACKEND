@@ -91,7 +91,8 @@ def run_preflight(workflow, user) -> dict:
                     }
                 )
 
-    from integrations.adapters import AdapterContext, AdapterError, get_adapter
+    from integrations.adapters import AdapterContext, AdapterError, adapter_for_service
+    from services.revalidation import update_service
 
     for item in items:
         service = item.service
@@ -99,9 +100,23 @@ def run_preflight(workflow, user) -> dict:
         if service.source != "api" or not snapshot:
             continue
         try:
-            adapter = get_adapter("mock")
+            adapter = adapter_for_service(service)
             ctx = AdapterContext(tenant_id=workflow.tenant_id, supplier_id=service.supplier_id)
             result = adapter.revalidate(ctx, snapshot)
+            if result.get("terms_changed"):
+                warnings.append(
+                    {
+                        "code": "RATE_CHANGED",
+                        "message": "Изменились условия тарифа/отмены; требуется подтверждение",
+                        "conditions": (result.get("fare_rules") or {}).get("cancellation_rules", ""),
+                        "service_id": str(service.id),
+                    }
+                )
+            if result.get("snapshot"):
+                change = update_service(service, result)
+                if change:
+                    price_changes.append(change)
+                continue
             new_price = (result.get("price") or {}).get("amount")
             if new_price is not None and service.client_total is not None:
                 from decimal import Decimal
@@ -116,8 +131,13 @@ def run_preflight(workflow, user) -> dict:
                         }
                     )
         except AdapterError as exc:
-            warnings.append(
-                {"code": exc.code, "message": "Не удалось перепроверить цену", "service_id": str(service.id)}
+            target = blocking if snapshot.get("provider_adapter") == "hotelbook" else warnings
+            target.append(
+                {
+                    "code": exc.code,
+                    "message": "Не удалось перепроверить цену/доступность",
+                    "service_id": str(service.id),
+                }
             )
 
     for item in items:
@@ -162,7 +182,6 @@ def run_preflight(workflow, user) -> dict:
     workflow.preflight_result = result
     workflow.preflight_at = timezone.now()
     workflow.price_confirmation_required = bool(price_changes or warnings)
-    if not blocking:
-        workflow.status = "preflight_ok"
+    workflow.status = "draft" if blocking else "preflight_ok"
     workflow.save(update_fields=["preflight_result", "preflight_at", "price_confirmation_required", "status"])
     return result

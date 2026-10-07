@@ -18,7 +18,7 @@ from common.locking import check_version
 from common.money import MoneyField
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
-from integrations.adapters import AdapterContext, AdapterError, get_adapter
+from integrations.adapters import AdapterContext, AdapterError, adapter_for_service, get_adapter
 from orders.selectors import get_order_or_404
 from services.models import (
     SERVICE_TRANSITIONS,
@@ -320,9 +320,12 @@ class OfferRevalidateView(APIView):
         try:
             adapter = get_adapter(offer.provider_adapter or "mock")
             result = adapter.revalidate(ctx, offer.raw_snapshot or {})
+            from services.revalidation import update_offer
+
+            update_offer(offer, result)
         except AdapterError as exc:
             raise ApiError(code=exc.code, message=str(exc), status_code=502) from None
-        return Response({"offer": ServiceOfferSerializer(offer).data, "revalidation": result})
+        return Response({"offer": ServiceOfferSerializer(offer).data, "revalidation": {k: v for k, v in result.items() if k != "snapshot"}})
 
 
 class OfferFareRulesView(APIView):
@@ -385,10 +388,11 @@ class OrderServicesView(GenericAPIView):
                     supplier=offer.supplier,
                     source=OrderService.Source.MANUAL if offer.is_manual else OrderService.Source.API,
                     currency=offer.price_currency,
-                    supplier_cost=offer.price_amount,
+                    supplier_cost=(offer.raw_snapshot or {}).get("price", {}).get("amount", offer.price_amount),
                     client_total=offer.price_amount,
                     provider_snapshot=offer.raw_snapshot,
                     policy_compliance=offer.compliance,
+                    cancellation_rules=offer.fare,
                     created_by=request.user,
                 )
             else:
@@ -570,6 +574,7 @@ class ServiceManualBookView(APIView):
                     status_code=403,
                 )
             check_version(service, request.data.get("version"))
+            _require_provider_workflow(service, OrderService.Status.BOOKED)
             if service.status not in (OrderService.Status.PROPOSED, OrderService.Status.APPROVAL):
                 raise TransitionForbiddenError(
                     code="SERVICE_STATUS_TRANSITION_FORBIDDEN",
@@ -657,6 +662,7 @@ class ServiceManualIssueView(APIView):
                     status_code=403,
                 )
             check_version(service, request.data.get("version"))
+            _require_provider_workflow(service, OrderService.Status.ISSUED)
             if service.status not in (OrderService.Status.BOOKED, OrderService.Status.CONFIRMED):
                 raise TransitionForbiddenError(
                     code="SERVICE_STATUS_TRANSITION_FORBIDDEN",
@@ -725,6 +731,7 @@ class ServiceTransitionView(APIView):
                     message=f"Переход из {service.status} в {target} запрещён",
                     details={"current_status": service.status, "allowed": sorted(allowed)},
                 )
+            _require_provider_workflow(service, target)
             action_map = {
                 "booked": "book",
                 "issued": "issue",
@@ -810,6 +817,7 @@ class ServiceActionView(APIView):
                     message="Выписка API-услуги выполняется через booking workflow",
                     status_code=409,
                 )
+            _require_provider_workflow(service, self.target_status)
             old_status = service.status
             service.status = self.target_status
             service.version += 1
@@ -848,6 +856,22 @@ class ServiceCancelView(ServiceActionView):
     target_status = OrderService.Status.CANCELLED
     action_name = "cancel"
 
+    @idempotent_command("services.provider_cancel", required=False)
+    def post(self, request, service_id):
+        service = _get_service(request, service_id)
+        if (service.provider_snapshot or {}).get("provider_adapter") != "hotelbook":
+            return super().post(request, service_id)
+        if not has_permission(request.user, "services.cancel") or not has_service_action(request.user, service.kind, "cancel"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права отмены гостиницы", status_code=403)
+        check_version(service, request.data.get("version"))
+        from booking.models import BookingWorkflowItem
+
+        item = service.workflow_items.filter(status=BookingWorkflowItem.Status.BOOKED).select_related("workflow").first()
+        if item is None:
+            raise ApiError(code="BOOKING_STATUS_REQUIRED", message="Сначала проверьте статус брони через booking workflow", status_code=409)
+        job = enqueue("booking.compensate", {"workflow_id": str(item.workflow_id), "service_ids": [str(service.id)]}, request=request)
+        return Response({"job_id": str(job.id), "workflow_id": str(item.workflow_id)}, status=http.HTTP_202_ACCEPTED)
+
 
 class ServiceRevalidateView(APIView):
     permission_classes = [require("services.search")]
@@ -855,13 +879,15 @@ class ServiceRevalidateView(APIView):
     def post(self, request, service_id):
         service = _get_service(request, service_id)
         snapshot = service.provider_snapshot or {}
-        adapter_name = snapshot.get("provider_adapter") or "mock"
         try:
-            adapter = get_adapter(adapter_name)
+            adapter = adapter_for_service(service)
             result = adapter.revalidate(AdapterContext(tenant_id=request.user.tenant_id, supplier_id=service.supplier_id), snapshot)
+            from services.revalidation import update_service
+
+            update_service(service, result)
         except AdapterError as exc:
             raise ApiError(code=exc.code, message=str(exc), status_code=502) from None
-        return Response({"service": OrderServiceSerializer(service).data, "revalidation": result})
+        return Response({"service": OrderServiceSerializer(service).data, "revalidation": {k: v for k, v in result.items() if k != "snapshot"}})
 
 
 class ServiceExtrasView(APIView):
@@ -969,3 +995,8 @@ class ManualOfferCreateView(APIView):
         )
         audit("services.manual_offer_created", actor=request.user, resource=offer, request=request)
         return Response(ServiceOfferSerializer(offer).data, status=http.HTTP_201_CREATED)
+
+
+def _require_provider_workflow(service, target):
+    if service.source == "api" and (service.provider_snapshot or {}).get("provider_adapter") == "hotelbook" and target in ("booked", "confirmed", "issued", "cancelled"):
+        raise ApiError(code="BOOKING_WORKFLOW_REQUIRED", message="API-бронь Hotelbook изменяется через booking workflow", status_code=409)

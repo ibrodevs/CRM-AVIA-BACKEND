@@ -20,6 +20,19 @@ def cancel_order_job(job: BackgroundJob) -> dict:
     with transaction.atomic():
         order = Order.objects.select_for_update().get(pk=payload["order_id"])
         active = order.services.filter(status__in=["booked", "confirmed", "issued"])
+        if any(
+            (service.provider_snapshot or {}).get("provider_adapter") == "hotelbook"
+            and (service.provider_snapshot or {}).get("hotelbook_booking", {}).get("state")
+            in ("creating_order", "booking", "unknown", "complete", "cancelling")
+            for service in order.services.exclude(status="cancelled")
+        ):
+            from common.errors import ApiError
+
+            raise ApiError(
+                code="PROVIDER_CANCEL_REQUIRED",
+                message="Сначала отмените Hotelbook через booking workflow",
+                status_code=409,
+            )
         for service in active:
             service.status = OrderService.Status.CANCELLED
             service.updated_by = user

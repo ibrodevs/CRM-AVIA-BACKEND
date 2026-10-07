@@ -51,6 +51,10 @@ class ProviderAdapter:
     def search(self, ctx: AdapterContext, kind: str, criteria: dict) -> list[dict]:
         raise NotImplementedError
 
+    def iter_search(self, ctx: AdapterContext, kind: str, criteria: dict):
+        """Stream normalized offers; existing adapters can still return a list."""
+        yield from self.search(ctx, kind, criteria)
+
     def revalidate(self, ctx: AdapterContext, offer_snapshot: dict) -> dict:
         raise NotImplementedError
 
@@ -334,6 +338,10 @@ def register_adapter(adapter: ProviderAdapter) -> None:
 
 
 def get_adapter(key: str) -> ProviderAdapter:
+    if key == "hotelbook" and key not in _ADAPTERS:
+        from integrations.hotelbook import HotelbookAdapter
+
+        register_adapter(HotelbookAdapter())
     adapter = _ADAPTERS.get(key)
     if adapter is None:
         raise AdapterError("UNKNOWN_ADAPTER", f"Адаптер '{key}' не зарегистрирован")
@@ -341,3 +349,32 @@ def get_adapter(key: str) -> ProviderAdapter:
 
 
 register_adapter(MockAdapter())
+
+
+def adapter_for_service(service) -> ProviderAdapter:
+    """Use the same tenant-scoped supplier routing in preflight and all workers."""
+    from suppliers.models import SupplierCredential
+
+    key = "mock"
+    if service.supplier_id:
+        credential = (
+            SupplierCredential.objects.filter(
+                tenant_id=service.tenant_id,
+                supplier_id=service.supplier_id,
+                supplier__tenant_id=service.tenant_id,
+                archived_at__isnull=True,
+                status="active",
+            )
+            .order_by("id")
+            .first()
+        )
+        if credential is not None:
+            key = credential.provider_adapter
+    expected = (service.provider_snapshot or {}).get("provider_adapter")
+    if expected and expected != key:
+        raise AdapterError(
+            "PROVIDER_NOT_CONFIGURED",
+            "Credentials не соответствуют поставщику предложения",
+            category="configuration",
+        )
+    return get_adapter(key)

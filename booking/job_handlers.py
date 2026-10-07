@@ -8,17 +8,12 @@ from integrations.adapters import (
     AdapterContext,
     AdapterError,
     AmbiguousResultError,
-    get_adapter,
+    adapter_for_service,
 )
 
 
 def _adapter_for(service):
-    key = "mock"
-    if service.supplier_id:
-        credential = service.supplier.credentials.filter(archived_at__isnull=True, status="active").first()
-        if credential is not None:
-            key = credential.provider_adapter
-    return get_adapter(key)
+    return adapter_for_service(service)
 
 
 @job_handler("booking.run", user_cancellable=False)
@@ -28,9 +23,25 @@ def run_booking(job: BackgroundJob) -> dict:
 
     workflow = BookingWorkflow.objects.get(pk=job.payload["workflow_id"])
     ctx = AdapterContext(tenant_id=workflow.tenant_id, correlation_id=job.correlation_id or str(job.id))
-    booked = failed = 0
+    booked = failed = pending = 0
 
     for item in workflow.items.select_related("service").order_by("sequence"):
+        if (
+            item.status == BookingWorkflowItem.Status.BOOKING
+            and (item.service.provider_snapshot or {}).get("provider_adapter") == "hotelbook"
+        ):
+            item.status = BookingWorkflowItem.Status.UNKNOWN
+            item.locator = (
+                (item.service.provider_snapshot or {}).get("hotelbook_booking", {}).get("locator", "")
+            )
+            item.error_code = "BOOKING_UNKNOWN"
+            item.save(update_fields=["status", "locator", "error_code"])
+        if item.status == BookingWorkflowItem.Status.UNKNOWN:
+            pending += 1
+            continue
+        if item.status == BookingWorkflowItem.Status.BOOKED:
+            booked += 1
+            continue
         if item.status != BookingWorkflowItem.Status.PENDING:
             continue
         service = item.service
@@ -43,12 +54,28 @@ def run_booking(job: BackgroundJob) -> dict:
                 ctx,
                 {
                     "client_request_id": f"{workflow.id}:{item.id}",
+                    "service_id": str(service.id),
+                    "passengers": _booking_passengers(service),
+                    "contact_info": _booking_contact(workflow.order),
+                    "customer": _booking_customer(workflow.order),
                     "service_kind": service.kind,
                     "snapshot": service.provider_snapshot or {},
                     "_mock": (service.provider_snapshot or {}).get("_mock", {}),
                 },
             )
         except AdapterError as exc:
+            if exc.category == "booking_unknown":
+                service.refresh_from_db()
+                item.status = BookingWorkflowItem.Status.UNKNOWN
+                item.locator = (
+                    (service.provider_snapshot or {}).get("hotelbook_booking", {}).get("locator", "")
+                )
+                item.error_code = exc.code
+                item.error_message = str(exc)
+                item.save(update_fields=["status", "locator", "error_code", "error_message"])
+                pending += 1
+                _create_incident(workflow, service, exc, job)
+                continue
             item.status = BookingWorkflowItem.Status.FAILED
             item.error_code = exc.code
             item.error_message = str(exc)
@@ -63,38 +90,51 @@ def run_booking(job: BackgroundJob) -> dict:
             continue
 
         with transaction.atomic():
-            item.status = BookingWorkflowItem.Status.BOOKED
+            is_pending = result.get("status") == "pending"
+            item.status = (
+                BookingWorkflowItem.Status.UNKNOWN if is_pending else BookingWorkflowItem.Status.BOOKED
+            )
             item.locator = result.get("locator", "")
             item.provider_result = result
             item.save(update_fields=["status", "locator", "provider_result"])
             service = OrderService.objects.select_for_update().get(pk=service.pk)
-            service.status = OrderService.Status.BOOKED
+            service.status = OrderService.Status.APPROVAL if is_pending else OrderService.Status.BOOKED
+            if result.get("provider_snapshot"):
+                service.provider_snapshot = result["provider_snapshot"]
             service.external_id = item.locator
             if deadline := result.get("ticketing_deadline"):
                 service.ticketing_deadline = deadline
             service.version += 1
             service.save(
-                update_fields=["status", "external_id", "ticketing_deadline", "version", "updated_at"]
+                update_fields=[
+                    "status",
+                    "provider_snapshot",
+                    "external_id",
+                    "ticketing_deadline",
+                    "version",
+                    "updated_at",
+                ]
             )
             emit_event(
                 "booking.updated",
                 workflow,
-                payload={"item": str(item.id), "status": "booked", "locator": item.locator},
+                payload={"item": str(item.id), "status": item.status, "locator": item.locator},
             )
-        booked += 1
+        pending += int(is_pending)
+        booked += int(not is_pending)
 
     workflow.status = (
         BookingWorkflow.Status.COMPLETED
-        if failed == 0 and booked
+        if failed == 0 and booked and not pending
         else BookingWorkflow.Status.PARTIAL
-        if booked
+        if booked or pending
         else BookingWorkflow.Status.FAILED
     )
     workflow.save(update_fields=["status"])
     emit_event(
         "booking.updated", workflow, payload={"status": workflow.status, "booked": booked, "failed": failed}
     )
-    return {"booked": booked, "failed": failed, "status": workflow.status}
+    return {"booked": booked, "failed": failed, "pending": pending, "status": workflow.status}
 
 
 @job_handler("booking.issue", user_cancellable=False)
@@ -202,8 +242,8 @@ def status_inquiry(job: BackgroundJob) -> dict:
         supplier_id=item.service.supplier_id,
         correlation_id=job.correlation_id or str(job.id),
     )
-    adapter = _adapter_for(item.service)
     try:
+        adapter = _adapter_for(item.service)
         result = adapter.retrieve_booking(ctx, item.locator)
     except AdapterError as exc:
         return {"status": "inquiry_failed", "error_code": exc.code}
@@ -219,12 +259,28 @@ def status_inquiry(job: BackgroundJob) -> dict:
         service.save(update_fields=["status", "version", "updated_at"])
         _save_tickets(item.workflow, service, item, result)
     elif provider_status in ("booked", "cancelled"):
+        item.provider_result = result
+        service = item.service
+        service.status = (
+            OrderService.Status.BOOKED if provider_status == "booked" else OrderService.Status.CANCELLED
+        )
+        if result.get("provider_snapshot"):
+            service.provider_snapshot = result["provider_snapshot"]
+        service.external_id = item.locator
+        service.version += 1
+        service.save(update_fields=["status", "external_id", "provider_snapshot", "version", "updated_at"])
         item.status = (
             BookingWorkflowItem.Status.BOOKED
             if provider_status == "booked"
             else BookingWorkflowItem.Status.COMPENSATED
         )
-        item.save(update_fields=["status"])
+        item.save(update_fields=["status", "provider_result"])
+        if not item.workflow.items.exclude(status="booked").exists():
+            item.workflow.status = "completed"
+            item.workflow.save(update_fields=["status"])
+        elif not item.workflow.items.exclude(status__in=["compensated", "failed", "skipped"]).exists():
+            item.workflow.status = "cancelled"
+            item.workflow.save(update_fields=["status"])
     emit_event(
         "ticketing.updated",
         item.workflow,
@@ -242,24 +298,31 @@ def compensate(job: BackgroundJob) -> dict:
     workflow = BookingWorkflow.objects.get(pk=job.payload["workflow_id"])
     ctx = AdapterContext(tenant_id=workflow.tenant_id, correlation_id=job.correlation_id or str(job.id))
     compensated = 0
-    for item in workflow.items.filter(status=BookingWorkflowItem.Status.BOOKED):
+    items = workflow.items.filter(status=BookingWorkflowItem.Status.BOOKED)
+    if job.payload.get("service_ids"):
+        items = items.filter(service_id__in=job.payload["service_ids"])
+    for item in items:
         ctx.supplier_id = item.service.supplier_id
         try:
             adapter = _adapter_for(item.service)
-            adapter.cancel(ctx, item.locator)
+            result = adapter.cancel(ctx, item.locator)
+            if result.get("status") != "cancelled":
+                raise AdapterError("CANCEL_PENDING", "Отмена ещё не подтверждена", category="sync")
         except AdapterError as exc:
             _create_incident(workflow, item.service, exc, job)
             continue
         item.status = BookingWorkflowItem.Status.COMPENSATED
-        item.save(update_fields=["status"])
+        item.provider_result = result
+        item.save(update_fields=["status", "provider_result"])
         service = item.service
         service.status = OrderService.Status.CANCELLED
         service.version += 1
         service.save(update_fields=["status", "version", "updated_at"])
         compensated += 1
-    workflow.status = BookingWorkflow.Status.CANCELLED
+    remaining = workflow.items.exclude(status__in=["compensated", "failed", "skipped"]).exists()
+    workflow.status = BookingWorkflow.Status.PARTIAL if remaining else BookingWorkflow.Status.CANCELLED
     workflow.save(update_fields=["status"])
-    emit_event("booking.updated", workflow, payload={"status": "cancelled", "compensated": compensated})
+    emit_event("booking.updated", workflow, payload={"status": workflow.status, "compensated": compensated})
     return {"compensated": compensated}
 
 
@@ -271,6 +334,7 @@ def _create_incident(workflow, service, exc, job, *, severity: str = "high") -> 
         error_code=getattr(exc, "code", "UNKNOWN"),
         severity=severity,
         operation=job.kind,
+        provider_adapter=(service.provider_snapshot or {}).get("provider_adapter", ""),
         supplier=service.supplier,
         order=workflow.order,
         service=service,
@@ -278,3 +342,48 @@ def _create_incident(workflow, service, exc, job, *, severity: str = "high") -> 
         sanitized_error=str(exc)[:2000],
         correlation_id=job.correlation_id,
     )
+
+
+def _booking_passengers(service):
+    passengers = []
+    for row in service.passengers.filter(status="active", participant__status="active").select_related(
+        "participant__person"
+    ):
+        person = row.participant.person
+        if person:
+            data = {
+                name: str(getattr(person, name) or "")
+                for name in (
+                    "latin_given_name",
+                    "latin_surname",
+                    "given_name",
+                    "surname",
+                    "birth_date",
+                    "gender",
+                    "citizenship",
+                )
+            }
+        else:
+            data = dict(row.participant.guest_snapshot or {})
+        data["room_ref"] = row.room_ref
+        passengers.append(data)
+    return passengers
+
+
+def _booking_contact(order):
+    person = order.contact_person or order.client_person
+    return {"name": person.full_name, "email": person.email, "phone": person.phone} if person else {}
+
+
+def _booking_customer(order):
+    if order.client_company:
+        company = order.client_company
+        return {
+            "type": "LEGAL",
+            "name": company.legal_name,
+            "inn": company.tax_id,
+            "address": company.legal_address,
+        }
+    if order.client_person:
+        return {"type": "PRIVATE", "name": order.client_person.full_name}
+    return None

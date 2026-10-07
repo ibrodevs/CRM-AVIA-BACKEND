@@ -379,3 +379,8 @@ pg_restore -d travelhub --clean backup.dump
 * параллельный запуск периодических задач блокируется advisory lock;
 * `/health/ready/` проверяет PostgreSQL и heartbeat обработчика фоновых задач;
 * приложение должно выводить структурированные JSON-логи в `stdout`.
+
+## Hotelbook / HB Pro Expert
+
+Настройка backend credentials, методы HB Pro, архитектура и ручной сценарий:
+[docs/HOTELBOOK.md](docs/HOTELBOOK.md).

@@ -47,11 +47,7 @@ def _suppliers_for_search(session: SearchSession) -> list[Supplier | None]:
         archived_at__isnull=True,
     )
     if connection.vendor == "sqlite":
-        suppliers = [
-            supplier
-            for supplier in base_qs
-            if session.kind in (supplier.service_kinds or [])
-        ]
+        suppliers = [supplier for supplier in base_qs if session.kind in (supplier.service_kinds or [])]
     else:
         suppliers = list(base_qs.filter(service_kinds__contains=[session.kind]))
     return suppliers or [None]
@@ -72,9 +68,19 @@ def run_search(job: BackgroundJob) -> dict:
     for supplier in suppliers:
         adapter_key = "mock"
         if supplier is not None:
-            credential = supplier.credentials.filter(archived_at__isnull=True, status="active").first()
+            credential = (
+                supplier.credentials.filter(
+                    tenant_id=session.tenant_id, archived_at__isnull=True, status="active"
+                )
+                .order_by("id")
+                .first()
+            )
             if credential is not None:
                 adapter_key = credential.provider_adapter
+            elif supplier.credentials.filter(
+                tenant_id=session.tenant_id, provider_adapter="hotelbook", archived_at__isnull=True
+            ).exists():
+                adapter_key = "hotelbook"
         run = SearchProviderRun.objects.create(
             tenant_id=session.tenant_id,
             session=session,
@@ -88,6 +94,7 @@ def run_search(job: BackgroundJob) -> dict:
             supplier_id=supplier.id if supplier else None,
             correlation_id=job.correlation_id or str(job.id),
         )
+        created = 0
         try:
             if adapter_key == "mock" and not settings.ALLOW_MOCK_ADAPTER:
                 raise AdapterError(
@@ -96,7 +103,17 @@ def run_search(job: BackgroundJob) -> dict:
                     category="configuration",
                 )
             adapter = get_adapter(adapter_key)
-            raw_offers = adapter.search(ctx, session.kind, session.criteria)
+            for raw in adapter.iter_search(ctx, session.kind, session.criteria):
+                if SearchSession.objects.filter(pk=session.pk, status="cancelled").exists():
+                    return {"status": "cancelled"}
+                if _persist_offer(session, supplier, adapter_key, raw, seen_hashes):
+                    created += 1
+                    emit_event(
+                        "search.progress",
+                        session,
+                        payload={"supplier": str(supplier.id) if supplier else None, "offers": created},
+                        audience_user=session.user,
+                    )
         except AdapterError as exc:
             run.status = (
                 SearchProviderRun.Status.TIMEOUT
@@ -106,6 +123,9 @@ def run_search(job: BackgroundJob) -> dict:
             run.error_code = exc.code
             run.completed_at = timezone.now()
             run.save(update_fields=["status", "error_code", "completed_at"])
+            run.offers_count = created
+            run.save(update_fields=["offers_count"])
+            total_offers += created
             failed += 1
             emit_event(
                 "search.progress",
@@ -118,60 +138,6 @@ def run_search(job: BackgroundJob) -> dict:
                 audience_user=session.user,
             )
             continue
-
-        created = 0
-        for raw in raw_offers:
-            price = raw.get("price", {})
-            base = Decimal(str(price.get("amount", "0")))
-            currency = price.get("currency", "USD")
-            dedup = _dedup_hash(session.kind, raw.get("itinerary", {}), str(base), currency)
-            if dedup in seen_hashes:
-                continue
-            seen_hashes.add(dedup)
-
-            itinerary = raw.get("itinerary") or {}
-            segments = itinerary.get("segments") or []
-            first_segment = segments[0] if segments else {}
-            countries = [value for segment in segments for value in (segment.get("origin_country"), segment.get("destination_country"))]
-            geography = raw.get("geography", "")
-            if countries and all(countries):
-                geography = "domestic" if all(country == "RU" for country in countries) else "intl"
-            markup_rules = resolve_markup_rules(
-                supplier,
-                kind=session.kind,
-                route=_criteria_route(session.criteria),
-                cabin=str(session.criteria.get("cabin", "")),
-                airline=str(first_segment.get("airline") or raw.get("airline") or ""),
-                geography=geography,
-            )
-            offer = ServiceOffer.objects.create(
-                tenant_id=session.tenant_id,
-                session=session,
-                kind=session.kind,
-                supplier=supplier,
-                provider_adapter=adapter_key,
-                external_key=raw.get("external_key", ""),
-                itinerary=raw.get("itinerary", {}),
-                fare=raw.get("fare"),
-                price_amount=base,
-                price_currency=currency,
-                availability=raw.get("availability", ""),
-                expires_at=raw.get("expires_at"),
-                raw_snapshot=raw,
-                dedup_hash=dedup,
-            )
-            pricing = calculate_price(
-                base=base,
-                currency=currency,
-                markup_rules=markup_rules,
-                tenant_id=session.tenant_id,
-                offer=offer,
-                step="search",
-            )
-            offer.price_amount = pricing["total"]
-            offer.applied_markup_rules = [c for c in pricing["components"] if c["name"] == "supplier_markup"]
-            offer.save(update_fields=["price_amount", "applied_markup_rules"])
-            created += 1
 
         run.status = SearchProviderRun.Status.SUCCEEDED
         run.offers_count = created
@@ -193,7 +159,7 @@ def run_search(job: BackgroundJob) -> dict:
     session.refresh_from_db()
     if session.status == SearchSession.Status.CANCELLED:
         return {"status": "cancelled"}
-    if succeeded == 0:
+    if succeeded == 0 and not total_offers:
         session.status = SearchSession.Status.FAILED
     elif failed:
         session.status = SearchSession.Status.PARTIAL
@@ -214,3 +180,63 @@ def _criteria_route(criteria: dict) -> str:
     origin = str(criteria.get("origin", "")).upper()
     destination = str(criteria.get("destination", "")).upper()
     return f"{origin}-{destination}" if origin and destination else ""
+
+
+def _persist_offer(session, supplier, adapter_key, raw, seen_hashes):
+    price = raw.get("price", {})
+    base = Decimal(str(price.get("amount", "0")))
+    currency = price.get("currency", "USD")
+    dedup = _dedup_hash(session.kind, raw.get("itinerary", {}), str(base), currency)
+    if raw.get("provider_adapter") == "hotelbook":
+        dedup = hashlib.sha256(f"{supplier.id}:{raw.get('external_key')}:{dedup}".encode()).hexdigest()
+    if dedup in seen_hashes:
+        return False
+    seen_hashes.add(dedup)
+
+    itinerary = raw.get("itinerary") or {}
+    segments = itinerary.get("segments") or []
+    first_segment = segments[0] if segments else {}
+    countries = [
+        value
+        for segment in segments
+        for value in (segment.get("origin_country"), segment.get("destination_country"))
+    ]
+    geography = raw.get("geography", "")
+    if countries and all(countries):
+        geography = "domestic" if all(country == "RU" for country in countries) else "intl"
+    markup_rules = resolve_markup_rules(
+        supplier,
+        kind=session.kind,
+        route=_criteria_route(session.criteria),
+        cabin=str(session.criteria.get("cabin", "")),
+        airline=str(first_segment.get("airline") or raw.get("airline") or ""),
+        geography=geography,
+    )
+    offer = ServiceOffer.objects.create(
+        tenant_id=session.tenant_id,
+        session=session,
+        kind=session.kind,
+        supplier=supplier,
+        provider_adapter=adapter_key,
+        external_key=raw.get("external_key", ""),
+        itinerary=raw.get("itinerary", {}),
+        fare=raw.get("fare"),
+        price_amount=base,
+        price_currency=currency,
+        availability=raw.get("availability", ""),
+        expires_at=raw.get("expires_at"),
+        raw_snapshot=raw,
+        dedup_hash=dedup,
+    )
+    pricing = calculate_price(
+        base=base,
+        currency=currency,
+        markup_rules=markup_rules,
+        tenant_id=session.tenant_id,
+        offer=offer,
+        step="search",
+    )
+    offer.price_amount = pricing["total"]
+    offer.applied_markup_rules = [c for c in pricing["components"] if c["name"] == "supplier_markup"]
+    offer.save(update_fields=["price_amount", "applied_markup_rules"])
+    return True

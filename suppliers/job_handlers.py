@@ -24,13 +24,18 @@ def verify_supplier_credentials(supplier) -> dict:
         result = "ok"
         message = "Адаптер и реквизиты готовы к работе"
         try:
-            get_adapter(credential.provider_adapter)
+            adapter = get_adapter(credential.provider_adapter)
             if not credential.encrypted_secrets:
                 result, message = "no_secrets", "Не заполнены реквизиты доступа"
             elif credential.provider_adapter == "mock" and not settings.ALLOW_MOCK_ADAPTER:
                 result, message = "sandbox_disabled", "Sandbox-адаптер запрещён в production"
+            elif credential.provider_adapter == "hotelbook":
+                adapter.verify_credentials(credential)
         except AdapterError as error:
-            result, message = "unknown_adapter", str(error)
+            result, message = (
+                ("unknown_adapter" if error.code == "UNKNOWN_ADAPTER" else error.code),
+                str(error),
+            )
 
         credential.status = "active" if result == "ok" else "failed"
         credential.last_verified_at = timezone.now()
