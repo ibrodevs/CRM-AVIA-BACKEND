@@ -31,6 +31,56 @@ from services.models import (
 )
 
 
+class HotelLocationSuggestionsView(APIView):
+    permission_classes = [require("services.search")]
+
+    def get(self, request):
+        # Supplier-specific sandbox options, never a shared CRM hotel dictionary.
+        from integrations.hotelbook import TEST_HOTELS
+        from services.job_handlers import _suppliers_for_search
+
+        query = str(request.query_params.get("q", "")).strip()[:120]
+
+        def normalize(text):
+            return " ".join(str(text).casefold().replace("ё", "е").replace("-", " ").split())
+
+        results = []
+        scoped = False
+        for supplier in _suppliers_for_search(SearchSession(tenant=request.user.tenant, kind="hotel")):
+            if supplier is None or supplier.tenant_id != request.user.tenant_id:
+                continue
+            credential = (
+                supplier.credentials.filter(
+                    tenant_id=request.user.tenant_id, status="active", archived_at__isnull=True
+                )
+                .order_by("id")
+                .first()
+            )
+            if (
+                credential is None
+                or credential.provider_adapter != "hotelbook"
+                or credential.environment not in ("sandbox", "test")
+            ):
+                continue
+            scoped = True
+            if len(query) < 2:
+                continue
+            for hotel_id, name in TEST_HOTELS.items():
+                if normalize(query) in normalize(name) or str(hotel_id).startswith(query):
+                    results.append(
+                        {
+                            "id": f"hotelbook:{supplier.id}:{hotel_id}",
+                            "value": name,
+                            "title": name,
+                            "label": name,
+                            "kind": "Отель",
+                            "subtitle": f"Hotelbook · тестовый отель {hotel_id}",
+                            "source": "hotelbook",
+                        }
+                    )
+        return Response({"results": results[:10], "provider_specific": scoped})
+
+
 class SearchSessionSerializer(serializers.ModelSerializer):
     provider_runs = serializers.SerializerMethodField()
 

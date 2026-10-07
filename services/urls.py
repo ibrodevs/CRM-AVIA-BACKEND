@@ -3,6 +3,11 @@ from django.urls import path
 from services import views as v
 
 urlpatterns = [
+    path(
+        "service-searches/hotel-locations/",
+        v.HotelLocationSuggestionsView.as_view(),
+        name="hotel-location-suggestions",
+    ),
     path("services/", v.ServiceListView.as_view(), name="service-list"),
     path("services/<uuid:service_id>/", v.ServiceDetailView.as_view(), name="service-detail"),
     path("services/search/", v.SearchCreateView.as_view(), name="service-search-create-v1"),

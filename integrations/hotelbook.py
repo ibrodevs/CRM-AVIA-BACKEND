@@ -352,10 +352,20 @@ class HotelbookAdapter(ProviderAdapter):
         hotels = hb.get("hotels")
         location = str(criteria.get("location", "")).strip()
         if not hotels:
+            normalized_location = " ".join(location.casefold().replace("ё", "е").replace("-", " ").split())
             hotels = [
                 hotel_id
                 for hotel_id, name in TEST_HOTELS.items()
-                if location.casefold() in (name.casefold(), str(hotel_id))
+                if location == str(hotel_id)
+                or normalized_location
+                == " ".join(name.casefold().replace("ё", "е").replace("-", " ").split())
+                or (
+                    credential.environment in ("sandbox", "test")
+                    and len(normalized_location) >= 3
+                    and not normalized_location.isdigit()
+                    and normalized_location
+                    in " ".join(name.casefold().replace("ё", "е").replace("-", " ").split())
+                )
             ]
         payload = {"checkIn": str(check_in), "checkOut": str(check_out), "rooms": rooms}
         sandbox = credential.environment in ("sandbox", "test")

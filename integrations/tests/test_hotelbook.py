@@ -727,3 +727,33 @@ def test_private_customer_omits_legal_company_fields():
     assert _booking_customer(SimpleNamespace(client_person=None, client_company=company)) == {
         "type": "LEGAL", "name": "Test Company", "inn": "1234567890", "address": "Test address"
     }
+
+
+def test_sandbox_hotel_autocomplete_is_supplier_scoped(admin_client, tenant, hb_supplier, other_tenant):
+    response = admin_client.get("/api/v1/service-searches/hotel-locations/?q=Первомайская")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["provider_specific"]
+    assert len(data["results"]) == 1
+    assert data["results"][0]["value"] == TEST_HOTELS[131687]
+    assert data["results"][0]["source"] == "hotelbook"
+    by_id = admin_client.get("/api/v1/service-searches/hotel-locations/?q=131687").json()
+    assert by_id["results"] == data["results"]
+    assert admin_client.get("/api/v1/service-searches/hotel-locations/?q=31687").json()["results"] == []
+    SupplierCredential.objects.filter(supplier=hb_supplier).update(environment="production")
+    assert not admin_client.get("/api/v1/service-searches/hotel-locations/?q=131687").json()[
+        "provider_specific"
+    ]
+    SupplierCredential.objects.filter(supplier=hb_supplier).update(environment="sandbox", tenant=other_tenant)
+    # Mismatched credential ownership must never expose supplier options.
+    assert not admin_client.get("/api/v1/service-searches/hotel-locations/?q=131687").json()[
+        "provider_specific"
+    ]
+
+
+@pytest.mark.parametrize('location', ['Первомайская', 'мастер отель', 'Мастер-Отель Первомайская'])
+def test_sandbox_search_accepts_partial_hotel_names(tenant, hb_supplier, gateway, location):
+    adapter = get_adapter('hotelbook')
+    credential, config = adapter._config(context(tenant, hb_supplier))
+    request = adapter._search_payload(context(tenant, hb_supplier), credential, config, {**criteria(131687), 'location': location})
+    assert request['hotels'] == [131687]
