@@ -206,8 +206,49 @@ ServiceOffer, OrderService и booking workflow. Покрыты все пять �
 несколько частей брони/отмены, credentials и tenant isolation, запрет дублей.
 Mock flow проверяется существующими regression tests. Новые миграции не требуются.
 
-Живой сценарий не выполнен: в доступной локальной базе нет Hotelbook credentials.
-Проверка доступности конкретных дат, ограничений счёта, IP whitelist и реальных
-ответов HB остаётся обязательным шагом перед эксплуатацией.
+Живой read-only сценарий Casa Manzella проверен локально 2026-10-07:
+login → search → results → details/revalidate, даты 2026-10-21–2026-10-23,
+один взрослый, один номер: четыре предложения; цена подтверждена.
+При первом details изменились штрафы отмены; повторный details стабилен.
+Создание HB order, book, retrieve и cancel в этой проверке не выполнялись.
 Дополнительные операции HB (изменение брони, платежи HB, финансовые документы,
 переписка и офлайн-бронирование) не входят в эту интеграцию.
+
+## Безопасный локальный live-тест из .env
+
+`config.settings.base` загружает `backend/.env` через django-environ; уже заданные
+переменные процесса имеют приоритет. HB-переменные доступны через `os.environ`
+после `django.setup()`, секреты не копируются в публичные Django settings.
+
+Переменные: `HBPRO_LOGIN`, `HBPRO_PASSWORD` (обязательные), `HBPRO_LOCALE` (`ru`/`en`,
+по умолчанию `ru`), `HBPRO_DEFAULT_CITIZENSHIP` (ISO alpha-2, либо `--citizenship`),
+`HBPRO_PAY_FORM` (по умолчанию `CASHLESS`), `HBPRO_ALLOW_ENV_FALLBACK`.
+Fallback включён по умолчанию только в `config.settings.dev`; в test выключен
+и требует явного включения в тесте. Production/PythonAnywhere запрещены даже при
+включённом флаге. Активный `SupplierCredential` всегда имеет приоритет;
+неактивные/failed HB credentials не заменяются env credentials автоматически.
+
+Из каталога backend:
+
+```bash
+uv run python manage.py hotelbook_live_test --settings=config.settings.dev --hotel-id 1251539 --check-in 2026-10-21 --check-out 2026-10-23
+```
+
+Для текущих дат можно опустить даты: команда берёт заезд через 14 дней на две ночи.
+Для выбора организации есть `--tenant-id UUID`; для проверки уже настроенного
+`SupplierCredential` — одновременно `--tenant-id UUID --supplier-id UUID`.
+Без supplier-id создаётся временный изолированный supplier, env credential остаётся
+в памяти. Все временные записи CRM и IntegrationLog откатываются транзакцией.
+Команда принудительно проверяет настоящий login, затем обычный адаптер search/results,
+две проверки details и локальный маппинг синтетического гостя в room hash.
+Она не отправляет create-order/book/cancel и не сохраняет реквизиты в базу.
+Полная подготовка брони требует настоящих участников, contactInfo/customer из CRM
+и HB orderId; данный диагностический тест не создаёт HB order для его получения.
+
+Наличие env не переключает остальных suppliers с mock на Hotelbook и не заменяет
+обычный production workflow. Для UI/booking настройте Hotelbook через существующий
+SupplierCredential, как описано выше. `.env` исключён из Git.
+
+В details штраф имеет структуру `amount: Money`, в search — `price: Money`.
+Оба формата нормализуются в `fare.cancel/change[].price`; исходный ответ остаётся
+в supplier snapshot. Текст `finePolicies.info` включается в условия отмены.

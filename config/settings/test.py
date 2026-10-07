@@ -32,3 +32,6 @@ REST_FRAMEWORK = {
 }
 
 LOGGING = {"version": 1, "disable_existing_loggers": True}
+
+# Unit tests must explicitly opt in; never consume live credentials accidentally.
+HBPRO_ALLOW_ENV_FALLBACK = False

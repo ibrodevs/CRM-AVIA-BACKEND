@@ -7,3 +7,6 @@ ALLOW_MOCK_ADAPTER = env.bool("ALLOW_MOCK_ADAPTER", default=True)  # noqa: F405
 
 if not FIELD_ENCRYPTION_KEY:  # noqa: F405
     FIELD_ENCRYPTION_KEY = "3jJ0deI6M0y5d3G7Zbb8xxL4wXO2ldeYmyIQXjmdKF0="
+
+# Local diagnostics only; no implicit supplier routing or persisted secrets.
+HBPRO_ALLOW_ENV_FALLBACK = env.bool("HBPRO_ALLOW_ENV_FALLBACK", default=True)  # noqa: F405

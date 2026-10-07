@@ -5,9 +5,11 @@ HB dictionaries and identifiers remain supplier data; never populate CRM catalog
 
 import hashlib
 import json
+import os
 import re
 import socket
 import time
+import uuid
 from copy import deepcopy
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -15,6 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
@@ -62,6 +65,8 @@ class HotelbookAdapter(ProviderAdapter):
             .first()
         )
         if credential is None:
+            credential = self._local_env_credential(ctx)
+        if credential is None:
             raise AdapterError(
                 "PROVIDER_NOT_CONFIGURED", "Нет активных credentials Hotelbook", category="configuration"
             )
@@ -78,6 +83,45 @@ class HotelbookAdapter(ProviderAdapter):
                 "PROVIDER_NOT_CONFIGURED", "Hotelbook locale: ru или en", category="configuration"
             )
         return credential, secrets
+
+    def _local_env_credential(self, ctx):
+        """Unsaved sandbox credential for explicit local diagnostics; DB always wins."""
+        if settings.SETTINGS_MODULE not in ("config.settings.dev", "config.settings.test"):
+            return None
+        if not getattr(settings, "HBPRO_ALLOW_ENV_FALLBACK", False):
+            return None
+        from suppliers.models import Supplier
+
+        if not Supplier.objects.filter(
+            pk=ctx.supplier_id, tenant_id=ctx.tenant_id, archived_at__isnull=True
+        ).exists():
+            return None
+        # Failed/inactive configured connections must still require verification.
+        if SupplierCredential.objects.filter(
+            tenant_id=ctx.tenant_id,
+            supplier_id=ctx.supplier_id,
+            provider_adapter=self.key,
+            archived_at__isnull=True,
+        ).exists():
+            return None
+        config = {
+            "login": os.environ.get("HBPRO_LOGIN", ""),
+            "password": os.environ.get("HBPRO_PASSWORD", ""),
+            "locale": os.environ.get("HBPRO_LOCALE", "ru"),
+            "default_citizenship": os.environ.get("HBPRO_DEFAULT_CITIZENSHIP", ""),
+            "pay_form": os.environ.get("HBPRO_PAY_FORM", "CASHLESS"),
+        }
+        if not config["login"] or not config["password"]:
+            return None
+        return SupplierCredential(
+            id=uuid.uuid5(uuid.NAMESPACE_URL, f"hbpro-env:{ctx.tenant_id}:{ctx.supplier_id}"),
+            tenant_id=ctx.tenant_id,
+            supplier_id=ctx.supplier_id,
+            provider_adapter=self.key,
+            environment="sandbox",
+            encrypted_secrets=json.dumps(config),
+            status="active",
+        )
 
     def verify_credentials(self, credential):
         """Authenticate via HB Pro before marking a supplier connection active."""
@@ -421,7 +465,12 @@ class HotelbookAdapter(ProviderAdapter):
 
     def _rules(self, offer):
         policies = offer.get("finePolicies") or offer.get("fines") or {}
-        cancel = policies.get("cancel") or []
+
+        def normalized_fines(rows):
+            # Search Fine.price and details Fine.amount are distinct HB schemas.
+            return [{**p, "price": p.get("price") or p.get("amount") or {}} for p in (rows or [])]
+
+        cancel = normalized_fines(policies.get("cancel"))
         text = "; ".join(
             f"{p.get('from') or 'С момента бронирования'}: {p.get('price', {}).get('amount', '?')} {p.get('price', {}).get('currency', '')}"
             for p in cancel
@@ -436,11 +485,15 @@ class HotelbookAdapter(ProviderAdapter):
         return {
             "free_cancel_until": free_until,
             "cancel": cancel,
-            "change": policies.get("change", []),
+            "change": normalized_fines(policies.get("change")),
             "no_show": policies.get("noShow"),
             "information": offer.get("information", []),
+            "cancellation_information": policies.get("info") or [],
             "additional_charges": offer.get("additionalCharges", []),
-            "cancellation_rules": text or "Условия отмены уточняются у поставщика",
+            "cancellation_rules": "; ".join(
+                part for part in (text, *[str(info) for info in (policies.get("info") or [])]) if part
+            )
+            or "Условия отмены уточняются у поставщика",
         }
 
     def _normalize(self, offer, search_id, expires_at, hotel, search_request):
