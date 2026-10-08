@@ -14,22 +14,28 @@ fi
 
 mkdir -p .runtime/postgres .runtime/media .runtime/static .runtime/backups
 
+# The application image creates appuser as UID/GID 1000. These bind mounts must
+# be writable by Django for uploaded media and collectstatic.
+chown -R 1000:1000 .runtime/media .runtime/static
+chmod 0755 .runtime/media .runtime/static
+
 # Validate interpolation and required variables before touching running services.
 $COMPOSE config -q
 
-# Build a fresh application image while keeping the database volume intact.
+# Build a fresh application image while keeping database/media data intact.
 $COMPOSE build --pull
 
-# Bring PostgreSQL up first and wait for its healthcheck.
+# Bring PostgreSQL up first and wait for its healthcheck. Read database names
+# from the container itself so custom .env values are respected.
 $COMPOSE up -d db
 for _ in $(seq 1 40); do
-  if $COMPOSE exec -T db pg_isready -U "${POSTGRES_USER:-travelhub}" -d "${POSTGRES_DB:-travelhub}" >/dev/null 2>&1; then
+  if $COMPOSE exec -T db sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
     break
   fi
   sleep 2
 done
 
-if ! $COMPOSE exec -T db pg_isready -U "${POSTGRES_USER:-travelhub}" -d "${POSTGRES_DB:-travelhub}" >/dev/null 2>&1; then
+if ! $COMPOSE exec -T db sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
   echo "ERROR: PostgreSQL did not become ready."
   $COMPOSE logs --tail=100 db
   exit 1
@@ -42,9 +48,10 @@ $COMPOSE run --rm web python manage.py collectstatic --noinput
 # Start/recreate the full stack.
 $COMPOSE up -d --remove-orphans
 
-APP_PORT="${APP_PORT:-8000}"
+APP_PORT_VALUE="$(awk -F= '/^APP_PORT=/{print $2}' .env | tail -n1 | tr -d '\r')"
+APP_PORT_VALUE="${APP_PORT_VALUE:-8000}"
 for _ in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:${APP_PORT}/health/live/" >/dev/null 2>&1; then
+  if curl -fsS "http://127.0.0.1:${APP_PORT_VALUE}/health/live/" >/dev/null 2>&1; then
     echo "Deployment complete: backend healthcheck is OK."
     $COMPOSE ps
     exit 0
