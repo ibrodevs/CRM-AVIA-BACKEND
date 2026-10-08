@@ -1,0 +1,98 @@
+name: travelhub
+
+x-app-env: &app-env
+  env_file:
+    - .env
+  environment:
+    DJANGO_SETTINGS_MODULE: config.settings.prod
+    DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
+    FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY:?set FIELD_ENCRYPTION_KEY in .env}
+
+x-app-service: &app-service
+  build:
+    context: .
+  restart: unless-stopped
+  init: true
+  env_file:
+    - .env
+  environment:
+    DJANGO_SETTINGS_MODULE: config.settings.prod
+    DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
+    FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY:?set FIELD_ENCRYPTION_KEY in .env}
+  volumes:
+    - ./.runtime/media:/app/media
+  depends_on:
+    db:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-travelhub}
+      POSTGRES_USER: ${POSTGRES_USER:-travelhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ./.runtime/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-travelhub} -d ${POSTGRES_DB:-travelhub}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    shm_size: 256mb
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  web:
+    <<: *app-service
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    volumes:
+      - ./.runtime/media:/app/media
+      - ./.runtime/static:/app/staticfiles
+    command:
+      - gunicorn
+      - config.wsgi:application
+      - --bind
+      - 0.0.0.0:8000
+      - --workers
+      - ${GUNICORN_WORKERS:-3}
+      - --timeout
+      - ${GUNICORN_TIMEOUT:-90}
+      - --access-logfile
+      - '-'
+      - --error-logfile
+      - '-'
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/live/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  jobs:
+    <<: *app-service
+    command: ["python", "manage.py", "run_jobs"]
+
+  scheduler:
+    <<: *app-service
+    command:
+      - sh
+      - -c
+      - while true; do python manage.py run_scheduled_jobs; sleep 60; done
+
+networks:
+  default:
+    name: travelhub-internal
