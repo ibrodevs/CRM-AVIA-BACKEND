@@ -8,15 +8,10 @@ COMPOSE="docker compose -f docker-compose.prod.yml"
 BACKUP_DIR="$ROOT_DIR/.runtime/backups"
 mkdir -p "$BACKUP_DIR"
 
-POSTGRES_DB_VALUE="${POSTGRES_DB:-travelhub}"
-POSTGRES_USER_VALUE="${POSTGRES_USER:-travelhub}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 TARGET="$BACKUP_DIR/travelhub-$STAMP.dump"
 
-$COMPOSE exec -T db pg_dump \
-  -U "$POSTGRES_USER_VALUE" \
-  -d "$POSTGRES_DB_VALUE" \
-  -Fc > "$TARGET"
+$COMPOSE exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$TARGET"
 
 if [[ ! -s "$TARGET" ]]; then
   echo "ERROR: backup file is empty: $TARGET"
