@@ -4,6 +4,12 @@ __pycache__
 .env
 media
 staticfiles
+.runtime
+*.dump
 .pytest_cache
 .ruff_cache
+.coverage
+htmlcov
 .git
+.github
+.DS_Store
