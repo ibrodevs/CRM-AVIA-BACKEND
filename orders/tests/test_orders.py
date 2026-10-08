@@ -291,3 +291,25 @@ class TestOrderCurrencyTotals:
         summary = admin_client.get(f'/api/v1/orders/{order_id}/finance-summary/').json()
         assert summary['paid'] == [{'amount': '20.25', 'currency': 'RUB'}]
         assert summary['outstanding'] == [{'amount': '80.25', 'currency': 'RUB'}]
+
+
+class TestOrderIdentifierSearch:
+    def test_full_number_and_uuid_are_returned_and_searchable(self, admin_client, order_payload):
+        from orders.models import Order
+
+        created = admin_client.post("/api/v1/orders/", order_payload, format="json").json()
+        number = "ORD-1234567890123456"
+        Order.objects.filter(pk=created["id"]).update(number=number)
+        for query in [number, f"  {number.lower()}  ", created["id"].upper()]:
+            response = admin_client.get("/api/v1/orders/", {"q": query})
+            assert response.status_code == 200, response.content
+            results = response.json()["results"]
+            assert len(results) == 1
+            assert results[0]["id"] == created["id"]
+            assert results[0]["number"] == number
+
+    def test_uuid_search_preserves_operator_access(self, admin_client, operator_user, order_payload):
+        created = admin_client.post("/api/v1/orders/", order_payload, format="json").json()
+        response = auth_client(operator_user).get("/api/v1/orders/", {"q": created["id"]})
+        assert response.status_code == 200, response.content
+        assert response.json()["results"] == []

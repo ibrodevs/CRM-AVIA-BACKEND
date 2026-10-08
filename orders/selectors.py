@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from django.db.models import Q, QuerySet
 
 from common.errors import ApiError
@@ -33,12 +35,19 @@ def get_order_or_404(user, order_id) -> Order:
 
 def filter_orders(queryset: QuerySet[Order], params) -> QuerySet[Order]:
     if query := params.get("q", "").strip():
-        queryset = queryset.filter(
+        search_filter = (
             Q(number__icontains=query)
             | Q(purpose__icontains=query)
             | Q(client_person__surname__icontains=query)
             | Q(client_company__legal_name__icontains=query)
         )
+        try:
+            order_id = UUID(query)
+        except ValueError:
+            pass
+        else:
+            search_filter |= Q(id=order_id)
+        queryset = queryset.filter(search_filter)
     if number := params.get("number"):
         queryset = queryset.filter(number=number)
     if statuses := params.getlist("status"):
