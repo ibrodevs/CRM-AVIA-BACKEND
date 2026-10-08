@@ -14,9 +14,20 @@ fi
 
 mkdir -p .runtime/postgres .runtime/media .runtime/static .runtime/backups
 
-# The application image creates appuser as UID/GID 1000. These bind mounts must
-# be writable by Django for uploaded media and collectstatic.
-chown -R 1000:1000 .runtime/media .runtime/static
+# Dockerfile pins appuser to UID/GID 1000. Make persistent application mounts
+# writable by that user. Running as root can fix ownership automatically; a
+# regular deploy user must itself own these directories as UID 1000.
+if [[ "$(id -u)" == "0" ]]; then
+  chown -R 1000:1000 .runtime/media .runtime/static
+else
+  for path in .runtime/media .runtime/static; do
+    if [[ "$(stat -c '%u' "$path")" != "1000" ]]; then
+      echo "ERROR: $path must be owned by UID 1000."
+      echo "Run once: sudo chown -R 1000:1000 .runtime/media .runtime/static"
+      exit 1
+    fi
+  done
+fi
 chmod 0755 .runtime/media .runtime/static
 
 # Validate interpolation and required variables before touching running services.
