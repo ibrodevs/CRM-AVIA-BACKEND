@@ -22,7 +22,12 @@ COPY . .
 ENV PATH="/opt/venv/bin:$PATH" \
     DJANGO_SETTINGS_MODULE=config.settings.prod
 
-RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app
+# Keep the application UID/GID stable so bind-mounted media/static directories
+# have predictable ownership on production hosts.
+RUN addgroup --gid 1000 appuser \
+    && adduser --uid 1000 --gid 1000 --disabled-password --gecos "" appuser \
+    && mkdir -p /app/media /app/staticfiles \
+    && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000
