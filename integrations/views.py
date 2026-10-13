@@ -69,6 +69,8 @@ class IntegrationLogListView(GenericAPIView):
     def get(self, request):
         qs = IntegrationLog.objects.filter(tenant_id=request.user.tenant_id)
         params = request.query_params
+        if supplier := params.get("supplier"):
+            qs = qs.filter(supplier_id=supplier)
         if adapter := params.get("provider_adapter"):
             qs = qs.filter(provider_adapter=adapter)
         if correlation := params.get("correlation_id"):
@@ -80,6 +82,10 @@ class IntegrationLogListView(GenericAPIView):
             [
                 {
                     "id": entry.id,
+                    "supplier": entry.supplier_id,
+                    "request_sanitized": entry.request_sanitized,
+                    "response_sanitized": entry.response_sanitized,
+                    "retries": entry.retries,
                     "correlation_id": entry.correlation_id,
                     "provider_adapter": entry.provider_adapter,
                     "operation": entry.operation,
@@ -107,6 +113,8 @@ class IncidentListView(GenericAPIView):
     def get(self, request):
         qs = IntegrationIncident.objects.filter(tenant_id=request.user.tenant_id).prefetch_related("timeline__actor")
         params = request.query_params
+        if supplier := params.get("supplier"):
+            qs = qs.filter(supplier_id=supplier)
         if incident_status := params.get("status"):
             qs = qs.filter(status=incident_status)
         if severity := params.get("severity"):
