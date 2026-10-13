@@ -29,8 +29,10 @@ def verify_supplier_credentials(supplier) -> dict:
                 result, message = "no_secrets", "Не заполнены реквизиты доступа"
             elif credential.provider_adapter == "mock" and not settings.ALLOW_MOCK_ADAPTER:
                 result, message = "sandbox_disabled", "Sandbox-адаптер запрещён в production"
-            elif credential.provider_adapter == "hotelbook":
-                adapter.verify_credentials(credential)
+            elif hasattr(adapter, "verify_credentials"):
+                verification_message = adapter.verify_credentials(credential)
+                if verification_message:
+                    message = str(verification_message)
         except AdapterError as error:
             result, message = (
                 ("unknown_adapter" if error.code == "UNKNOWN_ADAPTER" else error.code),
