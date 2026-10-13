@@ -26,13 +26,19 @@ def run_booking(job: BackgroundJob) -> dict:
     booked = failed = pending = 0
 
     for item in workflow.items.select_related("service").order_by("sequence"):
-        if (
-            item.status == BookingWorkflowItem.Status.BOOKING
-            and (item.service.provider_snapshot or {}).get("provider_adapter") == "hotelbook"
-        ):
+        if item.status == BookingWorkflowItem.Status.BOOKING and (item.service.provider_snapshot or {}).get(
+            "provider_adapter"
+        ) in {"hotelbook", "ttbooking"}:
             item.status = BookingWorkflowItem.Status.UNKNOWN
             item.locator = (
-                (item.service.provider_snapshot or {}).get("hotelbook_booking", {}).get("locator", "")
+                (item.service.provider_snapshot or {})
+                .get(
+                    "ttbooking_booking"
+                    if (item.service.provider_snapshot or {}).get("provider_adapter") == "ttbooking"
+                    else "hotelbook_booking",
+                    {},
+                )
+                .get("locator", "")
             )
             item.error_code = "BOOKING_UNKNOWN"
             item.save(update_fields=["status", "locator", "error_code"])
@@ -68,7 +74,14 @@ def run_booking(job: BackgroundJob) -> dict:
                 service.refresh_from_db()
                 item.status = BookingWorkflowItem.Status.UNKNOWN
                 item.locator = (
-                    (service.provider_snapshot or {}).get("hotelbook_booking", {}).get("locator", "")
+                    (service.provider_snapshot or {})
+                    .get(
+                        "ttbooking_booking"
+                        if (service.provider_snapshot or {}).get("provider_adapter") == "ttbooking"
+                        else "hotelbook_booking",
+                        {},
+                    )
+                    .get("locator", "")
                 )
                 item.error_code = exc.code
                 item.error_message = str(exc)
@@ -90,7 +103,7 @@ def run_booking(job: BackgroundJob) -> dict:
             continue
 
         with transaction.atomic():
-            is_pending = result.get("status") == "pending"
+            is_pending = result.get("status") in {"pending", "unknown"}
             item.status = (
                 BookingWorkflowItem.Status.UNKNOWN if is_pending else BookingWorkflowItem.Status.BOOKED
             )
@@ -152,6 +165,15 @@ def run_issue(job: BackgroundJob) -> dict:
     for item in workflow.items.select_related("service").order_by("sequence"):
         if only_items and str(item.id) not in only_items:
             continue
+        if (
+            item.status == BookingWorkflowItem.Status.ISSUING
+            and (item.service.provider_snapshot or {}).get("provider_adapter") == "ttbooking"
+        ):
+            item.status = BookingWorkflowItem.Status.UNKNOWN
+            item.error_code = "ISSUE_UNKNOWN"
+            item.save(update_fields=["status", "error_code"])
+            unknown += 1
+            continue
         if item.status != BookingWorkflowItem.Status.BOOKED:
             continue
         service = item.service
@@ -164,6 +186,7 @@ def run_issue(job: BackgroundJob) -> dict:
                 ctx,
                 {
                     "locator": item.locator,
+                    "service_id": str(service.id),
                     "passengers": job.payload.get("passengers", []),
                     "_mock": job.payload.get("_mock", {}),
                 },
@@ -208,6 +231,10 @@ def run_issue(job: BackgroundJob) -> dict:
 def _save_tickets(workflow, service, item, result: dict) -> None:
     from avia.models import AviaBooking, Ticket
 
+    if (service.provider_snapshot or {}).get("provider_adapter") == "ttbooking":
+        _save_ttbooking_tickets(workflow, service, item, result)
+        return
+
     booking, _ = AviaBooking.objects.get_or_create(
         tenant_id=workflow.tenant_id,
         client_request_id=f"{workflow.id}:{item.id}",
@@ -244,10 +271,27 @@ def status_inquiry(job: BackgroundJob) -> dict:
     )
     try:
         adapter = _adapter_for(item.service)
-        result = adapter.retrieve_booking(ctx, item.locator)
+        if adapter.key == "ttbooking" and item.status == BookingWorkflowItem.Status.UNKNOWN:
+            stored = (item.service.provider_snapshot or {}).get("ttbooking_booking", {})
+            changes = {
+                key: "unknown" for key in ("issue_state", "cancel_state") if stored.get(key) == "sending"
+            }
+            if changes:
+                adapter._save_booking(ctx, item.service_id, changes)
+        if adapter.key == "ttbooking":
+            result = adapter.retrieve_booking(
+                ctx, _provider_reference(item.service, item.locator), refresh=bool(job.payload.get("refresh"))
+            )
+        else:
+            result = adapter.retrieve_booking(ctx, item.locator)
     except AdapterError as exc:
         return {"status": "inquiry_failed", "error_code": exc.code}
 
+    if (item.service.provider_snapshot or {}).get("provider_adapter") == "ttbooking" and result.get(
+        "locator"
+    ):
+        item.locator = result["locator"]
+        item.save(update_fields=["locator"])
     provider_status = result.get("status")
     if provider_status == "issued":
         item.status = BookingWorkflowItem.Status.ISSUED
@@ -255,8 +299,14 @@ def status_inquiry(job: BackgroundJob) -> dict:
         item.save(update_fields=["status", "provider_result"])
         service = item.service
         service.status = OrderService.Status.ISSUED
+        if (
+            result.get("provider_snapshot")
+            and (service.provider_snapshot or {}).get("provider_adapter") == "ttbooking"
+        ):
+            service.provider_snapshot = result["provider_snapshot"]
+            service.external_id = result.get("locator") or item.locator
         service.version += 1
-        service.save(update_fields=["status", "version", "updated_at"])
+        service.save(update_fields=["status", "provider_snapshot", "external_id", "version", "updated_at"])
         _save_tickets(item.workflow, service, item, result)
     elif provider_status in ("booked", "cancelled"):
         item.provider_result = result
@@ -275,6 +325,11 @@ def status_inquiry(job: BackgroundJob) -> dict:
             else BookingWorkflowItem.Status.COMPENSATED
         )
         item.save(update_fields=["status", "provider_result"])
+        if (
+            provider_status == "cancelled"
+            and (service.provider_snapshot or {}).get("provider_adapter") == "ttbooking"
+        ):
+            _save_tickets(item.workflow, service, item, result)
         if not item.workflow.items.exclude(status="booked").exists():
             item.workflow.status = "completed"
             item.workflow.save(update_fields=["status"])
@@ -298,17 +353,29 @@ def compensate(job: BackgroundJob) -> dict:
     workflow = BookingWorkflow.objects.get(pk=job.payload["workflow_id"])
     ctx = AdapterContext(tenant_id=workflow.tenant_id, correlation_id=job.correlation_id or str(job.id))
     compensated = 0
-    items = workflow.items.filter(status=BookingWorkflowItem.Status.BOOKED)
+    from django.db.models import Q
+
+    items = workflow.items.filter(
+        Q(status=BookingWorkflowItem.Status.BOOKED)
+        | Q(
+            status=BookingWorkflowItem.Status.ISSUED, service__provider_snapshot__provider_adapter="ttbooking"
+        )
+    )
     if job.payload.get("service_ids"):
         items = items.filter(service_id__in=job.payload["service_ids"])
     for item in items:
         ctx.supplier_id = item.service.supplier_id
         try:
             adapter = _adapter_for(item.service)
-            result = adapter.cancel(ctx, item.locator)
+            result = adapter.cancel(ctx, _provider_reference(item.service, item.locator))
             if result.get("status") != "cancelled":
                 raise AdapterError("CANCEL_PENDING", "Отмена ещё не подтверждена", category="sync")
         except AdapterError as exc:
+            if exc.category == "cancel_unknown":
+                item.status = BookingWorkflowItem.Status.UNKNOWN
+                item.error_code = exc.code
+                item.error_message = str(exc)
+                item.save(update_fields=["status", "error_code", "error_message"])
             _create_incident(workflow, item.service, exc, job)
             continue
         item.status = BookingWorkflowItem.Status.COMPENSATED
@@ -318,6 +385,8 @@ def compensate(job: BackgroundJob) -> dict:
         service.status = OrderService.Status.CANCELLED
         service.version += 1
         service.save(update_fields=["status", "version", "updated_at"])
+        if (service.provider_snapshot or {}).get("provider_adapter") == "ttbooking":
+            _save_tickets(workflow, service, item, result)
         compensated += 1
     remaining = workflow.items.exclude(status__in=["compensated", "failed", "skipped"]).exists()
     workflow.status = BookingWorkflow.Status.PARTIAL if remaining else BookingWorkflow.Status.CANCELLED
@@ -346,6 +415,7 @@ def _create_incident(workflow, service, exc, job, *, severity: str = "high") -> 
 
 def _booking_passengers(service):
     passengers = []
+    is_ttbooking = (service.provider_snapshot or {}).get("provider_adapter") == "ttbooking"
     for row in service.passengers.filter(status="active", participant__status="active").select_related(
         "participant__person"
     ):
@@ -365,6 +435,29 @@ def _booking_passengers(service):
             }
         else:
             data = dict(row.participant.guest_snapshot or {})
+        if is_ttbooking:
+            data["passenger_ref"] = str(row.id)
+            if person:
+                data.update(
+                    {
+                        name: str(getattr(person, name) or "")
+                        for name in ("middle_name", "latin_middle_name", "phone", "email")
+                    }
+                )
+                document = row.participant.booking_document
+                if document is None:
+                    document = (
+                        person.documents.filter(
+                            tenant_id=service.tenant_id, status="active", archived_at__isnull=True
+                        )
+                        .order_by("id")
+                        .first()
+                    )
+                if document and document.tenant_id == service.tenant_id and document.person_id == person.id and document.status == "active" and document.archived_at is None:
+                    data["document"] = {
+                        name: str(getattr(document, name) or "")
+                        for name in ("type", "number", "series", "issued_at", "expires_at", "issuing_country")
+                    }
         data["room_ref"] = row.room_ref
         passengers.append(data)
     return passengers
@@ -387,3 +480,78 @@ def _booking_customer(order):
     if order.client_person:
         return {"type": "PRIVATE"}
     return None
+
+
+def _provider_reference(service, locator):
+    if (service.provider_snapshot or {}).get("provider_adapter") == "ttbooking":
+        return {"service_id": str(service.id), "locator": locator}
+    return locator
+
+
+def _save_ttbooking_tickets(workflow, service, item, result):
+    from avia.models import AviaBooking, Ticket
+    from common.errors import ApiError
+
+    booking, _ = AviaBooking.objects.get_or_create(
+        tenant_id=workflow.tenant_id,
+        client_request_id=f"{workflow.id}:{item.id}",
+        defaults={
+            "service": service,
+            "provider_adapter": "ttbooking",
+            "environment": service.provider_snapshot.get("provider_environment", "sandbox"),
+            "locator": item.locator,
+            "status": AviaBooking.Status.CANCELLED
+            if result.get("status") == "cancelled"
+            else AviaBooking.Status.TICKETED,
+            "provider_snapshot": result,
+        },
+    )
+    booking.status = (
+        AviaBooking.Status.CANCELLED if result.get("status") == "cancelled" else AviaBooking.Status.TICKETED
+    )
+    booking.provider_snapshot = result
+    booking.last_synced_at = timezone.now()
+    booking.save(update_fields=["status", "provider_snapshot", "last_synced_at"])
+    for ticket in result.get("tickets", []):
+        number, carrier = ticket.get("ticket_number"), ticket.get("carrier")
+        if not number or not carrier:
+            raise ApiError(
+                code="INVALID_RESPONSE",
+                message="TT Booking: отсутствуют номер билета/перевозчик",
+                status_code=502,
+            )
+        # Never attach a ticket belonging to another tenant/booking.
+        existing = Ticket.objects.filter(
+            tenant_id=workflow.tenant_id, validating_carrier=carrier, ticket_number=number
+        ).first()
+        if existing and existing.booking_id != booking.id:
+            raise ApiError(
+                code="TICKET_CONFLICT",
+                message="TT Booking: билет уже связан с другой бронью",
+                status_code=409,
+            )
+        passenger = None
+        passport = (ticket.get("passenger") or {}).get("passport") or {}
+        for row in service.passengers.filter(tenant_id=workflow.tenant_id).select_related(
+            "participant__person"
+        ):
+            person = row.participant.person
+            if (
+                person
+                and (person.latin_surname or person.surname) == passport.get("lastName")
+                and (person.latin_given_name or person.given_name) == passport.get("firstName")
+                and str(person.birth_date) == str(passport.get("birthday", ""))[:10]
+            ):
+                passenger = row
+                break
+        Ticket.objects.update_or_create(
+            tenant_id=workflow.tenant_id,
+            booking=booking,
+            validating_carrier=carrier,
+            ticket_number=number,
+            defaults={
+                "status": ticket.get("status", "issued"),
+                "passenger": passenger,
+                "issued_at": ticket.get("issued_at") or timezone.now(),
+            },
+        )

@@ -24,6 +24,8 @@ def update_offer(offer, result):
     if not snapshot:
         return
     pricing = _pricing(snapshot, offer.supplier, offer.tenant_id, offer=offer)
+    offer.external_key = snapshot.get("external_key", offer.external_key)
+    offer.expires_at = snapshot.get("expires_at")
     offer.raw_snapshot = snapshot
     offer.itinerary = snapshot["itinerary"]
     offer.fare = snapshot.get("fare")
@@ -34,6 +36,8 @@ def update_offer(offer, result):
     offer.save(
         update_fields=[
             "raw_snapshot",
+            "expires_at",
+            "external_key",
             "itinerary",
             "fare",
             "availability",
@@ -51,6 +55,8 @@ def update_service(service, result):
         return None
     if (service.provider_snapshot or {}).get("hotelbook_booking"):
         snapshot = {**snapshot, "hotelbook_booking": service.provider_snapshot["hotelbook_booking"]}
+    if (service.provider_snapshot or {}).get("ttbooking_booking"):
+        snapshot = {**snapshot, "ttbooking_booking": service.provider_snapshot["ttbooking_booking"]}
     pricing = _pricing(snapshot, service.supplier, service.tenant_id, service=service)
     new_total = (
         pricing["total"]

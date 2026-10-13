@@ -15,7 +15,13 @@ def verify_supplier_credentials(supplier) -> dict:
     """
     from integrations.adapters import AdapterError, get_adapter
 
-    credentials = list(supplier.credentials.filter(archived_at__isnull=True))
+    queryset = supplier.credentials.filter(tenant_id=supplier.tenant_id, archived_at__isnull=True)
+    if (supplier.automation_capabilities or {}).get("adapter") == "ttbooking":
+        queryset = queryset.filter(provider_adapter="ttbooking")
+        environment = supplier.automation_capabilities.get("ttbooking_environment")
+        if environment:
+            queryset = queryset.filter(environment=environment)
+    credentials = list(queryset)
     if not credentials:
         return {"status": "not_configured", "checked": [], "message": "API-доступ не настроен"}
 
@@ -68,3 +74,15 @@ def check_connection(job: BackgroundJob) -> dict:
 
     supplier = Supplier.objects.get(pk=job.payload["supplier_id"])
     return verify_supplier_credentials(supplier)
+
+
+def ttbooking_connection_verified(*, tenant_id, supplier_id, environment, status, last_verified_at, rotated_at, created_at):
+    """Legacy structural checks are not proof of a working stdCBS connection."""
+    if status != "active" or not last_verified_at:
+        return False
+    from integrations.models import IntegrationLog
+    version = (rotated_at or created_at).isoformat()
+    return IntegrationLog.objects.filter(tenant_id=tenant_id, supplier_id=supplier_id, provider_adapter="ttbooking",
+                                          operation="SEARCHFR", http_status=200, result="success",
+                                          request_sanitized__environment=environment,
+                                          request_sanitized__credential_version=version).exists()

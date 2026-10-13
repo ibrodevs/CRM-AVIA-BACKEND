@@ -34,7 +34,7 @@ def _suppliers_for_search(session: SearchSession) -> list[Supplier | None]:
     ).first()
     if priority and priority.ordered_suppliers:
         suppliers = list(
-            Supplier.objects.filter(pk__in=priority.ordered_suppliers, status=Supplier.Status.ACTIVE)
+            Supplier.objects.filter(pk__in=priority.ordered_suppliers, tenant_id=session.tenant_id, archived_at__isnull=True, status=Supplier.Status.ACTIVE)
         )
         by_id = {str(s.id): s for s in suppliers}
         ordered = [by_id[sid] for sid in map(str, priority.ordered_suppliers) if sid in by_id]
@@ -68,19 +68,21 @@ def run_search(job: BackgroundJob) -> dict:
     for supplier in suppliers:
         adapter_key = "mock"
         if supplier is not None:
-            credential = (
-                supplier.credentials.filter(
-                    tenant_id=session.tenant_id, archived_at__isnull=True, status="active"
-                )
-                .order_by("id")
-                .first()
-            )
+            credentials = supplier.credentials.filter(tenant_id=session.tenant_id, archived_at__isnull=True)
+            desired = (supplier.automation_capabilities or {}).get("adapter")
+            if desired == "ttbooking":
+                credentials = credentials.filter(provider_adapter="ttbooking")
+                environment = supplier.automation_capabilities.get("ttbooking_environment")
+                if environment:
+                    credentials = credentials.filter(environment=environment)
+                adapter_key = "ttbooking"
+            credential = credentials.filter(status="active").order_by("id").first()
             if credential is not None:
                 adapter_key = credential.provider_adapter
-            elif supplier.credentials.filter(
-                tenant_id=session.tenant_id, provider_adapter="hotelbook", archived_at__isnull=True
-            ).exists():
-                adapter_key = "hotelbook"
+            else:
+                configured = credentials.filter(provider_adapter__in=["hotelbook", "ttbooking"]).order_by("id").first()
+                if configured is not None:
+                    adapter_key = configured.provider_adapter
         run = SearchProviderRun.objects.create(
             tenant_id=session.tenant_id,
             session=session,
@@ -187,7 +189,7 @@ def _persist_offer(session, supplier, adapter_key, raw, seen_hashes):
     base = Decimal(str(price.get("amount", "0")))
     currency = price.get("currency", "USD")
     dedup = _dedup_hash(session.kind, raw.get("itinerary", {}), str(base), currency)
-    if raw.get("provider_adapter") == "hotelbook":
+    if raw.get("provider_adapter") in {"hotelbook", "ttbooking"}:
         dedup = hashlib.sha256(f"{supplier.id}:{raw.get('external_key')}:{dedup}".encode()).hexdigest()
     if dedup in seen_hashes:
         return False

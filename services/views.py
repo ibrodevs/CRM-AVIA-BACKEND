@@ -103,6 +103,7 @@ class SearchSessionSerializer(serializers.ModelSerializer):
 
 
 class ServiceOfferSerializer(serializers.ModelSerializer):
+    supplier_name = serializers.CharField(source="supplier.name", read_only=True, default="")
     price = MoneyField(amount_field="price_amount", currency_field="price_currency")
 
     class Meta:
@@ -111,6 +112,7 @@ class ServiceOfferSerializer(serializers.ModelSerializer):
             "id",
             "kind",
             "supplier",
+            "supplier_name",
             "provider_adapter",
             "external_key",
             "is_manual",
@@ -132,6 +134,10 @@ class OrderServiceSerializer(serializers.ModelSerializer):
     passengers_count = serializers.SerializerMethodField()
     passengers = serializers.SerializerMethodField()
     responsible_name = serializers.SerializerMethodField()
+    provider_adapter = serializers.SerializerMethodField()
+    has_provider_booking = serializers.SerializerMethodField()
+    tickets = serializers.SerializerMethodField()
+    itinerary = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderService
@@ -144,6 +150,10 @@ class OrderServiceSerializer(serializers.ModelSerializer):
             "title",
             "supplier",
             "supplier_name",
+            "provider_adapter",
+            "has_provider_booking",
+            "tickets",
+            "itinerary",
             "passengers_count",
             "passengers",
             "external_id",
@@ -169,6 +179,37 @@ class OrderServiceSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "order", "status", "version", "created_at"]
+
+    def get_provider_adapter(self, obj):
+        return (obj.provider_snapshot or {}).get("provider_adapter", "")
+
+    def get_has_provider_booking(self, obj):
+        return bool((obj.provider_snapshot or {}).get("ttbooking_booking"))
+
+    @staticmethod
+    def _public_segment(segment):
+        keys = {"origin", "destination", "departure", "arrival", "airline", "flight_number", "cabin", "booking_class",
+                "fare_basis", "baggage", "baggage_details", "departure_terminal", "arrival_terminal", "equipment", "duration_minutes", "starting", "connected"}
+        return {key: value for key, value in segment.items() if key in keys}
+
+    def get_itinerary(self, obj):
+        if self.get_provider_adapter(obj) != "ttbooking":
+            return None
+        itinerary = (obj.provider_snapshot or {}).get("itinerary") or {}
+        return {"segments": [self._public_segment(segment) for segment in itinerary.get("segments", [])],
+                "legs": [{"segments": [self._public_segment(segment) for segment in leg.get("segments", [])]} for leg in itinerary.get("legs", [])],
+                "connections": itinerary.get("connections", 0)}
+
+    def get_tickets(self, obj):
+        if self.get_provider_adapter(obj) != "ttbooking":
+            return []
+        from avia.models import Ticket
+        raw = ((obj.provider_snapshot or {}).get("ttbooking_booking") or {}).get("tickets", [])
+        segments = {(row.get("carrier"), row.get("ticket_number")): [self._public_segment(segment) for segment in row.get("segments", [])] for row in raw}
+        return [{"ticket_number": row.ticket_number, "carrier": row.validating_carrier, "status": row.status,
+                 "passenger": str(row.passenger_id) if row.passenger_id else None, "booking_locator": row.booking.locator,
+                 "segments": segments.get((row.validating_carrier, row.ticket_number), [])}
+                for row in Ticket.objects.filter(tenant_id=obj.tenant_id, booking__service_id=obj.id, booking__provider_adapter="ttbooking").select_related("booking").order_by("ticket_number")]
 
     def get_responsible_name(self, obj):
         return obj.responsible.get_full_name() if obj.responsible_id else ""
@@ -909,14 +950,17 @@ class ServiceCancelView(ServiceActionView):
     @idempotent_command("services.provider_cancel", required=False)
     def post(self, request, service_id):
         service = _get_service(request, service_id)
-        if (service.provider_snapshot or {}).get("provider_adapter") != "hotelbook":
+        if (service.provider_snapshot or {}).get("provider_adapter") not in {"hotelbook", "ttbooking"}:
             return super().post(request, service_id)
         if not has_permission(request.user, "services.cancel") or not has_service_action(request.user, service.kind, "cancel"):
-            raise ApiError(code="PERMISSION_DENIED", message="Нет права отмены гостиницы", status_code=403)
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права отмены услуги", status_code=403)
         check_version(service, request.data.get("version"))
         from booking.models import BookingWorkflowItem
 
-        item = service.workflow_items.filter(status=BookingWorkflowItem.Status.BOOKED).select_related("workflow").first()
+        allowed = [BookingWorkflowItem.Status.BOOKED]
+        if (service.provider_snapshot or {}).get("provider_adapter") == "ttbooking":
+            allowed.append(BookingWorkflowItem.Status.ISSUED)
+        item = service.workflow_items.filter(status__in=allowed).select_related("workflow").first()
         if item is None:
             raise ApiError(code="BOOKING_STATUS_REQUIRED", message="Сначала проверьте статус брони через booking workflow", status_code=409)
         job = enqueue("booking.compensate", {"workflow_id": str(item.workflow_id), "service_ids": [str(service.id)]}, request=request)
@@ -1048,5 +1092,21 @@ class ManualOfferCreateView(APIView):
 
 
 def _require_provider_workflow(service, target):
-    if service.source == "api" and (service.provider_snapshot or {}).get("provider_adapter") == "hotelbook" and target in ("booked", "confirmed", "issued", "cancelled"):
-        raise ApiError(code="BOOKING_WORKFLOW_REQUIRED", message="API-бронь Hotelbook изменяется через booking workflow", status_code=409)
+    if service.source == "api" and (service.provider_snapshot or {}).get("provider_adapter") in {"hotelbook", "ttbooking"} and target in ("booked", "confirmed", "issued", "cancelled"):
+        raise ApiError(code="BOOKING_WORKFLOW_REQUIRED", message="API-бронь поставщика изменяется через booking workflow", status_code=409)
+
+
+class ServiceProviderStatusView(APIView):
+    permission_classes = [require("services.issue", "services.book")]
+
+    def post(self, request, service_id):
+        service = _get_service(request, service_id)
+        if (service.provider_snapshot or {}).get("provider_adapter") != "ttbooking":
+            raise ApiError(code="UNSUPPORTED_SERVICE", message="Проверка статуса доступна для TT Booking", status_code=400)
+        if not has_service_action(request.user, service.kind, "book") and not has_service_action(request.user, service.kind, "issue"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права проверки этой услуги", status_code=403)
+        item = service.workflow_items.filter(tenant_id=request.user.tenant_id, status__in=["unknown", "booked", "issued", "compensated", "failed"]).order_by("-created_at").first()
+        if item is None:
+            raise ApiError(code="BOOKING_STATUS_REQUIRED", message="Сначала создайте бронь через booking workflow", status_code=409)
+        job = enqueue("booking.status_inquiry", {"item_id": str(item.id), "refresh": True}, request=request)
+        return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)

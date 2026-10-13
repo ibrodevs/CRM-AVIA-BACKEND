@@ -2,9 +2,20 @@ name: TT Booking integration tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, "feat/ttbooking-*"]
     paths:
       - "integrations/apps.py"
+      - "integrations/adapters.py"
+      - "services/job_handlers.py"
+      - "services/revalidation.py"
+      - "booking/preflight.py"
+      - "booking/job_handlers.py"
+      - "booking/views.py"
+      - "services/views.py"
+      - "services/urls.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "suppliers/views.py"
       - "integrations/ttbooking.py"
       - "integrations/tests/test_ttbooking.py"
       - "suppliers/job_handlers.py"
@@ -12,6 +23,17 @@ on:
   pull_request:
     paths:
       - "integrations/apps.py"
+      - "integrations/adapters.py"
+      - "services/job_handlers.py"
+      - "services/revalidation.py"
+      - "booking/preflight.py"
+      - "booking/job_handlers.py"
+      - "booking/views.py"
+      - "services/views.py"
+      - "services/urls.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "suppliers/views.py"
       - "integrations/ttbooking.py"
       - "integrations/tests/test_ttbooking.py"
       - "suppliers/job_handlers.py"
@@ -50,4 +72,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
       - name: Run TT Booking tests
-        run: uv run pytest integrations/tests/test_ttbooking.py
+        run: uv run pytest integrations/tests services/tests suppliers/tests booking/tests -v
+      - name: Django checks
+        run: |
+          uv run python manage.py check --settings=config.settings.test
+          uv run python manage.py makemigrations --check --dry-run --settings=config.settings.test

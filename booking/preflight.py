@@ -131,7 +131,7 @@ def run_preflight(workflow, user) -> dict:
                         }
                     )
         except AdapterError as exc:
-            target = blocking if snapshot.get("provider_adapter") == "hotelbook" else warnings
+            target = blocking if snapshot.get("provider_adapter") in {"hotelbook", "ttbooking"} else warnings
             target.append(
                 {
                     "code": exc.code,

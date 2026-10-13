@@ -384,3 +384,8 @@ pg_restore -d travelhub --clean backup.dump
 
 Настройка backend credentials, методы HB Pro, архитектура и ручной сценарий:
 [docs/HOTELBOOK.md](docs/HOTELBOOK.md).
+
+## TT Booking / stdCBS
+
+Настройка поставщика, команды авиа, защита mutation от повторов и ограничения
+предоставленного контракта: [docs/TTBOOKING.md](docs/TTBOOKING.md).

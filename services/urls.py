@@ -3,6 +3,7 @@ from django.urls import path
 from services import views as v
 
 urlpatterns = [
+    path("services/<uuid:service_id>/provider-status/", v.ServiceProviderStatusView.as_view(), name="service-provider-status"),
     path(
         "service-searches/hotel-locations/",
         v.HotelLocationSuggestionsView.as_view(),

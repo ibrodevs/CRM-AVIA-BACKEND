@@ -19,10 +19,41 @@ from suppliers.models import Supplier, SupplierCredential, SupplierMarkupRule, S
 
 class SupplierSerializer(serializers.ModelSerializer):
     metrics = serializers.SerializerMethodField()
+    provider_adapter = serializers.SerializerMethodField()
+    connection_status = serializers.SerializerMethodField()
 
     def get_metrics(self, obj):
         from crm.entity_metrics import supplier_metrics
         return supplier_metrics(obj)
+
+    def _credential_rows(self, obj):
+        if not hasattr(obj, "_credential_summary"):
+            queryset = obj.credentials.filter(tenant_id=obj.tenant_id, archived_at__isnull=True)
+            if (obj.automation_capabilities or {}).get("adapter") == "ttbooking":
+                queryset = queryset.filter(provider_adapter="ttbooking")
+                environment = obj.automation_capabilities.get("ttbooking_environment")
+                if environment:
+                    queryset = queryset.filter(environment=environment)
+            obj._credential_summary = list(queryset.order_by("id").values("provider_adapter", "status", "last_verified_at", "environment", "rotated_at", "created_at"))
+        return obj._credential_summary
+
+    def get_provider_adapter(self, obj):
+        if (obj.automation_capabilities or {}).get("adapter") == "ttbooking":
+            return "ttbooking"
+        rows = self._credential_rows(obj)
+        selected = next((row for row in rows if row["status"] == "active"), rows[0] if rows else {})
+        return selected.get("provider_adapter", "")
+
+    def get_connection_status(self, obj):
+        rows = self._credential_rows(obj)
+        from suppliers.job_handlers import ttbooking_connection_verified
+        for row in rows:
+            if row["provider_adapter"] == "ttbooking":
+                if ttbooking_connection_verified(tenant_id=obj.tenant_id, supplier_id=obj.id, **{key: row[key] for key in ("environment", "status", "last_verified_at", "rotated_at", "created_at")}):
+                    return "connected"
+            elif row["status"] == "active" and row["last_verified_at"]:
+                return "connected"
+        return "failed" if any(row["status"] == "failed" for row in rows) else "not_configured"
 
     class Meta:
         model = Supplier
@@ -30,6 +61,8 @@ class SupplierSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "metrics",
+            "provider_adapter",
+            "connection_status",
             "legal_name",
             "tax_id",
             "status",
@@ -58,6 +91,8 @@ class CredentialSerializer(serializers.ModelSerializer):
 
     secrets = serializers.DictField(write_only=True, required=False)
     has_secrets = serializers.SerializerMethodField()
+    public_config = serializers.SerializerMethodField()
+    connection_verified = serializers.SerializerMethodField()
 
     class Meta:
         model = SupplierCredential
@@ -67,11 +102,31 @@ class CredentialSerializer(serializers.ModelSerializer):
             "environment",
             "secrets",
             "has_secrets",
+            "public_config",
+            "connection_verified",
             "status",
             "last_verified_at",
             "rotated_at",
         ]
         read_only_fields = ["id", "status", "last_verified_at", "rotated_at"]
+
+    def get_connection_verified(self, obj):
+        if obj.provider_adapter != "ttbooking":
+            return obj.status == "active" and bool(obj.last_verified_at)
+        from suppliers.job_handlers import ttbooking_connection_verified
+        return ttbooking_connection_verified(tenant_id=obj.tenant_id, supplier_id=obj.supplier_id,
+                                            **{key: getattr(obj, key) for key in ("environment", "status", "last_verified_at", "rotated_at", "created_at")})
+
+    def get_public_config(self, obj):
+        if obj.provider_adapter != "ttbooking":
+            return {}
+        try:
+            value = json.loads(obj.encrypted_secrets)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        return {key: value[key] for key in ("url", "agency", "user", "locale") if key in value}
 
     def get_has_secrets(self, obj) -> bool:
         return bool(obj.encrypted_secrets)
@@ -167,9 +222,10 @@ class SupplierCredentialsView(APIView):
 
     def get(self, request, supplier_id):
         supplier = _get_supplier(request, supplier_id)
-        credentials = supplier.credentials.filter(archived_at__isnull=True)
+        credentials = supplier.credentials.filter(tenant_id=supplier.tenant_id, archived_at__isnull=True).order_by("id")
         return Response(CredentialSerializer(credentials, many=True).data)
 
+    @transaction.atomic
     def post(self, request, supplier_id):
         supplier = _get_supplier(request, supplier_id)
         serializer = CredentialSerializer(data=request.data)
@@ -183,9 +239,47 @@ class SupplierCredentialsView(APIView):
             rotated_at=timezone.now(),
             **serializer.validated_data,
         )
+        if credential.provider_adapter == "ttbooking":
+            # Serialize rotation with this supplier, retain the secret when the form leaves it blank.
+            supplier = Supplier.objects.select_for_update().get(pk=supplier.pk, tenant_id=supplier.tenant_id)
+            existing = SupplierCredential.objects.filter(
+                tenant_id=supplier.tenant_id, supplier=supplier, provider_adapter="ttbooking",
+                environment=credential.environment, archived_at__isnull=True,
+            ).first()
+            if existing:
+                credential = existing
+                try:
+                    previous = json.loads(credential.encrypted_secrets or "{}")
+                except (TypeError, ValueError):
+                    previous = {}
+                if not isinstance(previous, dict):
+                    previous = {}
+                incoming = {key: value for key, value in secrets.items() if value != ""}
+                if incoming.get("password_key"):
+                    previous.pop("password", None)
+                if incoming.get("password"):
+                    previous.pop("password_key", None)
+                secrets = {**previous, **incoming}
+                credential.status = "inactive"
+                credential.last_verified_at = None
+                credential.rotated_at = timezone.now()
+                credential.rotated_by = request.user
         if secrets:
             credential.encrypted_secrets = json.dumps(secrets, ensure_ascii=False)
+        if credential.provider_adapter == "ttbooking":
+            if "avia" not in (supplier.service_kinds or []):
+                raise ApiError(code="INVALID_REQUEST", message="TT Booking: у поставщика должна быть услуга Авиа", status_code=400)
+            from integrations.adapters import AdapterError
+            from integrations.ttbooking import TTBookingAdapter
+
+            try:
+                TTBookingAdapter._parse_config(credential)
+            except AdapterError as exc:
+                raise ApiError(code=exc.code, message=str(exc), status_code=400) from None
         credential.save()
+        if credential.provider_adapter == "ttbooking":
+            supplier.automation_capabilities = {**supplier.automation_capabilities, "adapter": "ttbooking", "ttbooking_environment": credential.environment}
+            supplier.save(update_fields=["automation_capabilities", "updated_at"])
 
         audit(
             "suppliers.credential_created",

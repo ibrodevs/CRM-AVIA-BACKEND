@@ -562,6 +562,15 @@ wheels = [
 ]
 
 [[package]]
+name = "phonenumbers"
+version = "9.0.41"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/df/cc0d70f1c79e436ea00d935b6352053d526252b81ce6c130d39eee846fb2/phonenumbers-9.0.41.tar.gz", hash = "sha256:dfa6f74eeac67c044b75313fe0af10774d7d1e1242241437279d4c2fb8027c01", size = 2311017, upload-time = "2026-10-08T10:51:09.778Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/1a/4059026e9c8a4c3faeab4a45f5aa67fb77d1f0d9c767085ded69c5c533e2/phonenumbers-9.0.41-py2.py3-none-any.whl", hash = "sha256:ccf2ea44f8aa35c487f26146a31520ecedf8e1af1f57c803678ecb5ef5c01668", size = 2594658, upload-time = "2026-10-08T10:51:07.317Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "12.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1022,6 +1031,7 @@ dependencies = [
     { name = "gunicorn" },
     { name = "openpyxl" },
     { name = "pdfminer-six" },
+    { name = "phonenumbers" },
     { name = "pillow" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyotp" },
@@ -1052,6 +1062,7 @@ requires-dist = [
     { name = "gunicorn", specifier = ">=23.0" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pdfminer-six", specifier = ">=20250506" },
+    { name = "phonenumbers", specifier = ">=9,<10" },
     { name = "pillow", specifier = ">=10.4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pyotp", specifier = ">=2.9" },

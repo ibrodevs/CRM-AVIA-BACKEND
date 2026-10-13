@@ -214,6 +214,8 @@ class WorkflowInquiryView(APIView):
         workflow = _get_workflow(request, workflow_id)
         item = workflow.items.select_related("service").filter(pk=request.data.get("item")).first()
         allowed = {BookingWorkflowItem.Status.UNKNOWN, BookingWorkflowItem.Status.BOOKED}
+        if item is not None and (item.service.provider_snapshot or {}).get("provider_adapter") == "ttbooking":
+            allowed.update({BookingWorkflowItem.Status.FAILED, BookingWorkflowItem.Status.ISSUED, BookingWorkflowItem.Status.COMPENSATED})
         if item is not None and item.service.kind == "hotel":
             # A completed cancellation still needs a fresh supplier inquiry.
             allowed.add(BookingWorkflowItem.Status.COMPENSATED)

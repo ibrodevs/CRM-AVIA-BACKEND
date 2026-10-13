@@ -355,7 +355,10 @@ def adapter_for_service(service) -> ProviderAdapter:
     """Use the same tenant-scoped supplier routing in preflight and all workers."""
     from suppliers.models import SupplierCredential
 
-    key = "mock"
+    expected = (service.provider_snapshot or {}).get("provider_adapter")
+    desired = expected or ((service.supplier.automation_capabilities or {}).get("adapter") if service.supplier_id else None)
+    environment = (service.provider_snapshot or {}).get("provider_environment") or ((service.supplier.automation_capabilities or {}).get("ttbooking_environment") if service.supplier_id and desired == "ttbooking" else None)
+    key = "ttbooking" if desired == "ttbooking" else "mock"
     if service.supplier_id:
         credential = (
             SupplierCredential.objects.filter(
@@ -364,13 +367,14 @@ def adapter_for_service(service) -> ProviderAdapter:
                 supplier__tenant_id=service.tenant_id,
                 archived_at__isnull=True,
                 status="active",
+                **({"provider_adapter": desired} if expected or desired == "ttbooking" else {}),
+                **({"environment": environment} if desired == "ttbooking" and environment else {}),
             )
             .order_by("id")
             .first()
         )
         if credential is not None:
             key = credential.provider_adapter
-    expected = (service.provider_snapshot or {}).get("provider_adapter")
     if expected and expected != key:
         raise AdapterError(
             "PROVIDER_NOT_CONFIGURED",

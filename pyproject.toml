@@ -25,6 +25,7 @@ dependencies = [
     "pypdfium2>=4.30",
     "gunicorn>=23.0",
     "django-cors-headers>=4.9,<5",
+    "phonenumbers>=9,<10",
 ]
 
 # This repository is deployed and executed directly from its checkout.  The
