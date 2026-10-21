@@ -1,3 +1,5 @@
+import time
+
 from django.conf import settings
 from django.utils import timezone
 
@@ -15,12 +17,17 @@ def verify_supplier_credentials(supplier) -> dict:
     """
     from integrations.adapters import AdapterError, get_adapter
 
-    credentials = list(supplier.credentials.filter(archived_at__isnull=True))
+    credentials = [
+        credential
+        for credential in supplier.credentials.filter(archived_at__isnull=True)
+        if credential.provider_adapter != "hotelbook" or credential.environment == settings.HBPRO_ENVIRONMENT
+    ]
     if not credentials:
         return {"status": "not_configured", "checked": [], "message": "API-доступ не настроен"}
 
     results = []
     for credential in credentials:
+        started = time.monotonic()
         result = "ok"
         message = "Адаптер и реквизиты готовы к работе"
         try:
@@ -50,6 +57,7 @@ def verify_supplier_credentials(supplier) -> dict:
                 "result": result,
                 "message": message,
                 "verified_at": credential.last_verified_at.isoformat(),
+                "latency_ms": int((time.monotonic() - started) * 1000),
             }
         )
 

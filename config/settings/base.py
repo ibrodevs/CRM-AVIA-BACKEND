@@ -264,3 +264,8 @@ LOGGING = {
         "travelhub": {"level": "INFO"},
     },
 }
+
+# HBPRO uses the same URL in both environments. Credentials remain server-side.
+HBPRO_ENVIRONMENT = env("HBPRO_ENVIRONMENT", default="sandbox")
+if HBPRO_ENVIRONMENT not in ("sandbox", "production"):
+    raise ValueError("HBPRO_ENVIRONMENT must be sandbox or production")

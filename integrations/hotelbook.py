@@ -25,9 +25,12 @@ from django.utils.dateparse import parse_datetime
 
 from common.fields import decrypt_value, encrypt_value
 from integrations.adapters import AdapterError, ProviderAdapter
+from integrations.hotelbook_lock import booking_lease
+from integrations.hotelbook_observability import external_ids, normalized_status, private_values, sanitize
 from suppliers.models import SupplierCredential
 
 TEST_HOTELS = {
+    1251201: "Occidental Praha Wilson Hotel (ОТЕЛЬ ДЛЯ ТЕСТОВ!)",
     1251539: "Casa Manzella",
     1251542: "Hilton Cologne",
     1251543: "Haus Mooren",
@@ -58,6 +61,7 @@ class HotelbookAdapter(ProviderAdapter):
                 supplier__tenant_id=ctx.tenant_id,
                 supplier__archived_at__isnull=True,
                 provider_adapter=self.key,
+                environment=getattr(settings, "HBPRO_ENVIRONMENT", "sandbox"),
                 status="active",
                 archived_at__isnull=True,
             )
@@ -82,11 +86,14 @@ class HotelbookAdapter(ProviderAdapter):
             raise AdapterError(
                 "PROVIDER_NOT_CONFIGURED", "Hotelbook locale: ru или en", category="configuration"
             )
+        ctx.environment = credential.environment
         return credential, secrets
 
     def _local_env_credential(self, ctx):
         """Unsaved sandbox credential for explicit local diagnostics; DB always wins."""
         if settings.SETTINGS_MODULE not in ("config.settings.dev", "config.settings.test"):
+            return None
+        if getattr(settings, "HBPRO_ENVIRONMENT", "sandbox") != "sandbox":
             return None
         if not getattr(settings, "HBPRO_ALLOW_ENV_FALLBACK", False):
             return None
@@ -140,6 +147,8 @@ class HotelbookAdapter(ProviderAdapter):
                 "PROVIDER_NOT_CONFIGURED", "Hotelbook locale: ru или en", category="configuration"
             )
         ctx = AdapterContext(tenant_id=credential.tenant_id, supplier_id=credential.supplier_id)
+        ctx.environment = credential.environment
+        cache.delete(self._cache_key(credential, config, "token"))
         self._token(ctx, credential, config)
 
     def _path(self, config, path):
@@ -150,7 +159,10 @@ class HotelbookAdapter(ProviderAdapter):
         return f"hbpro:{credential.tenant_id}:{credential.id}:{fingerprint}:{name}"
 
     def _error(self, status, response, operation):
-        code = (response.get("details") or {}).get("errorCode", "") if isinstance(response, dict) else ""
+        details = response.get("details") if isinstance(response, dict) else None
+        code = str(details.get("errorCode") or "") if isinstance(details, dict) else ""
+        if not re.fullmatch(r"[A-Z0-9#_-]{1,64}", code):
+            code = ""
         if status == 401 or code.startswith("ERR013"):
             normalized, category = "AUTH_ERROR", "auth"
         elif operation == "search" and code == "ERR001#4":
@@ -171,8 +183,16 @@ class HotelbookAdapter(ProviderAdapter):
             normalized, category = "PROVIDER_FORBIDDEN", "auth"
         elif status == 429:
             normalized, category = "RATE_LIMITED", "timeout"
-        elif operation in ("book", "create_order", "cancel"):
-            normalized, category = "BOOKING_ERROR", "booking"
+        elif status >= 500:
+            normalized, category = "SUPPLIER_UNAVAILABLE", "internal"
+        elif operation == "cancel":
+            normalized, category = "CANCELLATION_FAILED", "booking"
+        elif status in (400, 422) and operation not in ("book", "create_order"):
+            normalized, category = "INVALID_REQUEST", "validation"
+        elif operation == "book":
+            normalized, category = "BOOKING_REJECTED", "booking"
+        elif operation == "create_order":
+            normalized, category = "INVALID_REQUEST", "validation"
         elif status == 404:
             normalized, category = "BOOKING_NOT_FOUND", "sync"
         else:
@@ -185,7 +205,7 @@ class HotelbookAdapter(ProviderAdapter):
             retry_safe=operation not in ("book", "create_order", "cancel") and status >= 500,
         )
 
-    def _wire(self, ctx, operation, method, path, payload=None, token=None):
+    def _wire(self, ctx, operation, method, path, payload=None, token=None, secrets=()):
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -199,7 +219,20 @@ class HotelbookAdapter(ProviderAdapter):
             with build_opener(_NoRedirect()).open(request, timeout=self.http_timeout) as http:
                 status = http.status
                 response = json.loads(http.read(), parse_float=str)
-            if not isinstance(response, (dict, list)):
+            collection = operation in ("dictionary", "search_orders")
+            if not isinstance(response, list if collection else dict):
+                raise ValueError
+            expected = {
+                "login": {"token": str},
+                "search": {"searchId": str, "state": str},
+                "search_results": {"searchOffers": list, "finished": bool, "totalOffers": int},
+                "create_order": {"orderId": int},
+                "book": {"items": list},
+                "order_info": {"orderId": int, "items": list},
+                "retrieve_item": {"itemId": str, "status": str},
+                "cancel": {"itemId": str, "status": str},
+            }.get(operation, {})
+            if any(not isinstance(response.get(k), kind) for k, kind in expected.items()):
                 raise ValueError
         except HTTPError as exc:
             status = exc.code
@@ -229,19 +262,49 @@ class HotelbookAdapter(ProviderAdapter):
                 "Hotelbook: некорректный ответ API",
                 category="booking_unknown" if mutation else "internal",
             )
-        # Only transport metadata. No login/password/JWT or guest personal data in logs.
-        self._log(
-            ctx,
-            operation,
-            {
-                "method": method,
-                "path": re.sub(
-                    r"/(results|booking_items|hotels|orders)/[^/?]+", r"/\1/{id}", path.split("?", 1)[0]
-                ),
-            },
-            {"received": response is not None},
-            result="error" if error else "success",
+        from integrations.models import IntegrationLog
+
+        sensitive = (
+            list(secrets) + private_values(payload) + private_values(response) + ([token] if token else [])
+        )
+        ids = external_ids(payload, response)
+        match = re.search(r"/(results|booking_items|orders)/([^/?]+)", path)
+        if match:
+            key = {"results": "searchId", "booking_items": "itemId", "orders": "orderId"}[match[1]]
+            ids.setdefault(key, [match[2]])
+        statuses = []
+
+        def collect_states(value):
+            if isinstance(value, dict):
+                if isinstance(value.get("status"), str):
+                    statuses.append(value["status"])
+                for v in value.values():
+                    collect_states(v)
+            elif isinstance(value, list):
+                for v in value:
+                    collect_states(v)
+
+        collect_states(response)
+        IntegrationLog.objects.create(
+            tenant_id=ctx.tenant_id,
+            supplier_id=ctx.supplier_id,
+            correlation_id=ctx.correlation_id,
+            order_id=ctx.order_id,
+            certification_run_id=ctx.certification_run_id,
+            provider_adapter=self.key,
+            environment=ctx.environment,
+            operation=operation,
+            http_method=method,
+            url=sanitize(self.base_url + path, sensitive),
+            request_headers=sanitize(headers, sensitive),
+            request_sanitized=sanitize(payload, sensitive),
+            response_sanitized=sanitize(response, sensitive),
+            external_ids=sanitize(ids, sensitive),
+            supplier_status=",".join(sorted(set(statuses)))[:255],
+            provider_error=sanitize(response, sensitive) if error else None,
+            raw_error=sanitize(str(error), sensitive) if error else "",
             error_code=error.code if error else "",
+            result="error" if error else "success",
             http_status=status,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
@@ -271,14 +334,18 @@ class HotelbookAdapter(ProviderAdapter):
         credential, config = self._config(ctx)
         token = self._token(ctx, credential, config)
         try:
-            return self._wire(ctx, operation, method, path, payload, token)
+            return self._wire(
+                ctx, operation, method, path, payload, token, (config["login"], config["password"])
+            )
         except AdapterError as exc:
             if exc.code != "AUTH_ERROR":
                 raise
             cache.delete(self._cache_key(credential, config, "token"))
             # A rejected JWT has not performed the requested operation; one refresh is safe.
             token = self._token(ctx, credential, config)
-            return self._wire(ctx, operation, method, path, payload, token)
+            return self._wire(
+                ctx, operation, method, path, payload, token, (config["login"], config["password"])
+            )
 
     def _dictionary(self, ctx, config, resource, params=None):
         credential, _ = self._config(ctx)
@@ -323,6 +390,8 @@ class HotelbookAdapter(ProviderAdapter):
 
     def _search_payload(self, ctx, credential, config, criteria):
         try:
+            if not isinstance(criteria, dict):
+                raise ValueError
             check_in = date.fromisoformat(criteria["check_in"])
             check_out = date.fromisoformat(criteria["check_out"])
             if check_out <= check_in:
@@ -330,18 +399,33 @@ class HotelbookAdapter(ProviderAdapter):
             rooms = criteria.get("rooms", 1)
             if isinstance(rooms, int):
                 guests = int(criteria.get("guests", 2))
-                if not 1 <= rooms <= 5 or guests < rooms:
+                if isinstance(rooms, bool) or not 1 <= rooms <= 5 or guests < rooms:
                     raise ValueError
                 rooms = [
                     {"adults": guests // rooms + (i < guests % rooms), "quantity": 1} for i in range(rooms)
                 ]
-            if not isinstance(rooms, list) or not rooms or sum(r.get("quantity", 1) for r in rooms) > 5:
+            if (
+                not isinstance(rooms, list)
+                or not rooms
+                or any(not isinstance(r, dict) or not isinstance(r.get("quantity", 1), int) for r in rooms)
+                or sum(r.get("quantity", 1) for r in rooms) > 5
+            ):
                 raise ValueError
             for room in rooms:
-                if not 1 <= room["adults"] <= 9 or not 1 <= room.get("quantity", 1) <= 5:
+                if not isinstance(room, dict):
                     raise ValueError
-                if len(room.get("childrenAges", [])) > 4 or any(
-                    not 0 <= a <= 17 for a in room.get("childrenAges", [])
+                if (
+                    not isinstance(room["adults"], int)
+                    or isinstance(room["adults"], bool)
+                    or not isinstance(room.get("quantity", 1), int)
+                    or not 1 <= room["adults"] <= 9
+                    or not 1 <= room.get("quantity", 1) <= 5
+                ):
+                    raise ValueError
+                if (
+                    not isinstance(room.get("childrenAges", []), list)
+                    or len(room.get("childrenAges", [])) > 4
+                    or any(not 0 <= a <= 17 for a in room.get("childrenAges", []))
                 ):
                     raise ValueError
         except (KeyError, ValueError, TypeError):
@@ -349,8 +433,20 @@ class HotelbookAdapter(ProviderAdapter):
                 "SEARCH_CRITERIA_INVALID", "Проверьте даты и состав номеров Hotelbook", category="validation"
             ) from None
         hb = criteria.get("hotelbook") or {}
+        if not isinstance(hb, dict) or (
+            "confirmationMode" in hb and hb["confirmationMode"] not in ("ONLINE", "ON_REQUEST")
+        ):
+            raise AdapterError(
+                "SEARCH_CRITERIA_INVALID", "Некорректные параметры Hotelbook", category="validation"
+            )
         hotels = hb.get("hotels")
+        if hotels is not None and (not isinstance(hotels, list) or not hotels):
+            raise AdapterError(
+                "SEARCH_CRITERIA_INVALID", "hotels должен быть непустым списком ID", category="validation"
+            )
         location = str(criteria.get("location", "")).strip()
+        if not hotels and location.isdigit():
+            hotels = [int(location)]
         if not hotels:
             normalized_location = " ".join(location.casefold().replace("ё", "е").replace("-", " ").split())
             hotels = [
@@ -378,15 +474,32 @@ class HotelbookAdapter(ProviderAdapter):
                 ) from None
             if sandbox and any(h not in TEST_HOTELS for h in hotels):
                 raise AdapterError(
-                    "TEST_HOTEL_REQUIRED", "Доступны только пять тестовых отелей", category="validation"
+                    "TEST_HOTEL_REQUIRED", "Доступны только тестовые отели Hotelbook", category="validation"
                 )
             if not 1 <= len(hotels) <= 500:
                 raise AdapterError(
                     "SEARCH_CRITERIA_INVALID", "Hotelbook: от 1 до 500 отелей", category="validation"
                 )
             payload["hotels"] = hotels
-        elif hb.get("city_id") and not sandbox:
-            payload["cities"] = [int(hb["city_id"])]
+        elif hb.get("city_id"):
+            try:
+                city_id = int(hb["city_id"])
+                if city_id <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise AdapterError(
+                    "SEARCH_CRITERIA_INVALID", "Некорректный Hotelbook city ID", category="validation"
+                ) from None
+            if sandbox:
+                payload["hotels"] = [
+                    h for h in TEST_HOTELS if self._hotel(ctx, config, h).get("cityId") == city_id
+                ]
+                if not payload["hotels"]:
+                    raise AdapterError(
+                        "TEST_HOTEL_REQUIRED", "В городе нет тестовых отелей", category="availability"
+                    )
+            else:
+                payload["cities"] = [city_id]
         else:
             cities = self._dictionary(ctx, config, "geo/cities")
             matches = [
@@ -417,7 +530,14 @@ class HotelbookAdapter(ProviderAdapter):
             citizenship = self._country_id(
                 ctx, config, criteria.get("citizenship") or config.get("default_citizenship", "")
             )
-        payload["citizenshipId"] = int(citizenship)
+        try:
+            payload["citizenshipId"] = int(citizenship)
+            if payload["citizenshipId"] <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise AdapterError(
+                "SEARCH_CRITERIA_INVALID", "Некорректный Hotelbook citizenship ID", category="validation"
+            ) from None
         for field in ("client3Did", "confirmationMode", "refundable", "freeCancellationOnly"):
             if field in hb:
                 payload[field] = hb[field]
@@ -456,6 +576,12 @@ class HotelbookAdapter(ProviderAdapter):
                 raise AdapterError("INVALID_RESPONSE", "Hotelbook: некорректные результаты поиска")
             offset += len(batch)
             for offer in batch:
+                if (
+                    not isinstance(offer, dict)
+                    or not isinstance(offer.get("offerId"), str)
+                    or not isinstance(offer.get("hotelId"), int)
+                ):
+                    raise AdapterError("INVALID_RESPONSE", "Hotelbook: некорректный результат поиска")
                 if offer["offerId"] in seen:
                     continue
                 seen.add(offer["offerId"])
@@ -513,6 +639,14 @@ class HotelbookAdapter(ProviderAdapter):
         }
 
     def _normalize(self, offer, search_id, expires_at, hotel, search_request):
+        try:
+            return self._normalize_offer(offer, search_id, expires_at, hotel, search_request)
+        except (KeyError, TypeError, AttributeError, ValueError, InvalidOperation):
+            raise AdapterError(
+                "INVALID_RESPONSE", "Hotelbook: некорректные данные предложения", category="internal"
+            ) from None
+
+    def _normalize_offer(self, offer, search_id, expires_at, hotel, search_request):
         rooms = offer.get("rooms") or []
         if not rooms or not all(r.get("hash") for r in rooms):
             raise AdapterError(
@@ -544,8 +678,41 @@ class HotelbookAdapter(ProviderAdapter):
                     (r.get("adults", 0) + len(r.get("children") or [])) * r.get("quantity", 1) for r in rooms
                 ),
                 "phone": details.get("phone", ""),
+                **(
+                    {"check_in_time": details["earliestCheckInTime"]}
+                    if details.get("earliestCheckInTime")
+                    else {}
+                ),
+                **(
+                    {"check_out_time": details["latestCheckOutTime"]}
+                    if details.get("latestCheckOutTime")
+                    else {}
+                ),
             },
-            "fare": {"name": offer.get("roomGroupName") or "Тариф поставщика", **rules},
+            "fare": {
+                "name": offer.get("roomGroupName") or "Тариф поставщика",
+                **rules,
+                "confirmation_mode": offer.get("confirmationMode"),
+                "rooms": [
+                    {
+                        k: r[k]
+                        for k in (
+                            "hash",
+                            "quantity",
+                            "adults",
+                            "children",
+                            "roomName",
+                            "beds",
+                            "information",
+                            "providerRoomId",
+                            "roomInfoId",
+                        )
+                        if k in r
+                    }
+                    for r in rooms
+                ],
+                **{k: offer[k] for k in ("roomDescription", "isRemarkFreeFormAllowed") if k in offer},
+            },
             "hotelbook": {
                 "search_id": search_id,
                 "offer_id": offer["offerId"],
@@ -567,6 +734,8 @@ class HotelbookAdapter(ProviderAdapter):
         }
 
     def revalidate(self, ctx, offer_snapshot):
+        if offer_snapshot.get("certification_run_id"):
+            ctx.certification_run_id = offer_snapshot["certification_run_id"]
         hb = offer_snapshot.get("hotelbook") or {}
         if not hb.get("search_id") or not hb.get("offer_id"):
             raise AdapterError(
@@ -575,7 +744,7 @@ class HotelbookAdapter(ProviderAdapter):
         expires = parse_datetime(offer_snapshot.get("expires_at", ""))
         if expires and expires <= timezone.now():
             raise AdapterError(
-                "RATE_UNAVAILABLE", "Поиск Hotelbook устарел; выполните новый поиск", category="availability"
+                "OFFER_EXPIRED", "Поиск Hotelbook устарел; выполните новый поиск", category="availability"
             )
         _, config = self._config(ctx)
         request = {"searchId": hb["search_id"], "offerId": hb["offer_id"]}
@@ -593,6 +762,11 @@ class HotelbookAdapter(ProviderAdapter):
             hb.get("hotel", {}),
             hb.get("search_request", {}),
         )
+        for key in ("special_requests", "main_guest"):
+            if key in offer_snapshot:
+                normalized[key] = offer_snapshot[key]
+        if ctx.certification_run_id:
+            normalized["certification_run_id"] = str(ctx.certification_run_id)
         changed = normalized["price"] != offer_snapshot.get("price")
         return {
             "status": "price_changed" if changed else "valid",
@@ -620,7 +794,12 @@ class HotelbookAdapter(ProviderAdapter):
                 last = person.get("latin_surname") or (
                     person.get("surname") if offer.get("isCyrillicGuestNameAllowed") else ""
                 )
+                if not isinstance(first, str) or not isinstance(last, str):
+                    raise ValueError
+                first, last = first.strip(), last.strip()
                 if not first or not last or len(first) > 50 or len(last) > 50 or age < 0:
+                    raise ValueError
+                if not offer.get("isCyrillicGuestNameAllowed") and re.search(r"[А-Яа-яЁё]", first + last):
                     raise ValueError
             except (KeyError, ValueError, TypeError):
                 raise AdapterError(
@@ -637,6 +816,7 @@ class HotelbookAdapter(ProviderAdapter):
                 guest["age"] = age
             prepared.append((person.get("room_ref", ""), guest))
         result = []
+        room_index = 0
         for room in offer["rooms"]:
             for _ in range(room.get("quantity", 1)):
                 guests = []
@@ -646,7 +826,7 @@ class HotelbookAdapter(ProviderAdapter):
                             (
                                 i
                                 for i, (ref, g) in enumerate(prepared)
-                                if (not ref or ref == room["hash"])
+                                if (not ref or ref == room["hash"] or ref == f"room:{room_index}")
                                 and g["isChild"] == is_child
                                 and (not is_child or g["age"] == age)
                             ),
@@ -660,6 +840,7 @@ class HotelbookAdapter(ProviderAdapter):
                             )
                         guests.append(prepared.pop(index)[1])
                 result.append({"hash": room["hash"], "guests": guests})
+                room_index += 1
         if prepared:
             raise AdapterError(
                 "GUEST_ROOM_MISMATCH", "Количество гостей не соответствует поиску", category="validation"
@@ -679,6 +860,7 @@ class HotelbookAdapter(ProviderAdapter):
 
         service_id = booking_request.get("service_id")
         snapshot = deepcopy(booking_request.get("snapshot") or {})
+        ctx.certification_run_id = snapshot.get("certification_run_id")
         if not service_id:
             raise AdapterError(
                 "BOOKING_CONTEXT_REQUIRED",
@@ -707,6 +889,7 @@ class HotelbookAdapter(ProviderAdapter):
                 raise AdapterError(
                     "BOOKING_ERROR", "Услуга уже забронирована или отменена", category="booking"
                 )
+        ctx.order_id = service.order_id
         validation = self.revalidate(ctx, snapshot)
         if validation["status"] != "valid":
             raise AdapterError(
@@ -721,6 +904,18 @@ class HotelbookAdapter(ProviderAdapter):
             )
         _, config = self._config(ctx)
         rooms = self._guests(ctx, config, updated, booking_request.get("passengers") or [])
+        contact = booking_request.get("contact_info") or config.get("contact_info") or {}
+        if not isinstance(contact, dict) or not str(contact.get("name") or "").strip():
+            raise AdapterError("CONTACT_REQUIRED", "Заполните имя контактного лица", category="validation")
+        remark = booking_request.get("special_requests") or snapshot.get("special_requests") or ""
+        if remark and (
+            not new_offer.get("isRemarkFreeFormAllowed") or not isinstance(remark, str) or len(remark) > 2000
+        ):
+            raise AdapterError(
+                "INVALID_REQUEST",
+                "Пожелания недоступны для тарифа или превышают 2000 символов",
+                category="validation",
+            )
         ref = booking_request["client_request_id"]
         locator = "HB" + hashlib.sha256(ref.encode()).hexdigest()[:30]
         booking = {"locator": locator, "client_request_id": ref, "state": "creating_order", "items": []}
@@ -777,7 +972,7 @@ class HotelbookAdapter(ProviderAdapter):
                 raise AdapterError(
                     "BOOKING_UNKNOWN", "Hotelbook: orderId не получен", category="booking_unknown"
                 )
-            booking.update(order_id=order["orderId"], state="booking")
+            booking.update(order_id=order["orderId"], state="booking", created_at=timezone.now().isoformat())
             self._save_booking_snapshot(ctx, service_id, updated)
             hb = updated["hotelbook"]
             payload = {
@@ -789,6 +984,11 @@ class HotelbookAdapter(ProviderAdapter):
                 "confirmationMode": new_offer["confirmationMode"],
                 "rooms": rooms,
             }
+            if remark:
+                payload["freeRemark"] = remark
+            booking["room_requests"] = [
+                {"room_index": index, "hash": r["hash"]} for index, r in enumerate(rooms)
+            ]
             if "client3Did" in hb["search_request"]:
                 payload["client3Did"] = hb["search_request"]["client3Did"]
             response = self._request(ctx, "book", "POST", self._path(config, "hotel/gateway/book"), payload)
@@ -798,22 +998,42 @@ class HotelbookAdapter(ProviderAdapter):
                     "BOOKING_UNKNOWN", "Hotelbook: части брони не получены", category="booking_unknown"
                 )
             booking.update(items=items, state="complete")
+            result = self._booking_result(locator, items, updated)
             self._save_booking_snapshot(ctx, service_id, updated)
-            return self._booking_result(locator, items, updated)
+            return result
         except AdapterError as exc:
             booking["state"] = "unknown" if exc.category == "booking_unknown" else "failed"
+            booking["normalized_status"] = "unknown" if exc.category == "booking_unknown" else "failed"
+            booking["error"] = {"code": exc.code, "message": str(exc)}
             self._save_booking_snapshot(ctx, service_id, updated)
             raise
 
     def _booking_result(self, locator, items, snapshot=None):
-        states = {i.get("status", i.get("state")) for i in items}
-        if states == {"CANCELED"}:
-            status = "cancelled"
-        elif states == {"CONFIRMED"}:
-            status = "booked"
-        else:
-            status = "pending"
-        result = {"locator": locator, "status": status}
+        normalized = normalized_status(items)
+        status = {"confirmed": "booked", "cancelled": "cancelled"}.get(normalized, "pending")
+        supplier_statuses = [i.get("status", i.get("state", "UNKNOWN")) for i in items]
+        result = {
+            "locator": locator,
+            "status": status,
+            "normalized_status": normalized,
+            "supplier_statuses": supplier_statuses,
+        }
+        if snapshot is not None:
+            booking = snapshot.get("hotelbook_booking", {})
+            booking.update(
+                normalized_status=normalized,
+                supplier_statuses=supplier_statuses,
+                updated_at=timezone.now().isoformat(),
+            )
+            booking["room_items"] = [
+                {
+                    "item_id": i.get("itemId"),
+                    "rooms": sanitize(i.get("rooms", [])),
+                    "provider_reference_id": (i.get("providerData") or {}).get("providerReferenceId"),
+                    "supplier_status": i.get("status", i.get("state")),
+                }
+                for i in items
+            ]
         if snapshot is not None:
             result["provider_snapshot"] = snapshot
         return result
@@ -837,12 +1057,19 @@ class HotelbookAdapter(ProviderAdapter):
         )
 
     def retrieve_booking(self, ctx, locator):
+        service, _, _ = self._stored_booking(ctx, locator)
+        with booking_lease(service):
+            return self._retrieve_locked(ctx, locator)
+
+    def _retrieve_locked(self, ctx, locator):
         service, snapshot, booking = self._stored_booking(ctx, locator)
+        ctx.order_id = service.order_id
+        ctx.certification_run_id = snapshot.get("certification_run_id")
         _, config = self._config(ctx)
         if not booking.get("order_id"):
             orders = self._request(
                 ctx,
-                "retrieve",
+                "search_orders",
                 "GET",
                 self._path(config, "order/gateway/orders")
                 + "?"
@@ -855,7 +1082,7 @@ class HotelbookAdapter(ProviderAdapter):
             booking["order_id"] = orders[0]["orderId"]
             self._save_booking_snapshot(ctx, service.id, snapshot)
         order = self._request(
-            ctx, "retrieve", "GET", self._path(config, f"order/gateway/orders/{booking['order_id']}")
+            ctx, "order_info", "GET", self._path(config, f"order/gateway/orders/{booking['order_id']}")
         )
         ids = [
             i["itemId"]
@@ -877,12 +1104,22 @@ class HotelbookAdapter(ProviderAdapter):
             )
             for i in ids
         ]
-        booking.update(items=items, state="complete")
+        cancelling = booking.get("state") == "cancelling"
+        booking.update(
+            items=items,
+            state="cancelling" if cancelling and normalized_status(items) != "cancelled" else "complete",
+        )
+        result = self._booking_result(locator, items, snapshot)
         self._save_booking_snapshot(ctx, service.id, snapshot)
-        return self._booking_result(locator, items, snapshot)
+        return result
 
     def cancel(self, ctx, locator):
-        self.retrieve_booking(ctx, locator)
+        service, _, _ = self._stored_booking(ctx, locator)
+        with booking_lease(service):
+            return self._cancel_locked(ctx, locator)
+
+    def _cancel_locked(self, ctx, locator):
+        self._retrieve_locked(ctx, locator)
         service, snapshot, booking = self._stored_booking(ctx, locator)
         _, config = self._config(ctx)
         for index, item in enumerate(booking["items"]):

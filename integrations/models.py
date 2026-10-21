@@ -1,4 +1,24 @@
+import uuid
+
 from django.db import models
+
+
+class HotelbookCertificationRun(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey("tenancy.Organization", on_delete=models.CASCADE)
+    supplier = models.ForeignKey("suppliers.Supplier", on_delete=models.PROTECT)
+    scenario = models.PositiveSmallIntegerField(choices=[(1, "ON_REQUEST"), (2, "Two rooms ONLINE")])
+    environment = models.CharField(max_length=16, default="sandbox")
+    snapshot = models.JSONField(default=dict)
+    service = models.OneToOneField("services.OrderService", null=True, blank=True, on_delete=models.PROTECT)
+    workflow = models.OneToOneField(
+        "booking.BookingWorkflow", null=True, blank=True, on_delete=models.PROTECT
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "integrations_hotelbook_certification_run"
 
 
 class IntegrationLog(models.Model):
@@ -18,6 +38,17 @@ class IntegrationLog(models.Model):
     )
     provider_adapter = models.CharField(max_length=100)
     operation = models.CharField(max_length=100)
+    environment = models.CharField(max_length=16, blank=True)
+    http_method = models.CharField(max_length=8, blank=True)
+    url = models.TextField(blank=True)
+    request_headers = models.JSONField(default=dict, blank=True)
+    external_ids = models.JSONField(default=dict, blank=True)
+    supplier_status = models.CharField(max_length=255, blank=True)
+    provider_error = models.JSONField(null=True, blank=True)
+    order = models.ForeignKey("orders.Order", null=True, blank=True, on_delete=models.SET_NULL)
+    certification_run = models.ForeignKey(
+        HotelbookCertificationRun, null=True, blank=True, on_delete=models.PROTECT, related_name="calls"
+    )
     request_sanitized = models.JSONField(null=True, blank=True)
     response_sanitized = models.JSONField(null=True, blank=True)
     http_status = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -124,3 +155,11 @@ class IncidentTimelineEntry(models.Model):
     class Meta:
         db_table = "integrations_incident_timeline"
         ordering = ["id"]
+
+
+class HotelbookOperationLease(models.Model):
+    """Cross-worker lease; committed before external I/O, unlike a long transaction."""
+
+    service = models.OneToOneField("services.OrderService", on_delete=models.CASCADE, primary_key=True)
+    owner = models.UUIDField()
+    expires_at = models.DateTimeField()

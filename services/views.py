@@ -189,6 +189,7 @@ class OrderServiceSerializer(serializers.ModelSerializer):
                 else (row.participant.guest_snapshot or {}).get("name", ""),
                 "fare_code": row.fare_code,
                 "seat_ref": row.seat_ref,
+                "room_ref": row.room_ref,
                 "currency": row.currency,
                 "price": str(row.price) if row.price is not None else None,
                 "status": row.status,
@@ -460,6 +461,7 @@ class OrderServicesView(GenericAPIView):
                 participant_ids=request.data.get("participants"),
                 user=request.user,
             )
+            _hotelbook_booking_options(service, request.data)
             emit_event("service.updated", service, payload={"action": "created", "order_id": str(order.id)})
             audit("services.created", actor=request.user, resource=service, request=request)
         return Response(OrderServiceSerializer(service).data, status=http.HTTP_201_CREATED)
@@ -581,6 +583,39 @@ def _parse_deadline(value):
     return parsed
 
 
+def _hotelbook_booking_options(service, data):
+    snapshot = dict(service.provider_snapshot or {})
+    if snapshot.get("provider_adapter") != "hotelbook":
+        return
+    if snapshot.get("hotelbook_booking") and any(k in data for k in ("room_assignments", "special_requests", "main_guest")):
+        raise ApiError(code="BOOKING_LOCKED", message="Состав отправленной брони нельзя менять", status_code=409)
+    rooms = (snapshot.get("hotelbook") or {}).get("offer", {}).get("rooms", [])
+    count = sum(r.get("quantity", 1) for r in rooms)
+    assignments = data.get("room_assignments")
+    if assignments is not None:
+        if not isinstance(assignments, dict):
+            raise ApiError(code="VALIDATION_ERROR", message="room_assignments должен быть объектом", status_code=400)
+        rows = {str(row.participant_id): row for row in service.passengers.filter(status="active")}
+        if set(assignments) != set(rows) or any(ref not in [f"room:{i}" for i in range(count)] for ref in assignments.values()):
+            raise ApiError(code="GUEST_ROOM_MISMATCH", message="Назначьте каждому гостю доступную комнату", status_code=400)
+        for participant, ref in assignments.items():
+            row = rows[participant]
+            row.room_ref = ref
+            row.save(update_fields=["room_ref"])
+    if main := data.get("main_guest"):
+        main = serializers.UUIDField().run_validation(main)
+        if not service.passengers.filter(participant_id=main, status="active").exists():
+            raise ApiError(code="GUEST_ROOM_MISMATCH", message="Основной гость не найден", status_code=400)
+        snapshot["main_guest"] = str(main)
+    if "special_requests" in data:
+        remark = data["special_requests"]
+        if not isinstance(remark, str) or len(remark) > 2000 or (remark and not (snapshot.get("hotelbook") or {}).get("offer", {}).get("isRemarkFreeFormAllowed")):
+            raise ApiError(code="INVALID_REQUEST", message="Пожелания не поддерживаются тарифом или превышают 2000 символов", status_code=400)
+        snapshot["special_requests"] = remark
+    service.provider_snapshot = snapshot
+    service.save(update_fields=["provider_snapshot"])
+
+
 class ServicePassengersView(APIView):
     permission_classes = [require("orders.view")]
 
@@ -600,6 +635,7 @@ class ServicePassengersView(APIView):
                 participant_ids=request.data.get("participants", []),
                 user=request.user,
             )
+            _hotelbook_booking_options(service, request.data)
             service.version += 1
             service.updated_by = request.user
             service.save(update_fields=["version", "updated_by", "updated_at"])

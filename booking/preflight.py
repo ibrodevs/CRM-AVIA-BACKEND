@@ -101,7 +101,9 @@ def run_preflight(workflow, user) -> dict:
             continue
         try:
             adapter = adapter_for_service(service)
-            ctx = AdapterContext(tenant_id=workflow.tenant_id, supplier_id=service.supplier_id)
+            ctx = AdapterContext(
+                tenant_id=workflow.tenant_id, supplier_id=service.supplier_id, order_id=service.order_id
+            )
             result = adapter.revalidate(ctx, snapshot)
             if result.get("terms_changed"):
                 warnings.append(

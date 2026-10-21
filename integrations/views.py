@@ -62,6 +62,17 @@ class IncidentSerializer(serializers.ModelSerializer):
         ]
 
 
+class LogFilters(serializers.Serializer):
+    supplier = serializers.UUIDField(required=False)
+    order_id = serializers.UUIDField(required=False)
+    certification_run_id = serializers.UUIDField(required=False)
+    operation = serializers.CharField(required=False, max_length=100)
+    http_status = serializers.IntegerField(required=False, min_value=100, max_value=599)
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+    result = serializers.ChoiceField(choices=["success", "error", "unknown"], required=False)
+
+
 class IntegrationLogListView(GenericAPIView):
     permission_classes = [require("integrations.manage")]
     pagination_class = DefaultPagination
@@ -69,8 +80,15 @@ class IntegrationLogListView(GenericAPIView):
     def get(self, request):
         qs = IntegrationLog.objects.filter(tenant_id=request.user.tenant_id)
         params = request.query_params
-        if supplier := params.get("supplier"):
-            qs = qs.filter(supplier_id=supplier)
+        filters = LogFilters(data=params)
+        filters.is_valid(raise_exception=True)
+        for key, value in filters.validated_data.items():
+            field = {
+                "supplier": "supplier_id",
+                "date_from": "created_at__date__gte",
+                "date_to": "created_at__date__lte",
+            }.get(key, key)
+            qs = qs.filter(**{field: value})
         if adapter := params.get("provider_adapter"):
             qs = qs.filter(provider_adapter=adapter)
         if correlation := params.get("correlation_id"):
@@ -89,6 +107,15 @@ class IntegrationLogListView(GenericAPIView):
                     "correlation_id": entry.correlation_id,
                     "provider_adapter": entry.provider_adapter,
                     "operation": entry.operation,
+                    "environment": entry.environment,
+                    "http_method": entry.http_method,
+                    "url": entry.url,
+                    "request_headers": entry.request_headers,
+                    "order_id": entry.order_id,
+                    "external_ids": entry.external_ids,
+                    "supplier_status": entry.supplier_status,
+                    "provider_error": entry.provider_error,
+                    "certification_run_id": entry.certification_run_id,
                     "result": entry.result,
                     "error_code": entry.error_code,
                     "http_status": entry.http_status,
@@ -106,14 +133,18 @@ class IntegrationLogListView(GenericAPIView):
 
 
 class IncidentListView(GenericAPIView):
-    permission_classes = [require("orders.view")]
+    permission_classes = [require("integrations.manage")]
     pagination_class = DefaultPagination
     serializer_class = IncidentSerializer
 
     def get(self, request):
-        qs = IntegrationIncident.objects.filter(tenant_id=request.user.tenant_id).prefetch_related("timeline__actor")
+        qs = IntegrationIncident.objects.filter(tenant_id=request.user.tenant_id).prefetch_related(
+            "timeline__actor"
+        )
         params = request.query_params
-        if supplier := params.get("supplier"):
+        filters = LogFilters(data=params)
+        filters.is_valid(raise_exception=True)
+        if supplier := filters.validated_data.get("supplier"):
             qs = qs.filter(supplier_id=supplier)
         if incident_status := params.get("status"):
             qs = qs.filter(status=incident_status)
@@ -268,3 +299,43 @@ class ErrorCodeListView(APIView):
                 for e in IntegrationErrorCode.objects.all()
             ]
         )
+
+
+class HotelbookCertificationRunsView(APIView):
+    permission_classes = [require("integrations.manage")]
+
+    def get(self, request):
+        from integrations.certification import summary
+        from integrations.models import HotelbookCertificationRun
+
+        filters = LogFilters(data=request.query_params)
+        filters.is_valid(raise_exception=True)
+        qs = HotelbookCertificationRun.objects.filter(tenant_id=request.user.tenant_id).select_related(
+            "service"
+        )
+        if supplier := filters.validated_data.get("supplier"):
+            qs = qs.filter(supplier_id=supplier)
+        return Response([summary(run) for run in qs.order_by("-created_at")[:100]])
+
+
+class HotelbookCertificationExportView(APIView):
+    permission_classes = [require("integrations.manage")]
+
+    def get(self, request, run_id):
+        from django.http import HttpResponse
+
+        from integrations.certification import export_runs
+        from integrations.models import HotelbookCertificationRun
+
+        run = (
+            HotelbookCertificationRun.objects.filter(pk=run_id, tenant_id=request.user.tenant_id)
+            .select_related("service")
+            .first()
+        )
+        if run is None:
+            raise ApiError(code="NOT_FOUND", message="Certification run not found", status_code=404)
+        audit("integrations.certification_export", actor=request.user, resource=run, request=request)
+        response = HttpResponse(export_runs([run]), content_type="application/zip")
+        response["Content-Disposition"] = f'attachment; filename="hbpro-{run.id}.zip"'
+        response["Cache-Control"] = "no-store"
+        return response

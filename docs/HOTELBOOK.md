@@ -1,5 +1,7 @@
 # Hotelbook / HB Pro Expert
 
+Current certification flow (2026-10-21): [HBPRO_CERTIFICATION_RUNBOOK.md](HBPRO_CERTIFICATION_RUNBOOK.md). The supplied HBPRO PDF requires hotel 1251201 and supersedes older sandbox test scenarios below.
+
 Интеграция основана на официальной [документации](https://api.hbpro.expert/docs/)
 и [OpenAPI](https://api.hbpro.expert/docs/swagger.json), версия документа 2026.09.23,
 проверено 07.10.2026. Живой прогон требует credentials HB Pro и разрешённого IP backend.
@@ -169,13 +171,12 @@ API действий. Задания асинхронные: между шага
 После успешного живого Casa Manzella повторите полный сценарий по отдельности:
 Hilton Cologne `1251542`, Haus Mooren `1251543`, Palazzo Victoria `1251563`,
 Мастер-отель Первомайская `131687` (исправленный тестовый ID). Не объединяйте страны в один поиск:
-HB запрещает hotels/cities из разных стран. Sandbox/test credentials ограничены этими пятью отелями.
+HB запрещает hotels/cities из разных стран. Sandbox допускает эти прежние тестовые ID и сертификационный отель 1251201; фактический доступ определяет HBPRO.
 
 ## Ошибки и неопределённые результаты
 
 Все ошибки проходят через AdapterError: auth/IP, timeout, availability, price/rate
-change, missing offer и booking/cancel errors. В логи записываются только транспортные
-метаданные; HB тексты ошибок, которые могут содержать входные данные, наружу не выводятся.
+change, missing offer и booking/cancel errors. В технические логи записываются URL, HTTP-метаданные и очищенные от credentials/PII тела запросов и ответов. Доступ требует integrations.manage; обычные ответы содержат только нормализованную ошибку.
 
 Перед create-order/book сохраняется долговечная отметка операции в provider_snapshot.
 Timeout/5xx/нечитаемый ответ мутации означает unknown, а не безопасный повтор.
@@ -204,7 +205,7 @@ Frontend: `npm test`, `npm run build`.
 ServiceOffer, OrderService и booking workflow. Покрыты все пять отелей, пагинация,
 актуализация цен и наценок, условия, ошибки/timeout, pending confirmation,
 несколько частей брони/отмены, credentials и tenant isolation, запрет дублей.
-Mock flow проверяется существующими regression tests. Новые миграции не требуются.
+Mock flow проверяется существующими regression tests. Сертификационные дополнения требуют integrations migrations 0003/0004.
 
 Живой read-only сценарий Casa Manzella проверен локально 2026-10-07:
 login → search → results → details/revalidate, даты 2026-10-21–2026-10-23,

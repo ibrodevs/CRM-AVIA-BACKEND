@@ -3,6 +3,8 @@ from django.urls import path
 from integrations import views as v
 
 urlpatterns = [
+    path("hbpro-certification-runs/", v.HotelbookCertificationRunsView.as_view()),
+    path("hbpro-certification-runs/<uuid:run_id>/export/", v.HotelbookCertificationExportView.as_view()),
     path("integration-operations/", v.IntegrationLogListView.as_view(), name="integration-operations"),
     path("integration-incidents/", v.IncidentListView.as_view(), name="integration-incidents"),
     path(

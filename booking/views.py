@@ -18,6 +18,13 @@ from services.models import OrderService
 class WorkflowItemSerializer(serializers.ModelSerializer):
     service_kind = serializers.CharField(source="service.kind", read_only=True)
     service_title = serializers.CharField(source="service.title", read_only=True)
+    supplier_confirmation = serializers.SerializerMethodField()
+
+    def get_supplier_confirmation(self, obj):
+        booking = (obj.service.provider_snapshot or {}).get("hotelbook_booking")
+        if not booking:
+            return None
+        return {k: booking.get(k) for k in ("normalized_status", "supplier_statuses", "updated_at")}
 
     class Meta:
         model = BookingWorkflowItem
@@ -26,6 +33,7 @@ class WorkflowItemSerializer(serializers.ModelSerializer):
             "service",
             "service_kind",
             "service_title",
+            "supplier_confirmation",
             "sequence",
             "status",
             "locator",

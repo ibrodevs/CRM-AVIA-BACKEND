@@ -70,6 +70,9 @@ class Gateway:
         self.failure = None
         self.fail_once_auth = False
         self.order_has_items = True
+        self.search_rooms = [{"adults": 1, "quantity": 1}]
+        self.check_out = "2027-03-12"
+        self.book_rooms = None
 
     def open(self, request, timeout):
         url = urlparse(request.full_url)
@@ -91,9 +94,9 @@ class Gateway:
                 self.raise_error(request, error[0], error[1])
             if url.path.endswith("/hotel/gateway/search"):
                 assert request.method == "POST"
-                assert body["checkIn"] == "2027-03-10" and body["checkOut"] == "2027-03-12"
+                assert body["checkIn"] == "2027-03-10" and body["checkOut"] == self.check_out
                 assert body["citizenshipId"] == 77
-                assert body["rooms"] == [{"adults": 1, "quantity": 1}]
+                assert body["rooms"] == self.search_rooms
                 response = {"searchId": SEARCH_ID, "state": "IN_PROCESS"}
             elif "/hotel/gateway/results/" in url.path:
                 assert request.method == "GET"
@@ -126,7 +129,11 @@ class Gateway:
             elif url.path.endswith("/hotel/gateway/book"):
                 assert body["orderId"] == 4321
                 assert body["price"] == self.current["price"]["amount"] and body["currency"] == "EUR"
-                assert body["rooms"] == [
+                if self.book_rooms:
+                    for actual, expected in zip(body["rooms"], self.book_rooms, strict=True):
+                        assert actual["hash"] == expected["hash"]
+                        assert sorted(actual["guests"], key=lambda g: g["lastName"]) == sorted(expected["guests"], key=lambda g: g["lastName"])
+                assert self.book_rooms or body["rooms"] == (self.book_rooms or [
                     {
                         "hash": "opaque-room-hash",
                         "guests": [
@@ -139,8 +146,8 @@ class Gateway:
                             }
                         ],
                     }
-                ]
-                assert body["confirmationMode"] == "ONLINE"
+                ])
+                assert body["confirmationMode"] == self.current["confirmationMode"]
                 response = {"items": [self.booking_item(i) for i in self.items]}
             elif url.path.endswith("/order/gateway/orders/4321"):
                 response = {
@@ -171,6 +178,9 @@ class Gateway:
             "orderId": 4321,
             "status": status or self.item_status,
             "isCancellationAllowed": True,
+            "providerData": {"providerReferenceId": "HB-FIXTURE-REF"},
+            "createdAt": "2026-10-21T12:00:00+00:00",
+            "updatedAt": "2026-10-21T12:30:00+00:00",
             "price": self.current["price"],
         }
 
@@ -374,7 +384,7 @@ def test_search_drains_finished_pages(tenant, hb_supplier, gateway):
         ("ERR006#2", 400, "PRICE_CHANGED"),
         ("ERR006#9", 400, "RATE_CHANGED"),
         ("ERRH003#1", 400, "RATE_UNAVAILABLE"),
-        ("ERR004#1", 400, "PROVIDER_ERROR"),
+        ("ERR004#1", 400, "INVALID_REQUEST"),
     ],
 )
 def test_provider_errors_normalized(tenant, hb_supplier, gateway, code, status, expected):
@@ -582,7 +592,7 @@ def test_service_cannot_fake_a_provider_booking(admin_client, tenant, hb_supplie
 def test_booking_failure_normalized(admin_client, tenant, hb_supplier, gateway):
     workflow, _ = ready_booking(admin_client, tenant, hb_supplier)
     gateway.failure = ("/hotel/gateway/book", (400, "ERR004#1"))
-    assert start(admin_client, workflow)["items"][0]["error_code"] == "BOOKING_ERROR"
+    assert start(admin_client, workflow)["items"][0]["error_code"] == "BOOKING_REJECTED"
 
 
 def test_order_creation_timeout_recovers_by_client_reference(admin_client, tenant, hb_supplier, gateway):
@@ -634,7 +644,7 @@ def test_expired_offer_requires_new_search(tenant, hb_supplier, gateway):
     picked["expires_at"] = "2020-01-01T00:00:00Z"
     with pytest.raises(AdapterError) as exc:
         adapter.revalidate(context(tenant, hb_supplier), picked)
-    assert exc.value.code == "RATE_UNAVAILABLE"
+    assert exc.value.code == "OFFER_EXPIRED"
 
 
 def test_pending_cancel_does_not_repeat_mutation(admin_client, tenant, hb_supplier, gateway):

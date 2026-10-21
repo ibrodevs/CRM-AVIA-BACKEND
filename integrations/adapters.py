@@ -40,6 +40,9 @@ class AdapterContext:
     tenant_id: object
     supplier_id: object | None = None
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    order_id: object | None = None
+    certification_run_id: object | None = None
+    environment: str = ""
 
 
 class ProviderAdapter:

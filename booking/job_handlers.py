@@ -48,6 +48,7 @@ def run_booking(job: BackgroundJob) -> dict:
         item.status = BookingWorkflowItem.Status.BOOKING
         item.save(update_fields=["status"])
         ctx.supplier_id = service.supplier_id
+        ctx.order_id = service.order_id
         try:
             adapter = _adapter_for(service)
             result = adapter.book(
@@ -249,6 +250,17 @@ def status_inquiry(job: BackgroundJob) -> dict:
         return {"status": "inquiry_failed", "error_code": exc.code}
 
     provider_status = result.get("status")
+    if provider_status == "pending":
+        item.provider_result = result
+        item.status = BookingWorkflowItem.Status.UNKNOWN
+        item.save(update_fields=["status", "provider_result"])
+        if result.get("provider_snapshot"):
+            OrderService.objects.filter(pk=item.service_id).update(
+                status=OrderService.Status.APPROVAL, provider_snapshot=result["provider_snapshot"]
+            )
+        item.workflow.status = "partial"
+        item.workflow.save(update_fields=["status"])
+
     if provider_status == "issued":
         item.status = BookingWorkflowItem.Status.ISSUED
         item.provider_result = result
@@ -274,7 +286,9 @@ def status_inquiry(job: BackgroundJob) -> dict:
             if provider_status == "booked"
             else BookingWorkflowItem.Status.COMPENSATED
         )
-        item.save(update_fields=["status", "provider_result"])
+        item.error_code = ""
+        item.error_message = ""
+        item.save(update_fields=["status", "provider_result", "error_code", "error_message"])
         if not item.workflow.items.exclude(status="booked").exists():
             item.workflow.status = "completed"
             item.workflow.save(update_fields=["status"])
@@ -366,8 +380,9 @@ def _booking_passengers(service):
         else:
             data = dict(row.participant.guest_snapshot or {})
         data["room_ref"] = row.room_ref
+        data["is_main"] = str(row.participant_id) == (service.provider_snapshot or {}).get("main_guest")
         passengers.append(data)
-    return passengers
+    return sorted(passengers, key=lambda p: not p.get("is_main", False))
 
 
 def _booking_contact(order):
