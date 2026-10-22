@@ -32,14 +32,14 @@ All HB requests originate from the backend services; browser requests never cont
 
 Use a CRM actor UUID with `integrations.manage`, order access, booking and cancellation permissions. CLI also enforces normal booking preflight and tenant isolation. Create/select actual CRM order participants with complete guest data and contact person. The commands below are examples; no live financial actions were executed during development.
 
-First scenario: test hotel 1251201, 1 room, 1 adult, 3 nights, ON_REQUEST. Second: same hotel, 2 rooms, 2 adults per room with different genders, 2 nights, ONLINE. Booking uses ONE create-order and ONE hotel-book call for all rooms. Each returned item and supplier room identifier remains in supplier-specific structured data.
+HBPRO confirmed hotel 131687 for both scenarios (2026-10-22), superseding the hotel 1251201 in the original PDF. First scenario: 1 room, 1 adult, 3 nights, ON_REQUEST. Second: same hotel 131687, 2 rooms, 2 adults per room with different genders, 2 nights, ONLINE. Booking uses ONE create-order and ONE hotel-book call for all rooms. Each returned item and supplier room identifier remains in supplier-specific structured data.
 
 ```
-python manage.py hbpro_certification prepare --tenant TENANT_UUID --actor USER_UUID --supplier SUPPLIER_UUID --scenario 1 --check-in YYYY-MM-DD
-python manage.py hbpro_certification prepare --tenant TENANT_UUID --actor USER_UUID --supplier SUPPLIER_UUID --scenario 2 --check-in YYYY-MM-DD
+python manage.py hbpro_certification prepare --tenant TENANT_UUID --actor USER_UUID --supplier SUPPLIER_UUID --scenario 1 --hotel-id 131687 --check-in YYYY-MM-DD
+python manage.py hbpro_certification prepare --tenant TENANT_UUID --actor USER_UUID --supplier SUPPLIER_UUID --scenario 2 --hotel-id 131687 --check-in YYYY-MM-DD
 ```
 
-For the HBPRO-confirmed ON_REQUEST test hotel, pass `--hotel-id 131687` to scenario 1 prepare. The default remains `1251201` for backward compatibility; the selected offer must belong to the requested hotel. This option does not enable financial actions.
+Pass `--hotel-id 131687` explicitly to both scenario prepares. The default remains `1251201` for backward compatibility; the selected offer must belong to the requested hotel. This option does not enable financial actions.
 
 Prepare performs read-only search/results/details, exercises `limit=1` and `offset`, selects the required confirmation mode, and prints a run UUID. Use future dates with availability. It sends no create-order, booking or cancellation. Failed/empty prepares retain their request evidence and are exported as partial, never successful.
 

@@ -51,7 +51,8 @@ def summary(run):
     book = books[0].request_sanitized if books else {}
     booked_rooms = book.get("rooms", [])
     checks = {
-        "certification_hotel": search.get("hotels") == [1251201],
+        "certification_hotel": search.get("hotels") in ([1251201], [131687])
+        and search.get("hotels") == [(snapshot or {}).get("hotelbook", {}).get("hotel_id")],
         "nights": nights == (3 if run.scenario == 1 else 2),
         "confirmation_mode": book.get("confirmationMode") == expected_mode,
         "one_booking_call": len(books) == 1,
@@ -85,6 +86,7 @@ def summary(run):
         "search_ids": ids.get("searchId", []),
         "offer_count": len(ids.get("offerId", [])),
         "selected_offer_id": (snapshot or {}).get("hotelbook", {}).get("offer_id"),
+        "hotel_id": (snapshot or {}).get("hotelbook", {}).get("hotel_id"),
         "order_ids": ids.get("orderId", []),
         "provider_reference_ids": ids.get("providerReferenceId", []),
         "item_ids": ids.get("itemId", []),

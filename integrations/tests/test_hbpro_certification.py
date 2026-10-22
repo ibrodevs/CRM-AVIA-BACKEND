@@ -326,13 +326,14 @@ def test_actual_two_room_booking_one_request(admin_client, tenant, hb_supplier, 
     ]
 
 
+@pytest.mark.parametrize("hotel_id", [1251201, 131687])
 def test_staged_certification_command_full_flow(
-    admin_client, admin_user, tenant, hb_supplier, gateway, tmp_path
+    admin_client, admin_user, tenant, hb_supplier, gateway, tmp_path, hotel_id
 ):
     _, original = ready_booking(admin_client, tenant, hb_supplier)
     service = OrderService.objects.get(pk=original["id"])
     participant = service.passengers.get().participant
-    gateway.current = offer(1251201)
+    gateway.current = offer(hotel_id)
     gateway.current.update(confirmationMode="ON_REQUEST", checkOut="2027-03-13")
     gateway.check_out = "2027-03-13"
     options = {"tenant": str(tenant.id), "actor": str(admin_user.id), "stdout": io.StringIO()}
@@ -341,6 +342,7 @@ def test_staged_certification_command_full_flow(
         "prepare",
         supplier=str(hb_supplier.id),
         scenario=1,
+        hotel_id=hotel_id,
         check_in="2027-03-10",
         **options,
     )
@@ -371,6 +373,7 @@ def test_staged_certification_command_full_flow(
     run.refresh_from_db()
     assert run.service.status == "cancelled"
     assert summary(run)["readiness"] == "PASS"
+    assert summary(run)["hotel_id"] == hotel_id
     output = tmp_path / "package.zip"
     call_command("hbpro_certification", "export", run=[str(run.id)], output=str(output), **options)
     with ZipFile(output) as archive:
