@@ -223,8 +223,13 @@ def test_certification_financial_guard(admin_user, tenant, hb_supplier):
         )
 
 
-def test_scenario_1_prepare_is_readonly(admin_user, tenant, hb_supplier, gateway):
-    gateway.current = offer(1251201)
+@pytest.mark.parametrize("hotel_id", [None, 131687])
+def test_scenario_1_prepare_is_readonly(admin_user, tenant, hb_supplier, gateway, monkeypatch, hotel_id):
+    from integrations.hotelbook import TEST_HOTELS
+
+    expected_hotel = hotel_id or 1251201
+    monkeypatch.setitem(TEST_HOTELS, expected_hotel, "Certification fixture hotel")
+    gateway.current = offer(expected_hotel)
     gateway.current.update(confirmationMode="ON_REQUEST", checkOut="2027-03-13")
     gateway.check_out = "2027-03-13"
     call_command(
@@ -236,9 +241,12 @@ def test_scenario_1_prepare_is_readonly(admin_user, tenant, hb_supplier, gateway
         scenario=1,
         check_in="2027-03-10",
         stdout=io.StringIO(),
+        **({"hotel_id": hotel_id} if hotel_id is not None else {}),
     )
+    search_body = next(call[3] for call in gateway.calls if call[1].endswith("/hotel/gateway/search"))
+    assert search_body["hotels"] == [expected_hotel]
     run = HotelbookCertificationRun.objects.get()
-    assert run.snapshot["hotelbook"]["hotel_id"] == 1251201
+    assert run.snapshot["hotelbook"]["hotel_id"] == expected_hotel
     assert run.snapshot["hotelbook"]["offer"]["confirmationMode"] == "ON_REQUEST"
     assert run.calls.filter(operation="search").exists()
     assert not run.calls.filter(operation__in=["book", "create_order", "cancel"]).exists()
@@ -494,3 +502,41 @@ def test_special_requests_are_supported_only_when_returned_by_hbpro(
     assert request["freeRemark"] == "Quiet room"
     log = IntegrationLog.objects.get(operation="book")
     assert log.request_sanitized["freeRemark"] == "[REDACTED]"
+
+
+@pytest.mark.parametrize("hotel_id", [0, -131687])
+def test_prepare_rejects_invalid_hotel_id_before_supplier_calls(
+    admin_user, tenant, hb_supplier, gateway, hotel_id
+):
+    with pytest.raises(CommandError, match="positive integer"):
+        call_command(
+            "hbpro_certification",
+            "prepare",
+            tenant=str(tenant.id),
+            actor=str(admin_user.id),
+            supplier=str(hb_supplier.id),
+            scenario=1,
+            check_in="2027-03-10",
+            hotel_id=hotel_id,
+        )
+    assert not gateway.calls
+    assert not HotelbookCertificationRun.objects.exists()
+
+
+def test_prepare_rejects_offer_from_another_hotel(admin_user, tenant, hb_supplier, gateway):
+    gateway.current = offer(1251201)
+    gateway.current.update(confirmationMode="ON_REQUEST", checkOut="2027-03-13")
+    gateway.check_out = "2027-03-13"
+    with pytest.raises(CommandError, match="no ON_REQUEST offers"):
+        call_command(
+            "hbpro_certification",
+            "prepare",
+            tenant=str(tenant.id),
+            actor=str(admin_user.id),
+            supplier=str(hb_supplier.id),
+            scenario=1,
+            check_in="2027-03-10",
+            hotel_id=131687,
+        )
+    assert not HotelbookCertificationRun.objects.get().snapshot
+    assert not any(call[1].endswith("/search/details") for call in gateway.calls)

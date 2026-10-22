@@ -32,6 +32,9 @@ class Command(BaseCommand):
         parser.add_argument("--supplier")
         parser.add_argument("--scenario", type=int, choices=[1, 2])
         parser.add_argument("--check-in")
+        parser.add_argument(
+            "--hotel-id", type=int, default=1251201, help="Test hotel ID for prepare (default: 1251201)"
+        )
         parser.add_argument("--citizenship", default="KG")
         parser.add_argument("--run", action="append", default=[])
         parser.add_argument("--order")
@@ -72,6 +75,9 @@ class Command(BaseCommand):
                     raise ValueError
             except ValueError:
                 raise CommandError("Use a future ISO --check-in date") from None
+            hotel_id = options["hotel_id"]
+            if hotel_id <= 0:
+                raise CommandError("--hotel-id must be a positive integer")
             scenario = options["scenario"]
             run = HotelbookCertificationRun.objects.create(
                 tenant_id=actor.tenant_id, supplier=supplier, scenario=scenario
@@ -83,7 +89,7 @@ class Command(BaseCommand):
                 correlation_id=str(run.id),
             )
             criteria = {
-                "location": "1251201",
+                "location": str(hotel_id),
                 "check_in": check_in.isoformat(),
                 "check_out": (check_in + timedelta(days=3 if scenario == 1 else 2)).isoformat(),
                 "rooms": 1 if scenario == 1 else 2,
@@ -100,7 +106,8 @@ class Command(BaseCommand):
             offers = [
                 o
                 for o in offers
-                if o["hotelbook"]["offer"].get("checkIn") == criteria["check_in"]
+                if o["hotelbook"]["offer"].get("hotelId") == hotel_id
+                and o["hotelbook"]["offer"].get("checkIn") == criteria["check_in"]
                 and o["hotelbook"]["offer"].get("checkOut") == criteria["check_out"]
                 and sum(r.get("quantity", 1) for r in o["hotelbook"]["offer"]["rooms"]) == criteria["rooms"]
                 and all(

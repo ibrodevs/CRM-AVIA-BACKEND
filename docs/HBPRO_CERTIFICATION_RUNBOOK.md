@@ -39,6 +39,8 @@ python manage.py hbpro_certification prepare --tenant TENANT_UUID --actor USER_U
 python manage.py hbpro_certification prepare --tenant TENANT_UUID --actor USER_UUID --supplier SUPPLIER_UUID --scenario 2 --check-in YYYY-MM-DD
 ```
 
+For the HBPRO-confirmed ON_REQUEST test hotel, pass `--hotel-id 131687` to scenario 1 prepare. The default remains `1251201` for backward compatibility; the selected offer must belong to the requested hotel. This option does not enable financial actions.
+
 Prepare performs read-only search/results/details, exercises `limit=1` and `offset`, selects the required confirmation mode, and prints a run UUID. Use future dates with availability. It sends no create-order, booking or cancellation. Failed/empty prepares retain their request evidence and are exported as partial, never successful.
 
 After reviewing the selected rate and cancellation penalties, explicitly authorize each financial action by running:
