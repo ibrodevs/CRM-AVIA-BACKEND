@@ -10,7 +10,14 @@ Redis в текущих Compose-конфигурациях отсутствуе�
 
 `prepare` сохраняет поисковый snapshot без getSearchDetails. `book` вызывает
 обычный preflight: один актуальный getSearchDetails и сохранение подписанного
-snapshot. Worker использует его до 30 секунд; подпись связывает supplier,
+snapshot. Search является предварительным источником условий: первая загрузка
+полных cancellation/change/noShow/info из getSearchDetails — enrichment без
+RATE_CHANGED. Цена по-прежнему сравнивается с Search; несовпадение идентификаторов,
+дат, номеров или confirmationMode при первом переходе блокирует preflight.
+Snapshot помечается terms_source=details и содержит revalidated_at; последующие
+getSearchDetails сравниваются с полными сохранёнными условиями. Подписанные
+snapshot старой версии также распознаются как detailed baseline.
+Worker использует его до 30 секунд; подпись связывает supplier,
 credentials, поисковые данные, цену, условия и срок предложения. Изменение
 snapshot или истечение TTL требует повторной проверки. При изменении цены или
 условий worker блокирует бронирование до нового preflight/подтверждения.

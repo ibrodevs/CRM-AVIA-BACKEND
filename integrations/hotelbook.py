@@ -794,10 +794,38 @@ class HotelbookAdapter(ProviderAdapter):
         for field in ("client3Did", "earlyArrivalTime", "lateDepartureTime"):
             if field in hb.get("search_request", {}):
                 request[field] = hb["search_request"][field]
-        offer = self._request(
+        previous = hb.get("offer") or {}
+        for field, expected in (("offerId", hb["offer_id"]), ("hotelId", hb.get("hotel_id"))):
+            if previous.get(field) != expected:
+                raise AdapterError(
+                    "RATE_UNAVAILABLE",
+                    "Hotelbook: идентификаторы предложения не совпадают",
+                    category="availability",
+                )
+        details = self._request(
             ctx, "revalidate", "POST", self._path(config, "hotel/gateway/search/details"), request
         )
-        offer = {**hb.get("offer", {}), **offer}
+        for field, expected in (
+            ("searchId", hb["search_id"]),
+            ("offerId", hb["offer_id"]),
+            ("hotelId", hb["hotel_id"]),
+            ("checkIn", previous.get("checkIn")),
+            ("checkOut", previous.get("checkOut")),
+        ):
+            if field in details and details[field] != expected:
+                raise AdapterError(
+                    "RATE_UNAVAILABLE",
+                    "Hotelbook: предложение больше не соответствует поиску",
+                    category="availability",
+                )
+        # Price must come from details, never be inherited silently from Search.
+        self._price(details)
+        offer = {**previous, **details}
+        # A returned policy object replaces the preliminary one, including its alias.
+        if "finePolicies" in details or "fines" in details:
+            offer.pop("finePolicies", None)
+            offer.pop("fines", None)
+            offer.update({k: details[k] for k in ("finePolicies", "fines") if k in details})
         normalized = self._normalize(
             offer,
             hb["search_id"],
@@ -805,6 +833,15 @@ class HotelbookAdapter(ProviderAdapter):
             hb.get("hotel", {}),
             hb.get("search_request", {}),
         )
+        old_terms, new_terms = self._terms(previous), self._terms(offer)
+        detailed_baseline = self._has_detailed_baseline(ctx, offer_snapshot)
+        critical_changed = any(old_terms[k] != new_terms[k] for k in ("confirmation", "rooms"))
+        if not detailed_baseline and critical_changed:
+            raise AdapterError(
+                "RATE_CHANGED",
+                "Hotelbook: изменились номера или режим подтверждения",
+                category="availability",
+            )
         for key in ("special_requests", "main_guest"):
             if key in offer_snapshot:
                 normalized[key] = offer_snapshot[key]
@@ -812,13 +849,18 @@ class HotelbookAdapter(ProviderAdapter):
             normalized["certification_run_id"] = str(ctx.certification_run_id)
         if hb.get("citizenship_ids"):
             normalized["hotelbook"]["citizenship_ids"] = deepcopy(hb["citizenship_ids"])
+        normalized["hotelbook"].update(terms_source="details", revalidated_at=timezone.now().isoformat())
         normalized["hotelbook_revalidation"] = signing.dumps(
             self._validation_identity(ctx, normalized), salt="hbpro.revalidation"
         )
-        changed = normalized["price"] != offer_snapshot.get("price")
+        old_price = self._price(offer_snapshot)
+        changed = (
+            Decimal(normalized["price"]["amount"]) != Decimal(old_price["amount"])
+            or normalized["price"]["currency"] != old_price["currency"]
+        )
         return {
             "status": "price_changed" if changed else "valid",
-            "terms_changed": self._terms(offer) != self._terms(hb.get("offer", {})),
+            "terms_changed": detailed_baseline and old_terms != new_terms,
             "price": normalized["price"],
             "snapshot": normalized,
             "fare_rules": self._rules(offer),
@@ -831,6 +873,17 @@ class HotelbookAdapter(ProviderAdapter):
         digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
         return {"credential": self._cache_key(credential, config, "validation"), "digest": digest}
 
+    def _has_detailed_baseline(self, ctx, snapshot):
+        if (snapshot.get("hotelbook") or {}).get("terms_source") == "details":
+            return True
+        # An expired booking proof still identifies a trusted previous detailed baseline.
+        # This also recognizes signed detailed snapshots created before terms_source existed.
+        try:
+            identity = signing.loads(snapshot.get("hotelbook_revalidation", ""), salt="hbpro.revalidation")
+            return identity == self._validation_identity(ctx, snapshot)
+        except (signing.BadSignature, ValueError, TypeError):
+            return False
+
     def _booking_validation(self, ctx, snapshot):
         proof = snapshot.get("hotelbook_revalidation")
         if proof:
@@ -841,6 +894,7 @@ class HotelbookAdapter(ProviderAdapter):
                     expires
                     and timezone.is_aware(expires)
                     and expires > timezone.now()
+                    and (snapshot.get("hotelbook") or {}).get("terms_source") == "details"
                     and identity == self._validation_identity(ctx, snapshot)
                 ):
                     return {"status": "valid", "snapshot": deepcopy(snapshot)}
@@ -972,9 +1026,8 @@ class HotelbookAdapter(ProviderAdapter):
                 "PRICE_CHANGED", "Цена Hotelbook изменилась; повторите preflight", category="price"
             )
         updated = validation["snapshot"]
-        old_offer = snapshot["hotelbook"]["offer"]
         new_offer = updated["hotelbook"]["offer"]
-        if self._terms(old_offer) != self._terms(new_offer):
+        if validation.get("terms_changed"):
             raise AdapterError(
                 "RATE_CHANGED", "Условия тарифа изменились; повторите preflight", category="availability"
             )

@@ -273,7 +273,9 @@ def post(client, path, body=None, key=None):
     return response.json()
 
 
-def ready_booking(admin_client, tenant, hb_supplier, hotel_id=1251539):
+def ready_booking(
+    admin_client, tenant, hb_supplier, hotel_id=1251539, *, revalidate_offer=True, preflight=True
+):
     person = Person.objects.create(
         tenant=tenant,
         surname="Иванов",
@@ -306,11 +308,13 @@ def ready_booking(admin_client, tenant, hb_supplier, hotel_id=1251539):
     assert picked["itinerary"]["room"] == "Standard Double"
     assert picked["fare"]["cancellation_rules"]
     assert "hotelbook" not in picked and "raw_snapshot" not in picked
-    post(admin_client, f"service-offers/{picked['id']}/revalidate/")
+    if revalidate_offer:
+        post(admin_client, f"service-offers/{picked['id']}/revalidate/")
     service = post(admin_client, f"orders/{order['id']}/services/", {"offer_id": picked["id"]})
     workflow = post(admin_client, "booking-workflows/", {"order": order["id"], "services": [service["id"]]})
-    preflight = post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")
-    assert preflight["ok"] and not preflight["price_changes"]
+    if preflight:
+        result = post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")
+        assert result["ok"] and not result["price_changes"]
     return workflow, service
 
 
@@ -914,12 +918,14 @@ def test_revalidation_compares_fine_semantics(tenant, hb_supplier, gateway, poli
     search_offer[policy_key] = policies
     gateway.current = deepcopy(search_offer)
     snapshot = adapter.search(ctx, "hotel", criteria())[0]
+    gateway.current = enriched_details(gateway.current)
+    snapshot = adapter.revalidate(ctx, snapshot)["snapshot"]
     original_snapshot = deepcopy(snapshot)
     details_policies = gateway.current[policy_key]
     for kind in ("cancel", "change"):
         fine = details_policies[kind][0]
-        fine["amount"] = fine.pop("price")
-        fine["amount"]["amount"] = "120.250"
+        fine["amount"] = fine.pop("price", fine.get("amount"))
+        fine["amount"]["amount"] = format(Decimal(str(fine["amount"]["amount"])), ".3f")
     if change == "cancel_amount":
         details_policies["cancel"][0]["amount"]["amount"] = "121.25"
     elif change == "change_amount":
@@ -951,4 +957,89 @@ def test_preflight_accepts_equivalent_details_fine_schema(admin_client, tenant, 
     result = post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")
     assert result["ok"] and not result["price_changes"]
     assert not any(warning["code"] == "RATE_CHANGED" for warning in result["warnings"])
+    assert not any(c[1].endswith(("/hotel/gateway/book", "/cancel")) for c in gateway.calls)
+
+
+def enriched_details(search_offer):
+    details = deepcopy(search_offer)
+    policies = details.get("finePolicies") or details["fines"]
+    policies["cancel"].append({"from": None, "amount": {"amount": "0", "currency": "EUR"}})
+    policies["change"] = [{"from": None, "amount": {"amount": "50", "currency": "EUR"}}]
+    policies["info"] = ["Full cancellation conditions"]
+    policies["noShow"] = {"amount": "6056", "currency": "EUR", "info": "Full no-show conditions"}
+    return details
+
+
+def test_first_preflight_enriches_and_persists_detailed_baseline(
+    admin_client, tenant, hb_supplier, gateway, monkeypatch
+):
+    gateway.current["price"]["amount"] = 6056
+    workflow, service_data = ready_booking(
+        admin_client, tenant, hb_supplier, revalidate_offer=False, preflight=False
+    )
+    service = OrderService.objects.get(pk=service_data["id"])
+    assert "hotelbook_revalidation" not in service.provider_snapshot
+    gateway.current = enriched_details(gateway.current)
+    result = post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")
+    assert result["ok"] and not result["price_changes"]
+    assert not any(w["code"] == "RATE_CHANGED" for w in result["warnings"])
+    service.refresh_from_db()
+    snapshot = service.provider_snapshot
+    assert snapshot["hotelbook"]["terms_source"] == "details"
+    assert snapshot["hotelbook"]["revalidated_at"]
+    assert snapshot["hotelbook_revalidation"]
+    assert len(snapshot["hotelbook"]["offer"]["finePolicies"]["cancel"]) == 2
+    expected_policies = json.loads(json.dumps(gateway.current["finePolicies"]), parse_float=str)
+    assert snapshot["hotelbook"]["offer"]["finePolicies"] == expected_policies
+    assert snapshot["hotelbook"]["search_id"] == SEARCH_ID
+    assert snapshot["hotelbook"]["hotel"]["id"] == gateway.current["hotelId"]
+    gateway.calls.clear()
+    assert start(admin_client, workflow)["items"][0]["status"] == "booked"
+    assert not any(c[1].endswith("/search/details") for c in gateway.calls)
+    # Expiry affects reuse for booking, not the authoritative terms baseline.
+    monkeypatch.setattr(HotelbookAdapter, "revalidation_ttl", -1)
+    adapter = HotelbookAdapter()
+    assert adapter._booking_validation(context(tenant, hb_supplier), snapshot)["terms_changed"] is False
+
+
+@pytest.mark.parametrize("details_price,expected", [(6056, "valid"), (6057, "price_changed")])
+def test_first_details_compares_search_price(tenant, hb_supplier, gateway, details_price, expected):
+    gateway.current["price"]["amount"] = 6056
+    adapter = HotelbookAdapter()
+    ctx = context(tenant, hb_supplier)
+    search = adapter.search(ctx, "hotel", criteria())[0]
+    gateway.current = enriched_details(gateway.current)
+    gateway.current["price"]["amount"] = details_price
+    result = adapter.revalidate(ctx, search)
+    assert result["status"] == expected
+    assert result["terms_changed"] is False
+    assert result["snapshot"]["hotelbook"]["terms_source"] == "details"
+
+
+@pytest.mark.parametrize("detailed", [False, True])
+@pytest.mark.parametrize("change", ["confirmation", "rooms", "offer_id", "search_id", "hotel_id", "dates"])
+def test_revalidation_preserves_critical_offer_checks(tenant, hb_supplier, gateway, detailed, change):
+    adapter = HotelbookAdapter()
+    ctx = context(tenant, hb_supplier)
+    snapshot = adapter.search(ctx, "hotel", criteria())[0]
+    if detailed:
+        snapshot = adapter.revalidate(ctx, snapshot)["snapshot"]
+    if change == "confirmation":
+        gateway.current["confirmationMode"] = "ON_REQUEST"
+    elif change == "rooms":
+        gateway.current["rooms"][0]["adults"] = 2
+    elif change == "offer_id":
+        gateway.current["offerId"] = "other-offer"
+    elif change == "search_id":
+        gateway.current["searchId"] = "other-search"
+    elif change == "hotel_id":
+        gateway.current["hotelId"] = 131687
+    elif change == "dates":
+        gateway.current["checkOut"] = "2027-03-13"
+    if detailed and change in ("confirmation", "rooms"):
+        assert adapter.revalidate(ctx, snapshot)["terms_changed"] is True
+    else:
+        with pytest.raises(AdapterError) as error:
+            adapter.revalidate(ctx, snapshot)
+        assert error.value.code in ("RATE_CHANGED", "RATE_UNAVAILABLE")
     assert not any(c[1].endswith(("/hotel/gateway/book", "/cancel")) for c in gateway.calls)
