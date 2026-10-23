@@ -896,3 +896,59 @@ def test_login_failure_keeps_sanitized_integration_log(tenant, hb_supplier, gate
     log = IntegrationLog.objects.get(operation="login")
     assert log.result == "error" and log.error_code == "AUTH_ERROR"
     assert "fixture-password" not in json.dumps(log.request_sanitized)
+
+
+@pytest.mark.parametrize("policy_key", ["finePolicies", "fines"])
+@pytest.mark.parametrize(
+    "change",
+    [None, "cancel_amount", "change_amount", "currency", "date", "condition", "info", "no_show"],
+)
+def test_revalidation_compares_fine_semantics(tenant, hb_supplier, gateway, policy_key, change):
+    adapter = HotelbookAdapter()
+    ctx = context(tenant, hb_supplier)
+    search_offer = offer()
+    search_offer["finePolicies"]["change"] = deepcopy(search_offer["finePolicies"]["cancel"])
+    for kind in ("cancel", "change"):
+        search_offer["finePolicies"][kind][0]["condition"] = "Before check-in"
+    policies = search_offer.pop("finePolicies")
+    search_offer[policy_key] = policies
+    gateway.current = deepcopy(search_offer)
+    snapshot = adapter.search(ctx, "hotel", criteria())[0]
+    original_snapshot = deepcopy(snapshot)
+    details_policies = gateway.current[policy_key]
+    for kind in ("cancel", "change"):
+        fine = details_policies[kind][0]
+        fine["amount"] = fine.pop("price")
+        fine["amount"]["amount"] = "120.250"
+    if change == "cancel_amount":
+        details_policies["cancel"][0]["amount"]["amount"] = "121.25"
+    elif change == "change_amount":
+        details_policies["change"][0]["amount"]["amount"] = "121.25"
+    elif change == "currency":
+        details_policies["cancel"][0]["amount"]["currency"] = "USD"
+    elif change == "date":
+        details_policies["cancel"][0]["from"] = "2027-03-09T12:00:00+01:00"
+    elif change == "condition":
+        details_policies["change"][0]["condition"] = "Any time"
+    elif change == "info":
+        details_policies["info"] = ["New cancellation condition"]
+    elif change == "no_show":
+        details_policies["noShow"]["amount"] = "150.00"
+    result = adapter.revalidate(ctx, snapshot)
+    assert result["terms_changed"] is (change is not None)
+    assert result["status"] == "valid"  # The room price did not change.
+    assert snapshot == original_snapshot
+    rules = result["fare_rules"]
+    assert "amount" not in rules["cancel"][0]
+    assert rules["cancel"][0]["price"]["amount"]
+    assert not any(c[1].endswith(("/hotel/gateway/book", "/cancel")) for c in gateway.calls)
+
+
+def test_preflight_accepts_equivalent_details_fine_schema(admin_client, tenant, hb_supplier, gateway):
+    workflow, _ = ready_booking(admin_client, tenant, hb_supplier)
+    fine = gateway.current["finePolicies"]["cancel"][0]
+    fine["amount"] = fine.pop("price")
+    result = post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")
+    assert result["ok"] and not result["price_changes"]
+    assert not any(warning["code"] == "RATE_CHANGED" for warning in result["warnings"])
+    assert not any(c[1].endswith(("/hotel/gateway/book", "/cancel")) for c in gateway.calls)

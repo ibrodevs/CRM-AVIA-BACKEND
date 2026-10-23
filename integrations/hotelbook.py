@@ -634,14 +634,20 @@ class HotelbookAdapter(ProviderAdapter):
         except (KeyError, ValueError, TypeError, InvalidOperation):
             raise AdapterError("INVALID_RESPONSE", "Hotelbook: некорректная цена") from None
 
+    @staticmethod
+    def _normalized_fines(rows):
+        # Search Fine.price and details Fine.amount represent the same money object.
+        return [
+            {
+                **{k: v for k, v in fine.items() if k != "amount"},
+                "price": fine.get("price") or fine.get("amount") or {},
+            }
+            for fine in (rows or [])
+        ]
+
     def _rules(self, offer):
         policies = offer.get("finePolicies") or offer.get("fines") or {}
-
-        def normalized_fines(rows):
-            # Search Fine.price and details Fine.amount are distinct HB schemas.
-            return [{**p, "price": p.get("price") or p.get("amount") or {}} for p in (rows or [])]
-
-        cancel = normalized_fines(policies.get("cancel"))
+        cancel = self._normalized_fines(policies.get("cancel"))
         text = "; ".join(
             f"{p.get('from') or 'С момента бронирования'}: {p.get('price', {}).get('amount', '?')} {p.get('price', {}).get('currency', '')}"
             for p in cancel
@@ -656,7 +662,7 @@ class HotelbookAdapter(ProviderAdapter):
         return {
             "free_cancel_until": free_until,
             "cancel": cancel,
-            "change": normalized_fines(policies.get("change")),
+            "change": self._normalized_fines(policies.get("change")),
             "no_show": policies.get("noShow"),
             "information": offer.get("information", []),
             "cancellation_information": policies.get("info") or [],
@@ -753,9 +759,17 @@ class HotelbookAdapter(ProviderAdapter):
         }
 
     def _terms(self, offer):
+        policies = deepcopy(offer.get("finePolicies") or offer.get("fines") or {})
+        for kind in ("cancel", "change"):
+            policies[kind] = self._normalized_fines(policies.get(kind))
+            for fine in policies[kind]:
+                money = fine["price"]
+                if "amount" in money:
+                    # Decimal comparison also ignores JSON number/string formatting.
+                    fine["price"] = {**money, "amount": Decimal(str(money["amount"]))}
         return {
             "confirmation": offer.get("confirmationMode"),
-            "fines": offer.get("finePolicies") or offer.get("fines"),
+            "fines": policies,
             "rooms": [
                 {k: room.get(k) for k in ("hash", "quantity", "adults", "children")}
                 for room in offer.get("rooms", [])
