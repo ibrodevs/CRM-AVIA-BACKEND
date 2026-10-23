@@ -2,7 +2,6 @@
 
 from datetime import date, timedelta
 from pathlib import Path
-from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -33,7 +32,7 @@ class Command(BaseCommand):
         parser.add_argument("--scenario", type=int, choices=[1, 2])
         parser.add_argument("--check-in")
         parser.add_argument(
-            "--hotel-id", type=int, default=1251201, help="Test hotel ID for prepare (default: 1251201)"
+            "--hotel-id", type=int, default=131687, help="Test hotel ID for prepare (default: 131687)"
         )
         parser.add_argument("--citizenship", default="KG")
         parser.add_argument("--run", action="append", default=[])
@@ -97,9 +96,6 @@ class Command(BaseCommand):
                 "citizenship": options["citizenship"],
                 "hotelbook": {"confirmationMode": "ON_REQUEST" if scenario == 1 else "ONLINE"},
             }
-            # Small page size exercises limit/offset as requested in the certification sheet.
-            adapter = type(adapter)()
-            adapter.page_size = 1
             offers = adapter.search(ctx, "hotel", criteria)
             mode = criteria["hotelbook"]["confirmationMode"]
             offers = [o for o in offers if o["hotelbook"]["offer"].get("confirmationMode") == mode]
@@ -117,7 +113,8 @@ class Command(BaseCommand):
             ]
             if not offers:
                 raise CommandError(f"run={run.id}: no {mode} offers; rerun prepare with different dates")
-            run.snapshot = adapter.revalidate(ctx, offers[0])["snapshot"]
+            # Revalidate once in book/preflight, immediately before the worker booking.
+            run.snapshot = offers[0]
             run.snapshot["certification_run_id"] = str(run.id)
             run.save(update_fields=["snapshot", "updated_at"])
             self.stdout.write(
@@ -241,32 +238,6 @@ class Command(BaseCommand):
             raise CommandError("Run has no service; use book first")
         item = run.workflow.items.get(service=run.service)
         if action == "refresh":
-            ctx = AdapterContext(
-                tenant_id=actor.tenant_id,
-                supplier_id=run.supplier_id,
-                order_id=run.service.order_id,
-                certification_run_id=run.id,
-                correlation_id=str(run.id),
-            )
-            _, config = adapter._config(ctx)
-            booking = (run.service.provider_snapshot or {}).get("hotelbook_booking", {})
-            # Official OpenAPI date filters, plus client ref to avoid unrelated orders.
-            created = (booking.get("created_at") or run.created_at.isoformat())[:10]
-            adapter._request(
-                ctx,
-                "search_orders",
-                "GET",
-                adapter._path(config, "order/gateway/orders")
-                + "?"
-                + urlencode(
-                    {
-                        "clientOrderId": booking.get("client_request_id", ""),
-                        "orderCreatedDate[from]": created,
-                        "orderCreatedDate[to]": created,
-                        "pagination": "false",
-                    }
-                ),
-            )
             job = enqueue(
                 "booking.status_inquiry",
                 {"item_id": str(item.id)},

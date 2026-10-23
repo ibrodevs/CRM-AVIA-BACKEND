@@ -18,3 +18,14 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
+
+# All web/jobs/scheduler processes share PostgreSQL; no Redis service is deployed.
+# The table is created by integrations.0005_shared_cache before workers restart.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "crm_shared_cache",
+        "TIMEOUT": 86400,
+        "OPTIONS": {"MAX_ENTRIES": 100000},
+    }
+}

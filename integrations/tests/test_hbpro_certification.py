@@ -124,14 +124,14 @@ def test_poll_timeout_backoff_and_manual_inquiry(admin_client, tenant, hb_suppli
     workflow, service_data = ready_booking(admin_client, tenant, hb_supplier)
     gateway.item_status = "CONFIRM_IN_PROGRESS"
     item = start(admin_client, workflow)["items"][0]
-    gateway.failure = ("/orders/4321", TimeoutError())
+    gateway.failure = (f"/booking_items/{ITEM_ID}", TimeoutError())
     assert queue_hotelbook_status_sync() == "queued 1"
     jobs()
     service = OrderService.objects.get(pk=service_data["id"])
     sync = service.provider_snapshot["hotelbook_booking"]["sync"]
     assert sync["attempts"] == 1 and sync["last_error"] == "TIMEOUT"
     assert queue_hotelbook_status_sync() == "queued 0"
-    assert IntegrationLog.objects.filter(operation="order_info", error_code="TIMEOUT").exists()
+    assert IntegrationLog.objects.filter(operation="retrieve_item", error_code="TIMEOUT").exists()
     gateway.failure = None
     gateway.item_status = "CONFIRMED"
     post(admin_client, f"booking-workflows/{workflow['id']}/status-inquiry/", {"item": item["id"]})
@@ -227,7 +227,7 @@ def test_certification_financial_guard(admin_user, tenant, hb_supplier):
 def test_scenario_1_prepare_is_readonly(admin_user, tenant, hb_supplier, gateway, monkeypatch, hotel_id):
     from integrations.hotelbook import TEST_HOTELS
 
-    expected_hotel = hotel_id or 1251201
+    expected_hotel = hotel_id or 131687
     monkeypatch.setitem(TEST_HOTELS, expected_hotel, "Certification fixture hotel")
     gateway.current = offer(expected_hotel)
     gateway.current.update(confirmationMode="ON_REQUEST", checkOut="2027-03-13")
@@ -372,6 +372,12 @@ def test_staged_certification_command_full_flow(
     jobs()
     run.refresh_from_db()
     assert run.service.status == "cancelled"
+    call_command("hbpro_certification", "refresh", run=[str(run.id)], **options)
+    jobs()
+    run.refresh_from_db()
+    calls = run.calls.all()
+    assert calls.filter(operation="revalidate").count() == 1
+    assert not calls.filter(operation__in=["search_orders", "order_info"]).exists()
     assert summary(run)["readiness"] == "PASS"
     assert summary(run)["hotel_id"] == hotel_id
     output = tmp_path / "package.zip"
@@ -400,13 +406,13 @@ def test_search_input_rejected_before_transport(tenant, hb_supplier, gateway, ba
     assert not gateway.calls
 
 
-def test_connection_verification_is_fresh_and_timed(tenant, hb_supplier, gateway):
+def test_connection_verification_reuses_token_and_is_timed(tenant, hb_supplier, gateway):
     from suppliers.job_handlers import verify_supplier_credentials
 
     first = verify_supplier_credentials(hb_supplier)
     second = verify_supplier_credentials(hb_supplier)
     assert first["checked"][0]["environment"] == "sandbox" and second["checked"][0]["latency_ms"] >= 0
-    assert sum(c[1].endswith("/gateway/login") for c in gateway.calls) == 2
+    assert sum(c[1].endswith("/gateway/login") for c in gateway.calls) == 1
 
 
 def test_environment_selects_matching_database_credential(tenant, hb_supplier, settings):

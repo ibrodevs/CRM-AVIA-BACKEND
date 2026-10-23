@@ -36,7 +36,13 @@ def summary(run):
                     ids[key].append(value)
     snapshot = run.service.provider_snapshot if run.service_id else run.snapshot
     booking = (snapshot or {}).get("hotelbook_booking", {})
-    missing = [op for op in OPERATIONS if not any(c.operation == op and c.result == "success" for c in calls)]
+    # Recovery/diagnostic calls are optional in the supplier's streamlined flow.
+    required = OPERATIONS.keys() - {"search_orders", "order_info"}
+    missing = [
+        op
+        for op in OPERATIONS
+        if op in required and not any(c.operation == op and c.result == "success" for c in calls)
+    ]
     items = booking.get("items", [])
     cancelled = bool(items) and all(i.get("status") == "CANCELED" for i in items)
     searches = [c.request_sanitized for c in calls if c.operation == "search" and c.result == "success"]

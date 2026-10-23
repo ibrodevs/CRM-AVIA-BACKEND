@@ -18,6 +18,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from django.conf import settings
+from django.core import signing
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
@@ -52,6 +53,8 @@ class HotelbookAdapter(ProviderAdapter):
     search_timeout = 90
     poll_interval = 1
     page_size = 5000
+    revalidation_ttl = 30
+    dictionary_ttl = 86400
 
     def _config(self, ctx):
         credential = (
@@ -148,7 +151,6 @@ class HotelbookAdapter(ProviderAdapter):
             )
         ctx = AdapterContext(tenant_id=credential.tenant_id, supplier_id=credential.supplier_id)
         ctx.environment = credential.environment
-        cache.delete(self._cache_key(credential, config, "token"))
         self._token(ctx, credential, config)
 
     def _path(self, config, path):
@@ -317,17 +319,31 @@ class HotelbookAdapter(ProviderAdapter):
         cached = cache.get(key)
         if cached:
             return decrypt_value(cached)
-        response = self._wire(
-            ctx,
-            "login",
-            "POST",
-            self._path(config, "gateway/login"),
-            {"login": config["login"], "password": config["password"]},
-        )
-        token = response.get("token")
-        if not isinstance(token, str) or not token:
-            raise AdapterError("AUTH_ERROR", "Hotelbook: токен не получен", category="auth")
-        cache.set(key, encrypt_value(token), 86340)
+        with transaction.atomic():
+            SupplierCredential.objects.select_for_update().filter(pk=credential.pk).first()
+            cached = cache.get(key)
+            if cached:
+                return decrypt_value(cached)
+            error = None
+            try:
+                response = self._wire(
+                    ctx,
+                    "login",
+                    "POST",
+                    self._path(config, "gateway/login"),
+                    {"login": config["login"], "password": config["password"]},
+                )
+            except AdapterError as exc:
+                # Commit the sanitized failure log before propagating the error.
+                error = exc
+            if error is None:
+                token = response.get("token")
+                if not isinstance(token, str) or not token:
+                    error = AdapterError("AUTH_ERROR", "Hotelbook: токен не получен", category="auth")
+                else:
+                    cache.set(key, encrypt_value(token), 86340)
+        if error:
+            raise error
         return token
 
     def _request(self, ctx, operation, method, path, payload=None):
@@ -340,9 +356,15 @@ class HotelbookAdapter(ProviderAdapter):
         except AdapterError as exc:
             if exc.code != "AUTH_ERROR":
                 raise
-            cache.delete(self._cache_key(credential, config, "token"))
-            # A rejected JWT has not performed the requested operation; one refresh is safe.
+            with transaction.atomic():
+                SupplierCredential.objects.select_for_update().filter(pk=credential.pk).first()
+                key = self._cache_key(credential, config, "token")
+                cached = cache.get(key)
+                # Another worker may already have replaced the rejected JWT.
+                if cached and decrypt_value(cached) == token:
+                    cache.delete(key)
             token = self._token(ctx, credential, config)
+            # A rejected JWT has not performed the requested operation; retry once.
             return self._wire(
                 ctx, operation, method, path, payload, token, (config["login"], config["password"])
             )
@@ -365,7 +387,7 @@ class HotelbookAdapter(ProviderAdapter):
                 raise AdapterError("INVALID_RESPONSE", "Hotelbook: ожидался массив словаря")
             rows.extend(batch)
             if len(batch) < 5000:
-                cache.set(key, rows, 3600)
+                cache.set(key, rows, self.dictionary_ttl)
                 return rows
         raise AdapterError("INVALID_RESPONSE", "Hotelbook: превышен лимит страниц словаря")
 
@@ -385,7 +407,7 @@ class HotelbookAdapter(ProviderAdapter):
             data = self._request(
                 ctx, "hotel_details", "GET", self._path(config, f"dict/gateway/hotel/hotels/{int(hotel_id)}")
             )
-            cache.set(key, data, 3600)
+            cache.set(key, data, self.dictionary_ttl)
         return data
 
     def _search_payload(self, ctx, credential, config, criteria):
@@ -561,6 +583,7 @@ class HotelbookAdapter(ProviderAdapter):
             query_time = timezone.make_aware(query_time)
         expires_at = (query_time + timezone.timedelta(hours=4)).isoformat()
         search_id = start["searchId"]
+        citizenship_code = criteria.get("citizenship") or config.get("default_citizenship", "")
         offset = 0
         seen = set()
         deadline = time.monotonic() + self.search_timeout
@@ -586,8 +609,14 @@ class HotelbookAdapter(ProviderAdapter):
                     continue
                 seen.add(offer["offerId"])
                 hotel = self._hotel(ctx, config, offer["hotelId"])
-                yield self._normalize(offer, search_id, expires_at, hotel, payload)
-            if result["finished"] and (offset >= result["totalOffers"] or len(batch) < self.page_size):
+                snapshot = self._normalize(offer, search_id, expires_at, hotel, payload)
+                if citizenship_code and (criteria.get("hotelbook") or {}).get("citizenship_id") is None:
+                    snapshot["hotelbook"]["citizenship_ids"] = {
+                        str(citizenship_code).upper(): payload["citizenshipId"]
+                    }
+                yield snapshot
+            # finished describes supplier computation, not pagination exhaustion.
+            if result["finished"] and offset >= result["totalOffers"]:
                 return
             time.sleep(self.poll_interval)
         raise AdapterError(
@@ -767,6 +796,11 @@ class HotelbookAdapter(ProviderAdapter):
                 normalized[key] = offer_snapshot[key]
         if ctx.certification_run_id:
             normalized["certification_run_id"] = str(ctx.certification_run_id)
+        if hb.get("citizenship_ids"):
+            normalized["hotelbook"]["citizenship_ids"] = deepcopy(hb["citizenship_ids"])
+        normalized["hotelbook_revalidation"] = signing.dumps(
+            self._validation_identity(ctx, normalized), salt="hbpro.revalidation"
+        )
         changed = normalized["price"] != offer_snapshot.get("price")
         return {
             "status": "price_changed" if changed else "valid",
@@ -776,6 +810,30 @@ class HotelbookAdapter(ProviderAdapter):
             "fare_rules": self._rules(offer),
         }
 
+    def _validation_identity(self, ctx, snapshot):
+        # Bind the proof to this supplier, credentials, offer, price and search inputs.
+        credential, config = self._config(ctx)
+        data = {k: snapshot.get(k) for k in ("hotelbook", "price", "expires_at", "external_key")}
+        digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+        return {"credential": self._cache_key(credential, config, "validation"), "digest": digest}
+
+    def _booking_validation(self, ctx, snapshot):
+        proof = snapshot.get("hotelbook_revalidation")
+        if proof:
+            try:
+                identity = signing.loads(proof, salt="hbpro.revalidation", max_age=self.revalidation_ttl)
+                expires = parse_datetime(snapshot.get("expires_at", ""))
+                if (
+                    expires
+                    and timezone.is_aware(expires)
+                    and expires > timezone.now()
+                    and identity == self._validation_identity(ctx, snapshot)
+                ):
+                    return {"status": "valid", "snapshot": deepcopy(snapshot)}
+            except (signing.BadSignature, ValueError, TypeError):
+                pass
+        return self.revalidate(ctx, snapshot)
+
     def fare_rules(self, ctx, offer_snapshot):
         return self.revalidate(ctx, offer_snapshot)["fare_rules"]
 
@@ -783,6 +841,7 @@ class HotelbookAdapter(ProviderAdapter):
         offer = snapshot["hotelbook"]["offer"]
         check_in = date.fromisoformat(offer["checkIn"])
         prepared = []
+        citizenship_ids = dict(snapshot["hotelbook"].get("citizenship_ids") or {})
         for person in passengers:
             try:
                 born = date.fromisoformat(str(person["birth_date"]))
@@ -805,11 +864,14 @@ class HotelbookAdapter(ProviderAdapter):
                 raise AdapterError(
                     "GUEST_DATA_MISSING", "Проверьте ФИО, пол и даты рождения гостей", category="validation"
                 ) from None
+            code = str(person.get("citizenship") or "").upper()
+            if code not in citizenship_ids:
+                citizenship_ids[code] = self._country_id(ctx, config, code)
             guest = {
                 "firstName": first,
                 "lastName": last,
                 "gender": gender,
-                "citizenship": self._country_id(ctx, config, person.get("citizenship", "")),
+                "citizenship": citizenship_ids[code],
                 "isChild": age < 18,
             }
             if age < 18:
@@ -890,7 +952,7 @@ class HotelbookAdapter(ProviderAdapter):
                     "BOOKING_ERROR", "Услуга уже забронирована или отменена", category="booking"
                 )
         ctx.order_id = service.order_id
-        validation = self.revalidate(ctx, snapshot)
+        validation = self._booking_validation(ctx, snapshot)
         if validation["status"] != "valid":
             raise AdapterError(
                 "PRICE_CHANGED", "Цена Hotelbook изменилась; повторите preflight", category="price"
@@ -1081,14 +1143,16 @@ class HotelbookAdapter(ProviderAdapter):
                 )
             booking["order_id"] = orders[0]["orderId"]
             self._save_booking_snapshot(ctx, service.id, snapshot)
-        order = self._request(
-            ctx, "order_info", "GET", self._path(config, f"order/gateway/orders/{booking['order_id']}")
-        )
-        ids = [
-            i["itemId"]
-            for i in order.get("items", [])
-            if i.get("type") == "hotel" and i.get("serviceType") == "ONLINE"
-        ]
+        ids = [i.get("itemId") for i in booking.get("items", [])]
+        if not ids or not all(ids):
+            order = self._request(
+                ctx, "order_info", "GET", self._path(config, f"order/gateway/orders/{booking['order_id']}")
+            )
+            ids = [
+                i["itemId"]
+                for i in order.get("items", [])
+                if i.get("type") == "hotel" and i.get("serviceType") == "ONLINE"
+            ]
         if not ids:
             raise AdapterError(
                 "BOOKING_UNKNOWN",

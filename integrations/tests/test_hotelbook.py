@@ -132,21 +132,26 @@ class Gateway:
                 if self.book_rooms:
                     for actual, expected in zip(body["rooms"], self.book_rooms, strict=True):
                         assert actual["hash"] == expected["hash"]
-                        assert sorted(actual["guests"], key=lambda g: g["lastName"]) == sorted(expected["guests"], key=lambda g: g["lastName"])
-                assert self.book_rooms or body["rooms"] == (self.book_rooms or [
-                    {
-                        "hash": "opaque-room-hash",
-                        "guests": [
-                            {
-                                "firstName": "PETR",
-                                "lastName": "IVANOV",
-                                "gender": "M",
-                                "citizenship": 77,
-                                "isChild": False,
-                            }
-                        ],
-                    }
-                ])
+                        assert sorted(actual["guests"], key=lambda g: g["lastName"]) == sorted(
+                            expected["guests"], key=lambda g: g["lastName"]
+                        )
+                assert self.book_rooms or body["rooms"] == (
+                    self.book_rooms
+                    or [
+                        {
+                            "hash": "opaque-room-hash",
+                            "guests": [
+                                {
+                                    "firstName": "PETR",
+                                    "lastName": "IVANOV",
+                                    "gender": "M",
+                                    "citizenship": 77,
+                                    "isChild": False,
+                                }
+                            ],
+                        }
+                    ]
+                )
                 assert body["confirmationMode"] == self.current["confirmationMode"]
                 response = {"items": [self.booking_item(i) for i in self.items]}
             elif url.path.endswith("/order/gateway/orders/4321"):
@@ -529,8 +534,9 @@ def test_tariff_changes_need_confirmation(admin_client, tenant, hb_supplier, gat
     assert response.status_code == 409
 
 
-def test_book_price_race_is_not_sent(admin_client, tenant, hb_supplier, gateway):
+def test_book_price_race_is_not_sent(admin_client, tenant, hb_supplier, gateway, monkeypatch):
     workflow, service = ready_booking(admin_client, tenant, hb_supplier)
+    monkeypatch.setattr(HotelbookAdapter, "revalidation_ttl", -1)
     gateway.current["price"]["amount"] = 999
     result = start(admin_client, workflow)
     assert result["items"][0]["error_code"] == "PRICE_CHANGED"
@@ -732,10 +738,15 @@ def test_private_customer_omits_legal_company_fields():
     from booking.job_handlers import _booking_customer
 
     person = SimpleNamespace(full_name="LOCAL HOTELBOOKTEST")
-    assert _booking_customer(SimpleNamespace(client_person=person, client_company=None)) == {"type": "PRIVATE"}
+    assert _booking_customer(SimpleNamespace(client_person=person, client_company=None)) == {
+        "type": "PRIVATE"
+    }
     company = SimpleNamespace(legal_name="Test Company", tax_id="1234567890", legal_address="Test address")
     assert _booking_customer(SimpleNamespace(client_person=None, client_company=company)) == {
-        "type": "LEGAL", "name": "Test Company", "inn": "1234567890", "address": "Test address"
+        "type": "LEGAL",
+        "name": "Test Company",
+        "inn": "1234567890",
+        "address": "Test address",
     }
 
 
@@ -761,9 +772,127 @@ def test_sandbox_hotel_autocomplete_is_supplier_scoped(admin_client, tenant, hb_
     ]
 
 
-@pytest.mark.parametrize('location', ['Первомайская', 'мастер отель', 'Мастер-Отель Первомайская'])
+@pytest.mark.parametrize("location", ["Первомайская", "мастер отель", "Мастер-Отель Первомайская"])
 def test_sandbox_search_accepts_partial_hotel_names(tenant, hb_supplier, gateway, location):
-    adapter = get_adapter('hotelbook')
+    adapter = get_adapter("hotelbook")
     credential, config = adapter._config(context(tenant, hb_supplier))
-    request = adapter._search_payload(context(tenant, hb_supplier), credential, config, {**criteria(131687), 'location': location})
-    assert request['hotels'] == [131687]
+    request = adapter._search_payload(
+        context(tenant, hb_supplier), credential, config, {**criteria(131687), "location": location}
+    )
+    assert request["hotels"] == [131687]
+
+
+def test_normal_search_pages_until_finished_and_drained(tenant, hb_supplier, gateway):
+    second = {**offer(), "offerId": "second"}
+    gateway.pages = [
+        {"finished": False, "totalOffers": 1, "searchOffers": [offer()]},
+        {"finished": False, "totalOffers": 1, "searchOffers": []},
+        {"finished": True, "totalOffers": 2, "searchOffers": [second]},
+    ]
+    assert len(HotelbookAdapter().search(context(tenant, hb_supplier), "hotel", criteria())) == 2
+    calls = [c for c in gateway.calls if "/results/" in c[1]]
+    assert [c[2]["offset"] for c in calls] == [["0"], ["1"], ["1"]]
+    assert all(c[2]["limit"] == ["5000"] for c in calls)
+
+
+def test_worker_reuses_preflight_without_dictionary_lookup(admin_client, tenant, hb_supplier, gateway):
+    workflow, service = ready_booking(admin_client, tenant, hb_supplier)
+    gateway.calls.clear()
+    # Even eviction of dictionary caches must not cause lookups for known guests/hotel.
+    cache.clear()
+    assert start(admin_client, workflow)["items"][0]["status"] == "booked"
+    paths = [c[1] for c in gateway.calls]
+    assert not any("/dict/" in path or path.endswith("/search/details") for path in paths)
+    adapter = HotelbookAdapter()
+    stored = OrderService.objects.get(pk=service["id"])
+    gateway.calls.clear()
+    adapter.retrieve_booking(context(tenant, hb_supplier), stored.external_id)
+    assert [c[1] for c in gateway.calls] == [f"/api/v1/ru/hotel/gateway/booking_items/{ITEM_ID}"]
+
+
+@pytest.mark.parametrize("change", ["price", "terms", "expired", "tampered"])
+def test_worker_revalidates_untrusted_or_stale_snapshot(
+    admin_client, tenant, hb_supplier, gateway, monkeypatch, change
+):
+    workflow, service = ready_booking(admin_client, tenant, hb_supplier)
+    stored = OrderService.objects.get(pk=service["id"])
+    if change == "expired":
+        stored.provider_snapshot["expires_at"] = "2020-01-01T00:00:00Z"
+    elif change == "tampered":
+        stored.provider_snapshot["hotelbook"]["offer"]["confirmationMode"] = "ON_REQUEST"
+    else:
+        monkeypatch.setattr(HotelbookAdapter, "revalidation_ttl", -1)
+        if change == "price":
+            gateway.current["price"]["amount"] = 999
+        else:
+            gateway.current["finePolicies"]["cancel"][0]["from"] = None
+    stored.save()
+    gateway.calls.clear()
+    result = start(admin_client, workflow)
+    assert result["items"][0]["error_code"] in ("PRICE_CHANGED", "RATE_CHANGED", "OFFER_EXPIRED")
+    assert not any(c[1].endswith("/hotel/gateway/book") for c in gateway.calls)
+
+
+def test_token_is_shared_between_database_cache_instances(tenant, hb_supplier, gateway, settings):
+    from django.core.cache.backends.db import DatabaseCache
+
+    settings.CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "crm_shared_cache",
+        }
+    }
+    adapter = HotelbookAdapter()
+    ctx = context(tenant, hb_supplier)
+    credential, config = adapter._config(ctx)
+    key = adapter._cache_key(credential, config, "token")
+    assert adapter._token(ctx, credential, config) == "fixture-jwt"
+    independent_cache = DatabaseCache("crm_shared_cache", {})
+    assert independent_cache.get(key) == cache.get(key)
+    assert "fixture-jwt" not in independent_cache.get(key)
+    assert HotelbookAdapter()._token(ctx, credential, config) == "fixture-jwt"
+    assert sum(c[1].endswith("/gateway/login") for c in gateway.calls) == 1
+    gateway.fail_once_auth = True
+    adapter._request(ctx, "hotel_details", "GET", "/api/v1/ru/dict/gateway/hotel/hotels/1251539")
+    assert sum(c[1].endswith("/gateway/login") for c in gateway.calls) == 2
+    independent_cache.clear()
+
+
+@pytest.mark.parametrize("known", [True, False])
+def test_guest_citizenship_resolved_once_per_code(tenant, hb_supplier, gateway, monkeypatch, known):
+    adapter = HotelbookAdapter()
+    ctx = context(tenant, hb_supplier)
+    snapshot = adapter.search(ctx, "hotel", criteria())[0]
+    snapshot["hotelbook"]["offer"]["rooms"][0]["adults"] = 2
+    if not known:
+        snapshot["hotelbook"].pop("citizenship_ids")
+    lookups = []
+
+    def country(*args):
+        lookups.append(args[-1])
+        return 77
+
+    monkeypatch.setattr(adapter, "_country_id", country)
+    _, config = adapter._config(ctx)
+    passenger = {
+        "birth_date": "1990-01-01",
+        "gender": "male",
+        "latin_given_name": "TEST",
+        "latin_surname": "GUEST",
+        "citizenship": "KG",
+    }
+    rooms = adapter._guests(ctx, config, snapshot, [passenger, passenger])
+    assert len(rooms[0]["guests"]) == 2
+    assert lookups == ([] if known else ["KG"])
+
+
+def test_login_failure_keeps_sanitized_integration_log(tenant, hb_supplier, gateway, monkeypatch):
+    def reject(request, timeout):
+        Gateway.raise_error(request, 401, "ERR013#1")
+
+    monkeypatch.setattr(gateway, "open", reject)
+    with pytest.raises(AdapterError):
+        HotelbookAdapter().search(context(tenant, hb_supplier), "hotel", criteria())
+    log = IntegrationLog.objects.get(operation="login")
+    assert log.result == "error" and log.error_code == "AUTH_ERROR"
+    assert "fixture-password" not in json.dumps(log.request_sanitized)
