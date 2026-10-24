@@ -258,6 +258,21 @@ class DocumentDownloadView(APIView):
 
     def get(self, request, document_id):
         document = get_document_or_404(request.user, document_id)
+        if document.metadata.get("generator") == "hbpro_certificate" and document.service_id:
+            from documents.hotel_certificate import certificate_status
+            from orders.selectors import get_order_or_404
+
+            get_order_or_404(request.user, document.order_id)
+            current = certificate_status(document.service.provider_snapshot or {})
+            requested_version = request.query_params.get("file_version")
+            if current != document.metadata.get("booking_status") or (
+                requested_version and requested_version != str(document.current_version)
+            ):
+                raise ApiError(
+                    code="DOCUMENT_STALE",
+                    message="Статус брони изменился. Сформируйте сертификат заново в услуге гостиницы.",
+                    status_code=409,
+                )
         version_number = request.query_params.get("file_version")
         version = (
             document.versions.filter(version=version_number).first()

@@ -1,8 +1,24 @@
 from django.urls import path
 
 from services import views as v
+from services.hotel_views import HotelCertificateView, OfferHotelContentView, ServiceHotelContentView
 
 urlpatterns = [
+    path(
+        "service-offers/<uuid:offer_id>/hotel-content/",
+        OfferHotelContentView.as_view(),
+        name="offer-hotel-content",
+    ),
+    path(
+        "services/<uuid:service_id>/hotel-content/",
+        ServiceHotelContentView.as_view(),
+        name="service-hotel-content",
+    ),
+    path(
+        "services/<uuid:service_id>/hotel-certificate/",
+        HotelCertificateView.as_view(),
+        name="hotel-certificate",
+    ),
     path(
         "service-searches/hotel-locations/",
         v.HotelLocationSuggestionsView.as_view(),
@@ -46,13 +62,25 @@ urlpatterns = [
     path(
         "services/<uuid:service_id>/transition/", v.ServiceTransitionView.as_view(), name="service-transition"
     ),
-    path("services/<uuid:service_id>/revalidate/", v.ServiceRevalidateView.as_view(), name="service-revalidate"),
+    path(
+        "services/<uuid:service_id>/revalidate/", v.ServiceRevalidateView.as_view(), name="service-revalidate"
+    ),
     path("services/<uuid:service_id>/book/", v.ServiceBookView.as_view(), name="service-book"),
     path("services/<uuid:service_id>/issue/", v.ServiceIssueView.as_view(), name="service-issue"),
     path("services/<uuid:service_id>/cancel/", v.ServiceCancelView.as_view(), name="service-cancel"),
-    path("services/<uuid:service_id>/passengers/", v.ServicePassengersView.as_view(), name="service-passengers"),
-    path("services/<uuid:service_id>/manual-book/", v.ServiceManualBookView.as_view(), name="service-manual-book"),
-    path("services/<uuid:service_id>/manual-issue/", v.ServiceManualIssueView.as_view(), name="service-manual-issue"),
+    path(
+        "services/<uuid:service_id>/passengers/", v.ServicePassengersView.as_view(), name="service-passengers"
+    ),
+    path(
+        "services/<uuid:service_id>/manual-book/",
+        v.ServiceManualBookView.as_view(),
+        name="service-manual-book",
+    ),
+    path(
+        "services/<uuid:service_id>/manual-issue/",
+        v.ServiceManualIssueView.as_view(),
+        name="service-manual-issue",
+    ),
     path("services/<uuid:service_id>/extras/", v.ServiceExtrasView.as_view(), name="service-extras"),
     path("service-extra-catalog/", v.ServiceExtraCatalogView.as_view(), name="service-extra-catalog"),
     path(

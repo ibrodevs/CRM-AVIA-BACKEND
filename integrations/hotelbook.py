@@ -26,6 +26,7 @@ from django.utils.dateparse import parse_datetime
 
 from common.fields import decrypt_value, encrypt_value
 from integrations.adapters import AdapterError, ProviderAdapter
+from integrations.hotelbook_content import public_image
 from integrations.hotelbook_lock import booking_lease
 from integrations.hotelbook_observability import external_ids, normalized_status, private_values, sanitize
 from suppliers.models import SupplierCredential
@@ -701,6 +702,15 @@ class HotelbookAdapter(ProviderAdapter):
             "expires_at": expires_at,
             "itinerary": {
                 "property_name": hotel.get("name") or TEST_HOTELS.get(offer["hotelId"], "Гостиница"),
+                "hotel_id": offer["hotelId"],
+                "photo_url": next(
+                    (
+                        public_image(p.get("photoUrl"))
+                        for p in sorted(hotel.get("photos") or [], key=lambda p: not p.get("isMain"))
+                        if p.get("photoUrl")
+                    ),
+                    None,
+                ),
                 "address": details.get("address", ""),
                 "city": "",
                 "check_in": offer.get("checkIn"),

@@ -126,6 +126,13 @@ class ServiceOfferSerializer(serializers.ModelSerializer):
 
 
 class OrderServiceSerializer(serializers.ModelSerializer):
+    hotel_documents = serializers.SerializerMethodField()
+
+    def get_hotel_documents(self, obj):
+        from documents.hotel_certificate import hotel_capabilities
+
+        return hotel_capabilities(obj.provider_snapshot or {})
+
     client_price = MoneyField(amount_field="client_total", currency_field="currency")
     order_number = serializers.CharField(source="order.number", read_only=True)
     supplier_name = serializers.CharField(source="supplier.name", read_only=True, default="")
@@ -159,6 +166,7 @@ class OrderServiceSerializer(serializers.ModelSerializer):
             "discount",
             "client_total",
             "client_price",
+            "hotel_documents",
             "payment_deadline",
             "ticketing_deadline",
             "responsible",
