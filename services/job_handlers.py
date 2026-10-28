@@ -1,5 +1,6 @@
 import hashlib
 import json
+import uuid
 from decimal import Decimal
 
 from django.conf import settings
@@ -26,6 +27,29 @@ def _dedup_hash(kind: str, itinerary: dict, price_amount: str, currency: str) ->
 
 
 def _suppliers_for_search(session: SearchSession) -> list[Supplier | None]:
+    selection = (session.criteria or {}).get("provider_selection")
+    if selection is not None:
+        try:
+            supplier_id = uuid.UUID(str(selection["supplier_id"]))
+            adapter_key = selection["provider_adapter"]
+            if not isinstance(adapter_key, str) or not adapter_key:
+                return []
+        except (KeyError, ValueError, TypeError):
+            return []
+        # An explicitly selected location cannot switch supplier/provider/tenant or fall back to Mock.
+        return [
+            supplier
+            for supplier in Supplier.objects.filter(
+                pk=supplier_id,
+                tenant_id=session.tenant_id,
+                status=Supplier.Status.ACTIVE,
+                archived_at__isnull=True,
+                credentials__provider_adapter=adapter_key,
+                credentials__tenant_id=session.tenant_id,
+                credentials__archived_at__isnull=True,
+            ).distinct()
+            if session.kind in (supplier.service_kinds or [])
+        ]
     priority = SupplierSearchPriority.objects.filter(
         tenant_id=session.tenant_id,
         service_kind=session.kind,
@@ -34,7 +58,12 @@ def _suppliers_for_search(session: SearchSession) -> list[Supplier | None]:
     ).first()
     if priority and priority.ordered_suppliers:
         suppliers = list(
-            Supplier.objects.filter(pk__in=priority.ordered_suppliers, status=Supplier.Status.ACTIVE)
+            Supplier.objects.filter(
+                pk__in=priority.ordered_suppliers,
+                tenant_id=session.tenant_id,
+                archived_at__isnull=True,
+                status=Supplier.Status.ACTIVE,
+            )
         )
         by_id = {str(s.id): s for s in suppliers}
         ordered = [by_id[sid] for sid in map(str, priority.ordered_suppliers) if sid in by_id]
@@ -65,22 +94,37 @@ def run_search(job: BackgroundJob) -> dict:
     succeeded = failed = total_offers = 0
     seen_hashes: set[str] = set()
 
+    routes = []
     for supplier in suppliers:
-        adapter_key = "mock"
-        if supplier is not None:
-            credential = (
-                supplier.credentials.filter(
-                    tenant_id=session.tenant_id, archived_at__isnull=True, status="active"
+        credentials = (
+            list(
+                supplier.credentials.filter(tenant_id=session.tenant_id, archived_at__isnull=True).order_by(
+                    "id"
                 )
-                .order_by("id")
-                .first()
             )
-            if credential is not None:
-                adapter_key = credential.provider_adapter
-            elif supplier.credentials.filter(
-                tenant_id=session.tenant_id, provider_adapter="hotelbook", archived_at__isnull=True
-            ).exists():
-                adapter_key = "hotelbook"
+            if supplier
+            else []
+        )
+        selection = (session.criteria or {}).get("provider_selection")
+        if selection:
+            credentials = [c for c in credentials if c.provider_adapter == selection["provider_adapter"]]
+        applicable = []
+        for credential in credentials:
+            try:
+                environment = get_adapter(credential.provider_adapter).configured_environment()
+            except AdapterError:
+                environment = ""
+            if not environment or credential.environment == environment:
+                applicable.append(credential)
+        if applicable:
+            routes.extend((supplier, c.provider_adapter) for c in applicable)
+        elif credentials:
+            # An unconfigured live connection must never silently become Mock.
+            routes.extend((supplier, key) for key in dict.fromkeys(c.provider_adapter for c in credentials))
+        else:
+            routes.append((supplier, "mock"))
+
+    for supplier, adapter_key in dict.fromkeys(routes):
         run = SearchProviderRun.objects.create(
             tenant_id=session.tenant_id,
             session=session,
@@ -183,12 +227,14 @@ def _criteria_route(criteria: dict) -> str:
 
 
 def _persist_offer(session, supplier, adapter_key, raw, seen_hashes):
+    raw = {**raw, "provider_adapter": adapter_key}
     price = raw.get("price", {})
     base = Decimal(str(price.get("amount", "0")))
     currency = price.get("currency", "USD")
     dedup = _dedup_hash(session.kind, raw.get("itinerary", {}), str(base), currency)
-    if raw.get("provider_adapter") == "hotelbook":
-        dedup = hashlib.sha256(f"{supplier.id}:{raw.get('external_key')}:{dedup}".encode()).hexdigest()
+    dedup = hashlib.sha256(
+        f"{supplier.id if supplier else ''}:{adapter_key}:{raw.get('external_key', '')}:{dedup}".encode()
+    ).hexdigest()
     if dedup in seen_hashes:
         return False
     seen_hashes.add(dedup)

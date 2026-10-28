@@ -21,10 +21,19 @@ class WorkflowItemSerializer(serializers.ModelSerializer):
     supplier_confirmation = serializers.SerializerMethodField()
 
     def get_supplier_confirmation(self, obj):
-        booking = (obj.service.provider_snapshot or {}).get("hotelbook_booking")
+        snapshot = obj.service.provider_snapshot or {}
+        booking = snapshot.get(snapshot.get("provider_adapter", "") + "_booking")
         if not booking:
             return None
-        return {k: booking.get(k) for k in ("normalized_status", "supplier_statuses", "updated_at")}
+        status = booking.get("normalized_status")
+        return {
+            "normalized_status": {"pending": "pending_supplier_confirmation", "booked": "confirmed"}.get(
+                status, status
+            ),
+            "supplier_statuses": booking.get("supplier_statuses")
+            or [i.get("status") for i in booking.get("items", [])],
+            "updated_at": booking.get("updated_at"),
+        }
 
     class Meta:
         model = BookingWorkflowItem
@@ -232,8 +241,12 @@ class WorkflowInquiryView(APIView):
                 status_code=400,
             )
         action = "book" if item.service.kind == "hotel" else "issue"
-        if not has_permission(request.user, f"services.{action}") or not has_service_action(request.user, item.service.kind, action):
-            raise ApiError(code="PERMISSION_DENIED", message="Нет права проверки этой услуги", status_code=403)
+        if not has_permission(request.user, f"services.{action}") or not has_service_action(
+            request.user, item.service.kind, action
+        ):
+            raise ApiError(
+                code="PERMISSION_DENIED", message="Нет права проверки этой услуги", status_code=403
+            )
         job = enqueue("booking.status_inquiry", {"item_id": str(item.id)}, request=request)
         return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
 

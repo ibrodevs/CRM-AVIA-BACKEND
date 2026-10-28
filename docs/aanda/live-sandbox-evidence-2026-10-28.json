@@ -1,0 +1,3140 @@
+{
+  "acceptance": "INCOMPLETE: supplier pending; cancellation not permitted",
+  "last_order_info_at": "28.10.2026 14:40:20 +06",
+  "environment": {
+    "supplier": "A&A / Roomlink",
+    "adapter": "aanda",
+    "environment": "sandbox",
+    "gateway": "https://go-api.aanda.ru/",
+    "auth": "OK",
+    "test_account_confirmation": "User confirmed A&A test designation before the single OrderRequest"
+  },
+  "search": {
+    "city": "Самара",
+    "city_code": "18",
+    "check_in": "2026-12-12",
+    "check_out": "2026-12-14",
+    "rooms": 1,
+    "adults": 2,
+    "children": 0,
+    "samara_offers": 803,
+    "samara_available": 749,
+    "moscow_offers": 8187,
+    "focused_offers": 4,
+    "ui_session": "4d4cfc24-d0cf-4888-a0a9-a615c567c4c4",
+    "ui_offers": 803,
+    "ui_status": "completed"
+  },
+  "selected_offer": {
+    "hotel_name": "Пастель",
+    "hotel_code": "71359",
+    "room_name": "стандарт с двуспальной кроватью",
+    "product_code": "217912",
+    "rate_id": "1",
+    "meal": {
+      "Code": "0",
+      "TypeCode": "0",
+      "TypeName": "Не включен",
+      "CategoryCode": "0",
+      "CategoryName": ""
+    },
+    "availability": "available",
+    "total_price": "5166",
+    "currency": {
+      "code": "2",
+      "name": "RUB"
+    },
+    "where_to_pay": "3",
+    "arrival_time": "14:00",
+    "departure_time": "12:00",
+    "deadline": {
+      "date": "2026-12-11",
+      "time": "12:00",
+      "timezone": "UTC+4",
+      "timestamp": "2026-12-11T12:00:00+04:00"
+    },
+    "penalty": "2583"
+  },
+  "pricing_comparison": {
+    "total_price": {
+      "search": "5166",
+      "pricing": "5166"
+    },
+    "currency": {
+      "search": {
+        "code": "2",
+        "name": "RUB"
+      },
+      "pricing": {
+        "code": "2",
+        "name": "RUB"
+      }
+    },
+    "room_name": {
+      "search": "стандарт с двуспальной кроватью",
+      "pricing": "стандарт с двуспальной кроватью"
+    },
+    "meal": {
+      "search": {
+        "Code": "0",
+        "TypeCode": "0",
+        "TypeName": "Не включен",
+        "CategoryCode": "0",
+        "CategoryName": ""
+      },
+      "pricing": {
+        "Code": "0",
+        "TypeCode": "0",
+        "TypeName": "Не включен",
+        "CategoryCode": "0",
+        "CategoryName": ""
+      }
+    },
+    "availability": {
+      "search": "available",
+      "pricing": "available"
+    },
+    "penalty": {
+      "search": "2583",
+      "pricing": "2583"
+    },
+    "deadline": {
+      "search": {
+        "date": "2026-12-11",
+        "time": "12:00",
+        "timezone": "UTC+4",
+        "timestamp": "2026-12-11T12:00:00+04:00"
+      },
+      "pricing": {
+        "date": "2026-12-11",
+        "time": "12:00",
+        "timezone": "UTC+4",
+        "timestamp": "2026-12-11T12:00:00+04:00"
+      }
+    },
+    "where_to_pay": {
+      "search": "3",
+      "pricing": "3"
+    },
+    "reservation_lifetime": {
+      "search": null,
+      "pricing": {
+        "date": "2026-12-12",
+        "time": "12:00",
+        "timezone": "UTC+4",
+        "timestamp": "2026-12-12T12:00:00+04:00"
+      }
+    }
+  },
+  "crm": {
+    "order": "e7b63731-0e88-437e-95c8-9e8c37ed1c04",
+    "number": "ORD-000001",
+    "service": "e8a6e661-0217-40d5-8af9-85c8767a2c61",
+    "workflow": "72dcd852-8e39-435b-8dac-d95afe19a2c8",
+    "credential": "1c7ac67d-bd2d-4e1e-bed8-4fffc4734c2c",
+    "credential_status": "active"
+  },
+  "booking": {
+    "order_id": "18919869",
+    "reference_number": "AA8410b1c35a720630144a1732859e01",
+    "raw_status": "11",
+    "raw_status_name": "Запрос получен",
+    "normalized_status": "pending",
+    "actual_price": {
+      "amount": "5166",
+      "currency": "RUB"
+    },
+    "created_at": "2026-10-28T08:03:34.068431+00:00",
+    "updated_at": "2026-10-28T08:40:20.403213+00:00"
+  },
+  "order_info": {
+    "confirmation_number": "",
+    "allow_cancel": false,
+    "penalty": "0",
+    "possible_penalty": "2583",
+    "deadline_date": "2026-12-11",
+    "deadline_time": "12:00"
+  },
+  "reference_saved_before_order_request": true,
+  "special_request_echoed": true,
+  "worker_replay_no_duplicate": true,
+  "create_requests": 1,
+  "cancel_requests": 0,
+  "password_leak": false,
+  "guest_pii_leak": false,
+  "logs": [
+    {
+      "id": 93,
+      "operation": "hotel_pricing",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 4063,
+      "supplier_status": "",
+      "external_ids": {
+        "Hotel": "71359",
+        "ProductCode": "217912"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 94,
+      "operation": "hotel_pricing",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 496,
+      "supplier_status": "",
+      "external_ids": {
+        "Hotel": "71359",
+        "ProductCode": "217912"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 95,
+      "operation": "hotel_pricing",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 206,
+      "supplier_status": "",
+      "external_ids": {
+        "Hotel": "71359",
+        "ProductCode": "217912"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 96,
+      "operation": "hotel_pricing",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 753,
+      "supplier_status": "",
+      "external_ids": {
+        "Hotel": "71359",
+        "ProductCode": "217912"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 97,
+      "operation": "order_create",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 816,
+      "supplier_status": "",
+      "external_ids": {
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 98,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2687,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 99,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2838,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 100,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2580,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 101,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2638,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 102,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 3099,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 103,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 5567,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 104,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2568,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 129,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 278,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 105,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2979,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 106,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 3005,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 107,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2761,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 108,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2921,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 109,
+      "operation": "country_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 708,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 110,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 324,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 111,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 466,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 112,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 341,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 113,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 404,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 114,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 338,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 115,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 294,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 116,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 465,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 117,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 1006,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 118,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 246,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 119,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 200,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 120,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 271,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 121,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 1062,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 122,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 791,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 123,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 202,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 124,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 306,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 125,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 313,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 126,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 234,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 127,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 193,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 128,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 231,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 130,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 214,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 131,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 650,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 132,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 243,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 133,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 219,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 134,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 313,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 135,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 262,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 136,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 343,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 137,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 199,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 138,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 286,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 139,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 593,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 140,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 238,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 141,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 205,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 142,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 444,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 143,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 269,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 144,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 331,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 145,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 305,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 146,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 316,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 147,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 954,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 148,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 353,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 149,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 251,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 150,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 206,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 151,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 213,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 152,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 225,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 153,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 206,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 154,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 257,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 155,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 192,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 156,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 1358,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 157,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 615,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 158,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 247,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 159,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 351,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 160,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 217,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 161,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 224,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 162,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 524,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 163,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 196,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 164,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 322,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 165,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 204,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 166,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 199,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 167,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 299,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 168,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 302,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 169,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 408,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 170,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 234,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 171,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 248,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 172,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2385,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 173,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 222,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 174,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 231,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 175,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 262,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 176,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 228,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 177,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 225,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 178,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 208,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 179,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 700,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 180,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2297,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 181,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 217,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 182,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 477,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 183,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 219,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 184,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 303,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 185,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 212,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 186,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 195,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 187,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 370,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 188,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 422,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 189,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 273,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 190,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 299,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 191,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 691,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 192,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 880,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 193,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 631,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 194,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 241,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 195,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 239,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 196,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 207,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 197,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 632,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 198,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 293,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 199,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 1413,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 200,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 1447,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 201,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 215,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 202,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 251,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 203,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 219,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 204,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 339,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 205,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 244,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 206,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 829,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 207,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 243,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 208,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 323,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 209,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 392,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 210,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 250,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 211,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 957,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 212,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 437,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 213,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 733,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 214,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 269,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 215,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 303,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 216,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 522,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 217,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 243,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 218,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 525,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 219,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 269,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 220,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 273,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 221,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 405,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 222,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 419,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 223,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 218,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 224,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 219,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 225,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 304,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 226,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 274,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 227,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 409,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 228,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 253,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 229,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 324,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 230,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 325,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 231,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 238,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 232,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 304,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 233,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 245,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 234,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 235,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 235,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 286,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 236,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 268,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 237,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 674,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 238,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 256,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 239,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 341,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 240,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 317,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 241,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 581,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 242,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 229,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 243,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 1909,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 244,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 691,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 245,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 252,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 246,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 270,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 247,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 420,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 248,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 234,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 249,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 274,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 250,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 281,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 251,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 279,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 252,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 248,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 253,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 507,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 254,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 326,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 255,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 486,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 256,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 706,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 257,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 319,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 258,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 282,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 259,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 634,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 260,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 217,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 261,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 543,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 262,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 298,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 263,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 268,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 264,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 209,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 265,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 270,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 266,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 407,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 267,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 277,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 268,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 215,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 269,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 234,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 270,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 339,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 271,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 304,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 272,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 217,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 273,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 306,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 274,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 358,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 275,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 310,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 276,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 278,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 277,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 605,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 278,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 762,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 279,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 676,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 280,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 411,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 281,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 224,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 282,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 292,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 283,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 451,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 284,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 689,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 285,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 248,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 286,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 245,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 287,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 231,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 288,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 385,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 289,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 212,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 290,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 248,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 291,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 231,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 292,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 236,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 293,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 225,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 294,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 248,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 295,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 215,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 296,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 239,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 297,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 276,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 298,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 217,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 299,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 247,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 300,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 222,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 301,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 377,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 302,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 245,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 303,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 321,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 304,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 341,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 305,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 676,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 306,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 568,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 307,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 264,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 308,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 257,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 309,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 504,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 310,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 3369,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 311,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 273,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 312,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 695,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 313,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 376,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 314,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 334,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 315,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 223,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 316,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 231,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 317,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 228,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 318,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 311,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 319,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 236,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 320,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 366,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 321,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 586,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 322,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 295,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 323,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 366,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 324,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 334,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 325,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 231,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 326,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 232,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 327,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 220,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 328,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 283,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 329,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 574,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 330,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 431,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 331,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 207,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 332,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2802,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 333,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 200,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 334,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 311,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 335,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2571,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 336,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 571,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 337,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 207,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 338,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 321,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 339,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 324,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 340,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 809,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 341,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 420,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 342,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 728,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 343,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 653,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 344,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 227,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 345,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 506,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 346,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 575,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 347,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 215,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 348,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 301,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 349,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 222,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 350,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 398,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 351,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 298,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 352,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 544,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 353,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 649,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 354,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 202,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 355,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 304,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 356,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 774,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 357,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 3528,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 358,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 3521,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 359,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2776,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 360,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 3347,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 361,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2999,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 362,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2631,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 363,
+      "operation": "country_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 544,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 364,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 302,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 365,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 304,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 366,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 297,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 367,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 386,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 368,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 307,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 369,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 327,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 370,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 261,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 371,
+      "operation": "city_list",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 1128,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 372,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2418,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 373,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 3040,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 374,
+      "operation": "hotel_search",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 1317,
+      "supplier_status": "",
+      "external_ids": {},
+      "error_code": ""
+    },
+    {
+      "id": 375,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 3198,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 376,
+      "operation": "hotel_search",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 430,
+      "supplier_status": "",
+      "external_ids": {
+        "Hotels": "71359"
+      },
+      "error_code": ""
+    },
+    {
+      "id": 377,
+      "operation": "order_info",
+      "http_status": 200,
+      "result": "success",
+      "duration_ms": 2372,
+      "supplier_status": "11",
+      "external_ids": {
+        "Id": "18919869",
+        "OrderId": "18919869",
+        "ReferenceNumber": "AA8410b1c35a720630144a1732859e01"
+      },
+      "error_code": ""
+    }
+  ],
+  "tests": {
+    "A&A": {
+      "passed": 92,
+      "failed": 0
+    },
+    "Hotelbook": {
+      "passed": 146,
+      "failed": 0
+    },
+    "Full suite": {
+      "passed": 743,
+      "failed": 1
+    }
+  }
+}

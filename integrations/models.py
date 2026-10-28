@@ -157,9 +157,17 @@ class IncidentTimelineEntry(models.Model):
         ordering = ["id"]
 
 
-class HotelbookOperationLease(models.Model):
+class SupplierOperationLease(models.Model):
     """Cross-worker lease; committed before external I/O, unlike a long transaction."""
 
     service = models.OneToOneField("services.OrderService", on_delete=models.CASCADE, primary_key=True)
     owner = models.UUIDField()
     expires_at = models.DateTimeField()
+
+    class Meta:
+        # Keep the existing physical table for compatibility during deployment.
+        db_table = "integrations_hotelbookoperationlease"
+
+
+# Compatibility for existing Hotelbook imports; state and table are provider-neutral.
+HotelbookOperationLease = SupplierOperationLease

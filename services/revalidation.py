@@ -2,6 +2,8 @@
 
 from decimal import Decimal
 
+from django.db import transaction
+
 from services.pricing import calculate_price, resolve_markup_rules
 
 
@@ -24,6 +26,7 @@ def update_offer(offer, result):
     if not snapshot:
         return
     pricing = _pricing(snapshot, offer.supplier, offer.tenant_id, offer=offer)
+    offer.expires_at = snapshot.get("expires_at", offer.expires_at)
     offer.raw_snapshot = snapshot
     offer.itinerary = snapshot["itinerary"]
     offer.fare = snapshot.get("fare")
@@ -33,6 +36,7 @@ def update_offer(offer, result):
     offer.applied_markup_rules = [c for c in pricing["components"] if c["name"] == "supplier_markup"]
     offer.save(
         update_fields=[
+            "expires_at",
             "raw_snapshot",
             "itinerary",
             "fare",
@@ -45,12 +49,28 @@ def update_offer(offer, result):
     )
 
 
+@transaction.atomic
 def update_service(service, result):
     snapshot = result.get("snapshot")
     if not snapshot:
         return None
-    if (service.provider_snapshot or {}).get("hotelbook_booking"):
-        snapshot = {**snapshot, "hotelbook_booking": service.provider_snapshot["hotelbook_booking"]}
+    from integrations.adapters import AdapterError
+    from services.models import OrderService
+
+    current = OrderService.objects.select_for_update().get(pk=service.pk, tenant_id=service.tenant_id)
+    if current.supplier_id != service.supplier_id:
+        raise AdapterError(
+            "AVAILABILITY_CONFLICT",
+            "Поставщик услуги изменился во время перепроверки",
+            category="availability",
+        )
+    # Preflight performed external I/O before this short transaction. Another
+    # worker may have persisted its mutation reservation in that interval.
+    # Refresh under the row lock so it can never be erased by a stale snapshot.
+    service.refresh_from_db()
+    key = (service.provider_snapshot or {}).get("provider_adapter", "") + "_booking"
+    if (service.provider_snapshot or {}).get(key):
+        snapshot = {**snapshot, key: service.provider_snapshot[key]}
     pricing = _pricing(snapshot, service.supplier, service.tenant_id, service=service)
     new_total = (
         pricing["total"]

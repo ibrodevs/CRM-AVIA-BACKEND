@@ -39,6 +39,17 @@ def run_preflight(workflow, user) -> dict:
     if conflicting.exists():
         blocking.append({"code": "CONCURRENT_WORKFLOW", "message": "По заказу уже выполняется бронирование"})
 
+    from integrations.adapters import AdapterError, get_adapter
+
+    documents_required = False
+    for item in items:
+        try:
+            provider = (item.service.provider_snapshot or {}).get("provider_adapter", "mock")
+            documents_required |= (
+                item.service.source != "api" or get_adapter(provider).requires_passenger_documents
+            )
+        except AdapterError:
+            documents_required = True
     participants = order.participants.filter(status="active").select_related("person")
     for participant in participants:
         person = participant.person
@@ -61,6 +72,8 @@ def run_preflight(workflow, user) -> dict:
                     "person_id": str(person.id),
                 }
             )
+        if not documents_required:
+            continue
         document = participant.booking_document
         if document is None:
             document = person.documents.filter(archived_at__isnull=True).first()
@@ -99,6 +112,7 @@ def run_preflight(workflow, user) -> dict:
         snapshot = service.provider_snapshot or {}
         if service.source != "api" or not snapshot:
             continue
+        adapter = None
         try:
             adapter = adapter_for_service(service)
             ctx = AdapterContext(
@@ -133,7 +147,7 @@ def run_preflight(workflow, user) -> dict:
                         }
                     )
         except AdapterError as exc:
-            target = blocking if snapshot.get("provider_adapter") == "hotelbook" else warnings
+            target = blocking if adapter is None or adapter.requires_revalidation_before_booking else warnings
             target.append(
                 {
                     "code": exc.code,

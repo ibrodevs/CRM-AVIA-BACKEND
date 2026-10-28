@@ -48,6 +48,29 @@ class _NoRedirect(HTTPRedirectHandler):
 
 class HotelbookAdapter(ProviderAdapter):
     key = "hotelbook"
+    requires_revalidation_before_booking = True
+    persists_booking_snapshot = True
+    environment_setting = "HBPRO_ENVIRONMENT"
+    sync_exhausted_code = "HBPRO_SYNC_EXHAUSTED"
+
+    def hotel_booking_options(self, snapshot):
+        offer = snapshot.get("hotelbook", {}).get("offer", {})
+        return {
+            "rooms": offer.get("rooms", []),
+            "allows_special_requests": bool(offer.get("isRemarkFreeFormAllowed")),
+        }
+
+    def booking_needs_sync(self, booking):
+        return bool(
+            booking
+            and booking.get("locator")
+            and booking.get("state") != "failed"
+            and (
+                booking.get("state") in ("unknown", "creating_order", "booking", "cancelling")
+                or normalized_status(booking.get("items", [])) in ("pending_supplier_confirmation", "unknown")
+            )
+        )
+
     supported_kinds = ["hotel"]
     base_url = "https://api.hbpro.expert"
     http_timeout = 20

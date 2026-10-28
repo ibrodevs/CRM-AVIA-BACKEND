@@ -12,6 +12,11 @@ from integrations.adapters import (
 )
 
 
+def _stored_locator(service):
+    snapshot = service.provider_snapshot or {}
+    return snapshot.get(snapshot.get("provider_adapter", "") + "_booking", {}).get("locator", "")
+
+
 def _adapter_for(service):
     return adapter_for_service(service)
 
@@ -26,14 +31,11 @@ def run_booking(job: BackgroundJob) -> dict:
     booked = failed = pending = 0
 
     for item in workflow.items.select_related("service").order_by("sequence"):
-        if (
-            item.status == BookingWorkflowItem.Status.BOOKING
-            and (item.service.provider_snapshot or {}).get("provider_adapter") == "hotelbook"
-        ):
+        if item.status == BookingWorkflowItem.Status.BOOKING and (item.service.provider_snapshot or {}).get(
+            "provider_adapter"
+        ) not in (None, "mock"):
             item.status = BookingWorkflowItem.Status.UNKNOWN
-            item.locator = (
-                (item.service.provider_snapshot or {}).get("hotelbook_booking", {}).get("locator", "")
-            )
+            item.locator = _stored_locator(item.service)
             item.error_code = "BOOKING_UNKNOWN"
             item.save(update_fields=["status", "locator", "error_code"])
         if item.status == BookingWorkflowItem.Status.UNKNOWN:
@@ -64,13 +66,32 @@ def run_booking(job: BackgroundJob) -> dict:
                     "_mock": (service.provider_snapshot or {}).get("_mock", {}),
                 },
             )
+            if result.get("status") in ("failed", "cancelled"):
+                # Success Id acknowledges creation; the supplier can still refuse.
+                with transaction.atomic():
+                    service = OrderService.objects.select_for_update().get(pk=service.pk)
+                    service.status = (
+                        OrderService.Status.FAILED
+                        if result["status"] == "failed"
+                        else OrderService.Status.CANCELLED
+                    )
+                    if result.get("provider_snapshot") and not adapter.persists_booking_snapshot:
+                        service.provider_snapshot = result["provider_snapshot"]
+                    service.external_id = result.get("locator", "")
+                    service.version += 1
+                    service.save(
+                        update_fields=["status", "provider_snapshot", "external_id", "version", "updated_at"]
+                    )
+                raise AdapterError(
+                    "BOOKING_REJECTED",
+                    "Поставщик отказал в бронировании или отменил заказ",
+                    category="booking",
+                )
         except AdapterError as exc:
             if exc.category == "booking_unknown":
                 service.refresh_from_db()
                 item.status = BookingWorkflowItem.Status.UNKNOWN
-                item.locator = (
-                    (service.provider_snapshot or {}).get("hotelbook_booking", {}).get("locator", "")
-                )
+                item.locator = _stored_locator(service)
                 item.error_code = exc.code
                 item.error_message = str(exc)
                 item.save(update_fields=["status", "locator", "error_code", "error_message"])
@@ -100,7 +121,7 @@ def run_booking(job: BackgroundJob) -> dict:
             item.save(update_fields=["status", "locator", "provider_result"])
             service = OrderService.objects.select_for_update().get(pk=service.pk)
             service.status = OrderService.Status.APPROVAL if is_pending else OrderService.Status.BOOKED
-            if result.get("provider_snapshot"):
+            if result.get("provider_snapshot") and not adapter.persists_booking_snapshot:
                 service.provider_snapshot = result["provider_snapshot"]
             service.external_id = item.locator
             if deadline := result.get("ticketing_deadline"):
@@ -249,58 +270,101 @@ def status_inquiry(job: BackgroundJob) -> dict:
     except AdapterError as exc:
         return {"status": "inquiry_failed", "error_code": exc.code}
 
-    provider_status = result.get("status")
-    if provider_status == "pending":
-        item.provider_result = result
-        item.status = BookingWorkflowItem.Status.UNKNOWN
-        item.save(update_fields=["status", "provider_result"])
-        if result.get("provider_snapshot"):
-            OrderService.objects.filter(pk=item.service_id).update(
-                status=OrderService.Status.APPROVAL, provider_snapshot=result["provider_snapshot"]
+    with transaction.atomic():
+        service = OrderService.objects.select_for_update().get(pk=item.service_id)
+        item.refresh_from_db()
+        item.service = service
+        key = (service.provider_snapshot or {}).get("provider_adapter", "") + "_booking"
+        if (
+            adapter.persists_booking_snapshot
+            and result.get("provider_snapshot")
+            and (service.provider_snapshot or {}).get(key) != result["provider_snapshot"].get(key)
+        ):
+            # A later supplier operation has already committed its reservation
+            # or result. Applying this older inquiry must not overwrite it.
+            return {"status": item.status, "provider_status": result.get("status"), "stale": True}
+        provider_status = result.get("status")
+        if provider_status == "failed":
+            item.provider_result = result
+            item.status = BookingWorkflowItem.Status.FAILED
+            item.error_code = "BOOKING_REJECTED"
+            item.error_message = "Поставщик отказал в бронировании"
+            item.save(update_fields=["status", "provider_result", "error_code", "error_message"])
+            service = item.service
+            service.status = OrderService.Status.FAILED
+            if result.get("provider_snapshot") and not adapter.persists_booking_snapshot:
+                service.provider_snapshot = result["provider_snapshot"]
+            service.version += 1
+            service.save(
+                update_fields=["status", "version", "updated_at"]
+                + ([] if adapter.persists_booking_snapshot else ["provider_snapshot"])
             )
-        item.workflow.status = "partial"
-        item.workflow.save(update_fields=["status"])
+            item.workflow.status = (
+                "partial"
+                if item.workflow.items.exclude(status__in=["failed", "skipped"]).exists()
+                else "failed"
+            )
+            item.workflow.save(update_fields=["status"])
+            _create_incident(
+                item.workflow,
+                service,
+                AdapterError("BOOKING_REJECTED", "Поставщик отказал в бронировании", category="booking"),
+                job,
+            )
+        if provider_status == "pending":
+            item.provider_result = result
+            item.status = BookingWorkflowItem.Status.UNKNOWN
+            item.save(update_fields=["status", "provider_result"])
+            fields = {"status": OrderService.Status.APPROVAL}
+            if result.get("provider_snapshot") and not adapter.persists_booking_snapshot:
+                fields["provider_snapshot"] = result["provider_snapshot"]
+            OrderService.objects.filter(pk=item.service_id).update(**fields)
+            item.workflow.status = "partial"
+            item.workflow.save(update_fields=["status"])
 
-    if provider_status == "issued":
-        item.status = BookingWorkflowItem.Status.ISSUED
-        item.provider_result = result
-        item.save(update_fields=["status", "provider_result"])
-        service = item.service
-        service.status = OrderService.Status.ISSUED
-        service.version += 1
-        service.save(update_fields=["status", "version", "updated_at"])
-        _save_tickets(item.workflow, service, item, result)
-    elif provider_status in ("booked", "cancelled"):
-        item.provider_result = result
-        service = item.service
-        service.status = (
-            OrderService.Status.BOOKED if provider_status == "booked" else OrderService.Status.CANCELLED
+        if provider_status == "issued":
+            item.status = BookingWorkflowItem.Status.ISSUED
+            item.provider_result = result
+            item.save(update_fields=["status", "provider_result"])
+            service = item.service
+            service.status = OrderService.Status.ISSUED
+            service.version += 1
+            service.save(update_fields=["status", "version", "updated_at"])
+            _save_tickets(item.workflow, service, item, result)
+        elif provider_status in ("booked", "cancelled"):
+            item.provider_result = result
+            service = item.service
+            service.status = (
+                OrderService.Status.BOOKED if provider_status == "booked" else OrderService.Status.CANCELLED
+            )
+            if result.get("provider_snapshot") and not adapter.persists_booking_snapshot:
+                service.provider_snapshot = result["provider_snapshot"]
+            service.external_id = item.locator
+            service.version += 1
+            service.save(
+                update_fields=["status", "external_id", "version", "updated_at"]
+                + ([] if adapter.persists_booking_snapshot else ["provider_snapshot"])
+            )
+            item.status = (
+                BookingWorkflowItem.Status.BOOKED
+                if provider_status == "booked"
+                else BookingWorkflowItem.Status.COMPENSATED
+            )
+            item.error_code = ""
+            item.error_message = ""
+            item.save(update_fields=["status", "provider_result", "error_code", "error_message"])
+            if not item.workflow.items.exclude(status="booked").exists():
+                item.workflow.status = "completed"
+                item.workflow.save(update_fields=["status"])
+            elif not item.workflow.items.exclude(status__in=["compensated", "failed", "skipped"]).exists():
+                item.workflow.status = "cancelled"
+                item.workflow.save(update_fields=["status"])
+        emit_event(
+            "ticketing.updated",
+            item.workflow,
+            payload={"item": str(item.id), "status": item.status, "inquiry_result": provider_status},
         )
-        if result.get("provider_snapshot"):
-            service.provider_snapshot = result["provider_snapshot"]
-        service.external_id = item.locator
-        service.version += 1
-        service.save(update_fields=["status", "external_id", "provider_snapshot", "version", "updated_at"])
-        item.status = (
-            BookingWorkflowItem.Status.BOOKED
-            if provider_status == "booked"
-            else BookingWorkflowItem.Status.COMPENSATED
-        )
-        item.error_code = ""
-        item.error_message = ""
-        item.save(update_fields=["status", "provider_result", "error_code", "error_message"])
-        if not item.workflow.items.exclude(status="booked").exists():
-            item.workflow.status = "completed"
-            item.workflow.save(update_fields=["status"])
-        elif not item.workflow.items.exclude(status__in=["compensated", "failed", "skipped"]).exists():
-            item.workflow.status = "cancelled"
-            item.workflow.save(update_fields=["status"])
-    emit_event(
-        "ticketing.updated",
-        item.workflow,
-        payload={"item": str(item.id), "status": item.status, "inquiry_result": provider_status},
-    )
-    return {"status": item.status, "provider_status": provider_status}
+        return {"status": item.status, "provider_status": provider_status}
 
 
 @job_handler("booking.compensate", user_cancellable=False)

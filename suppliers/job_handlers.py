@@ -17,10 +17,17 @@ def verify_supplier_credentials(supplier) -> dict:
     """
     from integrations.adapters import AdapterError, get_adapter
 
+    def configured_environment(key):
+        try:
+            return get_adapter(key).configured_environment()
+        except AdapterError:
+            return ""
+
     credentials = [
         credential
-        for credential in supplier.credentials.filter(archived_at__isnull=True)
-        if credential.provider_adapter != "hotelbook" or credential.environment == settings.HBPRO_ENVIRONMENT
+        for credential in supplier.credentials.filter(tenant_id=supplier.tenant_id, archived_at__isnull=True)
+        if not (environment := configured_environment(credential.provider_adapter))
+        or credential.environment == environment
     ]
     if not credentials:
         return {"status": "not_configured", "checked": [], "message": "API-доступ не настроен"}

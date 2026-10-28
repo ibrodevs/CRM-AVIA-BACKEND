@@ -45,13 +45,28 @@ class HotelLocationSuggestionsView(APIView):
             return " ".join(str(text).casefold().replace("ё", "е").replace("-", " ").split())
 
         results = []
+        provider_errors = []
         scoped = False
         for supplier in _suppliers_for_search(SearchSession(tenant=request.user.tenant, kind="hotel")):
             if supplier is None or supplier.tenant_id != request.user.tenant_id:
                 continue
+            for candidate in supplier.credentials.filter(tenant_id=request.user.tenant_id, status="active", archived_at__isnull=True):
+                try:
+                    adapter = get_adapter(candidate.provider_adapter)
+                    if not hasattr(adapter, "locations") or candidate.environment != adapter.configured_environment():
+                        continue
+                    scoped = True
+                    if len(query) < 2:
+                        continue
+                    ctx = AdapterContext(tenant_id=request.user.tenant_id, supplier_id=supplier.id)
+                    locations = adapter.locations(ctx, query, partial=True) if adapter.key == "aanda" else adapter.locations(ctx, query)
+                    for city in locations[:10]:
+                        results.append({"id": f"{adapter.key}:{supplier.id}:{city['city_code']}", "value": city["name"], "title": city["name"], "label": city["name"], "kind": "Город", "subtitle": f"{supplier.name} · {city['country']}", "source": adapter.key, "city_code": city["city_code"], "country_code": city["country_code"], "supplier_id": str(supplier.id)})
+                except AdapterError as exc:
+                    provider_errors.append({"supplier_id": str(supplier.id), "provider_adapter": candidate.provider_adapter, "error_code": exc.code})
             credential = (
                 supplier.credentials.filter(
-                    tenant_id=request.user.tenant_id, status="active", archived_at__isnull=True
+                    tenant_id=request.user.tenant_id, provider_adapter="hotelbook", status="active", archived_at__isnull=True
                 )
                 .order_by("id")
                 .first()
@@ -78,7 +93,7 @@ class HotelLocationSuggestionsView(APIView):
                             "source": "hotelbook",
                         }
                     )
-        return Response({"results": results[:10], "provider_specific": scoped})
+        return Response({"results": results[:10], "provider_specific": scoped, "provider_errors": provider_errors})
 
 
 class SearchSessionSerializer(serializers.ModelSerializer):
@@ -127,6 +142,11 @@ class ServiceOfferSerializer(serializers.ModelSerializer):
 
 class OrderServiceSerializer(serializers.ModelSerializer):
     hotel_documents = serializers.SerializerMethodField()
+    hotel_details = serializers.SerializerMethodField()
+
+    def get_hotel_details(self, obj):
+        from services.hotel_presentation import hotel_service_details
+        return hotel_service_details(obj.provider_snapshot)
 
     def get_hotel_documents(self, obj):
         from documents.hotel_certificate import hotel_capabilities
@@ -167,6 +187,7 @@ class OrderServiceSerializer(serializers.ModelSerializer):
             "client_total",
             "client_price",
             "hotel_documents",
+            "hotel_details",
             "payment_deadline",
             "ticketing_deadline",
             "responsible",
@@ -469,7 +490,7 @@ class OrderServicesView(GenericAPIView):
                 participant_ids=request.data.get("participants"),
                 user=request.user,
             )
-            _hotelbook_booking_options(service, request.data)
+            _provider_booking_options(service, request.data)
             emit_event("service.updated", service, payload={"action": "created", "order_id": str(order.id)})
             audit("services.created", actor=request.user, resource=service, request=request)
         return Response(OrderServiceSerializer(service).data, status=http.HTTP_201_CREATED)
@@ -591,13 +612,15 @@ def _parse_deadline(value):
     return parsed
 
 
-def _hotelbook_booking_options(service, data):
+def _provider_booking_options(service, data):
     snapshot = dict(service.provider_snapshot or {})
-    if snapshot.get("provider_adapter") != "hotelbook":
+    adapter = get_adapter(snapshot.get("provider_adapter") or "mock")
+    if not adapter.requires_revalidation_before_booking or service.kind != "hotel":
         return
-    if snapshot.get("hotelbook_booking") and any(k in data for k in ("room_assignments", "special_requests", "main_guest")):
+    if snapshot.get(adapter.key + "_booking") and any(k in data for k in ("participants", "room_assignments", "special_requests", "main_guest")):
         raise ApiError(code="BOOKING_LOCKED", message="Состав отправленной брони нельзя менять", status_code=409)
-    rooms = (snapshot.get("hotelbook") or {}).get("offer", {}).get("rooms", [])
+    options = adapter.hotel_booking_options(snapshot)
+    rooms = options["rooms"]
     count = sum(r.get("quantity", 1) for r in rooms)
     assignments = data.get("room_assignments")
     if assignments is not None:
@@ -617,7 +640,7 @@ def _hotelbook_booking_options(service, data):
         snapshot["main_guest"] = str(main)
     if "special_requests" in data:
         remark = data["special_requests"]
-        if not isinstance(remark, str) or len(remark) > 2000 or (remark and not (snapshot.get("hotelbook") or {}).get("offer", {}).get("isRemarkFreeFormAllowed")):
+        if not isinstance(remark, str) or len(remark) > 2000 or (remark and not options["allows_special_requests"]):
             raise ApiError(code="INVALID_REQUEST", message="Пожелания не поддерживаются тарифом или превышают 2000 символов", status_code=400)
         snapshot["special_requests"] = remark
     service.provider_snapshot = snapshot
@@ -643,7 +666,7 @@ class ServicePassengersView(APIView):
                 participant_ids=request.data.get("participants", []),
                 user=request.user,
             )
-            _hotelbook_booking_options(service, request.data)
+            _provider_booking_options(service, request.data)
             service.version += 1
             service.updated_by = request.user
             service.save(update_fields=["version", "updated_by", "updated_at"])
@@ -953,7 +976,7 @@ class ServiceCancelView(ServiceActionView):
     @idempotent_command("services.provider_cancel", required=False)
     def post(self, request, service_id):
         service = _get_service(request, service_id)
-        if (service.provider_snapshot or {}).get("provider_adapter") != "hotelbook":
+        if service.source != "api" or not adapter_for_service(service).requires_revalidation_before_booking:
             return super().post(request, service_id)
         if not has_permission(request.user, "services.cancel") or not has_service_action(request.user, service.kind, "cancel"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права отмены гостиницы", status_code=403)
@@ -1092,5 +1115,5 @@ class ManualOfferCreateView(APIView):
 
 
 def _require_provider_workflow(service, target):
-    if service.source == "api" and (service.provider_snapshot or {}).get("provider_adapter") == "hotelbook" and target in ("booked", "confirmed", "issued", "cancelled"):
-        raise ApiError(code="BOOKING_WORKFLOW_REQUIRED", message="API-бронь Hotelbook изменяется через booking workflow", status_code=409)
+    if service.source == "api" and target in ("booked", "confirmed", "issued", "cancelled") and adapter_for_service(service).requires_revalidation_before_booking:
+        raise ApiError(code="BOOKING_WORKFLOW_REQUIRED", message="API-бронь поставщика изменяется через booking workflow", status_code=409)

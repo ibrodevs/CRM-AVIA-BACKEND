@@ -269,3 +269,9 @@ LOGGING = {
 HBPRO_ENVIRONMENT = env("HBPRO_ENVIRONMENT", default="sandbox")
 if HBPRO_ENVIRONMENT not in ("sandbox", "production"):
     raise ValueError("HBPRO_ENVIRONMENT must be sandbox or production")
+
+AANDA_ENVIRONMENT = env("AANDA_ENVIRONMENT", default="sandbox")
+if AANDA_ENVIRONMENT not in ("sandbox", "production"):
+    raise ValueError("AANDA_ENVIRONMENT must be sandbox or production")
+# No assumed production endpoint. An operator must configure the contracted URL.
+AANDA_PRODUCTION_URL = env("AANDA_PRODUCTION_URL", default="")

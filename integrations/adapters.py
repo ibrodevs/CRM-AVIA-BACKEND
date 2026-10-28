@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
+from importlib import import_module
 
 from integrations.models import IntegrationLog
 
@@ -50,6 +51,22 @@ class ProviderAdapter:
 
     key = "base"
     supported_kinds: list[str] = []
+    requires_revalidation_before_booking = False
+    requires_passenger_documents = True
+    persists_booking_snapshot = False
+    environment_setting = ""
+    sync_exhausted_code = "SUPPLIER_SYNC_EXHAUSTED"
+
+    def booking_needs_sync(self, booking):
+        return False
+
+    def hotel_booking_options(self, snapshot):
+        return {"rooms": [], "allows_special_requests": False}
+
+    def configured_environment(self):
+        from django.conf import settings
+
+        return getattr(settings, self.environment_setting, "sandbox") if self.environment_setting else ""
 
     def search(self, ctx: AdapterContext, kind: str, criteria: dict) -> list[dict]:
         raise NotImplementedError
@@ -334,6 +351,10 @@ class MockAdapter(ProviderAdapter):
 
 
 _ADAPTERS: dict[str, ProviderAdapter] = {}
+_ADAPTER_FACTORIES = {
+    "hotelbook": ("integrations.hotelbook", "HotelbookAdapter"),
+    "aanda": ("integrations.aanda", "AandaAdapter"),
+}
 
 
 def register_adapter(adapter: ProviderAdapter) -> None:
@@ -341,10 +362,9 @@ def register_adapter(adapter: ProviderAdapter) -> None:
 
 
 def get_adapter(key: str) -> ProviderAdapter:
-    if key == "hotelbook" and key not in _ADAPTERS:
-        from integrations.hotelbook import HotelbookAdapter
-
-        register_adapter(HotelbookAdapter())
+    if key not in _ADAPTERS and key in _ADAPTER_FACTORIES:
+        module, name = _ADAPTER_FACTORIES[key]
+        register_adapter(getattr(import_module(module), name)())
     adapter = _ADAPTERS.get(key)
     if adapter is None:
         raise AdapterError("UNKNOWN_ADAPTER", f"Адаптер '{key}' не зарегистрирован")
@@ -356,28 +376,40 @@ register_adapter(MockAdapter())
 
 def adapter_for_service(service) -> ProviderAdapter:
     """Use the same tenant-scoped supplier routing in preflight and all workers."""
+    from django.conf import settings
+
     from suppliers.models import SupplierCredential
 
-    key = "mock"
+    expected = (service.provider_snapshot or {}).get("provider_adapter")
+    key = expected or "mock"
     if service.supplier_id:
-        credential = (
-            SupplierCredential.objects.filter(
-                tenant_id=service.tenant_id,
-                supplier_id=service.supplier_id,
-                supplier__tenant_id=service.tenant_id,
-                archived_at__isnull=True,
-                status="active",
-            )
-            .order_by("id")
-            .first()
+        credentials = SupplierCredential.objects.filter(
+            tenant_id=service.tenant_id,
+            supplier_id=service.supplier_id,
+            supplier__tenant_id=service.tenant_id,
+            archived_at__isnull=True,
+            status="active",
         )
+        if expected:
+            credentials = credentials.filter(provider_adapter=expected)
+            environment = get_adapter(expected).configured_environment()
+            if environment:
+                credentials = credentials.filter(environment=environment)
+        credential = credentials.order_by("id").first()
         if credential is not None:
             key = credential.provider_adapter
-    expected = (service.provider_snapshot or {}).get("provider_adapter")
+        elif expected and expected != "mock":
+            raise AdapterError(
+                "PROVIDER_NOT_CONFIGURED", "Нет credentials выбранного поставщика", category="configuration"
+            )
     if expected and expected != key:
         raise AdapterError(
             "PROVIDER_NOT_CONFIGURED",
             "Credentials не соответствуют поставщику предложения",
             category="configuration",
+        )
+    if key == "mock" and not settings.ALLOW_MOCK_ADAPTER:
+        raise AdapterError(
+            "PROVIDER_NOT_CONFIGURED", "Sandbox adapter отключён в этом окружении", category="configuration"
         )
     return get_adapter(key)

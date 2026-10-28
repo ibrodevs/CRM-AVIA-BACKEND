@@ -25,6 +25,7 @@ from orders.serializers import (
     RouteSerializer,
     order_finance_summary,
 )
+from services.hotel_presentation import hotel_service_details
 
 
 class OrderListCreateView(GenericAPIView):
@@ -319,6 +320,7 @@ class OrderOverviewView(APIView):
                 "kind": s.kind,
                 "status": s.status,
                 "hotel_documents": hotel_capabilities(s.provider_snapshot or {}),
+                "hotel_details": hotel_service_details(s.provider_snapshot),
                 "title": s.title,
                 "supplier": s.supplier.name if s.supplier else "",
                 "supplier_cost": str(s.supplier_cost) if s.supplier_cost is not None else None,
