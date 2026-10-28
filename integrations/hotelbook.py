@@ -393,11 +393,14 @@ class HotelbookAdapter(ProviderAdapter):
                 ctx, operation, method, path, payload, token, (config["login"], config["password"])
             )
 
-    def _dictionary(self, ctx, config, resource, params=None):
-        credential, _ = self._config(ctx)
-        key = self._cache_key(
+    def _dictionary_cache_key(self, credential, config, resource, params=None):
+        return self._cache_key(
             credential, config, f"dict:{resource}:{json.dumps(params or {}, sort_keys=True)}"
         )
+
+    def _dictionary(self, ctx, config, resource, params=None):
+        credential, _ = self._config(ctx)
+        key = self._dictionary_cache_key(credential, config, resource, params)
         rows = cache.get(key)
         if rows is not None:
             return rows
@@ -422,6 +425,145 @@ class HotelbookAdapter(ProviderAdapter):
         raise AdapterError(
             "CITIZENSHIP_REQUIRED", "Укажите гражданство ISO alpha-2", category="configuration"
         )
+
+    @staticmethod
+    def _geo_name(value):
+        return " ".join(str(value or "").casefold().replace("ё", "е").split())
+
+    @staticmethod
+    def _active_geo(rows):
+        return [row for row in rows if isinstance(row, dict) and not row.get("trash")]
+
+    def _city_region(self, city, regions, expected_country=None):
+        region_id = city.get("stateRegionId")
+        if region_id is None:
+            return None
+        region = (
+            regions.get(str(region_id))
+            if isinstance(regions, dict)
+            else next(
+                (row for row in self._active_geo(regions) if str(row.get("id")) == str(region_id)), None
+            )
+        )
+        if region is None or region.get("trash") or region.get("countryId") is None:
+            return None
+        country = city.get("countryId")
+        if country is not None and str(region.get("countryId")) != str(country):
+            return None
+        if expected_country is not None and str(region.get("countryId")) != str(expected_country):
+            return None
+        return region
+
+    def _resolve_city(self, ctx, config, criteria, location):
+        """Only hotelbook.* numeric hints are HBPRO IDs; CRM IDs never enter this join."""
+        hb = criteria.get("hotelbook") or {}
+        cities = self._active_geo(self._dictionary(ctx, config, "geo/cities"))
+        matches = [row for row in cities if self._geo_name(row.get("name")) == self._geo_name(location)]
+        parts = [location] if matches else [part.strip() for part in location.split(",") if part.strip()]
+        if not matches:
+            name = parts[0] if parts else ""
+            matches = [row for row in cities if self._geo_name(row.get("name")) == self._geo_name(name)]
+        regions = (
+            self._dictionary(ctx, config, "geo/state_regions")
+            if any(row.get("stateRegionId") is not None for row in matches)
+            else []
+        )
+        country_id = hb.get("country_id")
+        region_id = hb.get("state_region_id")
+        for value in (country_id, region_id):
+            if value is not None and (isinstance(value, bool) or not str(value).isdigit() or int(value) <= 0):
+                raise AdapterError(
+                    "SEARCH_CRITERIA_INVALID", "Некорректные Hotelbook geo IDs", category="validation"
+                )
+        country_name = criteria.get("country_code") or criteria.get("country")
+        countries = None
+
+        def country_ids(label):
+            nonlocal countries
+            if countries is None:
+                countries = self._active_geo(self._dictionary(ctx, config, "geo/countries"))
+            return {
+                str(row["id"])
+                for row in countries
+                if self._geo_name(label)
+                in (self._geo_name(row.get("name")), self._geo_name(row.get("alpha2")))
+            }
+
+        def in_country(city, ids):
+            region = self._city_region(city, regions)
+            country = (
+                city.get("countryId")
+                if city.get("countryId") is not None
+                else (region or {}).get("countryId")
+            )
+            return str(country) in ids
+
+        if country_name:
+            ids = country_ids(country_name)
+            matches = [row for row in matches if in_country(row, ids)]
+        if country_id is not None:
+            matches = [row for row in matches if in_country(row, {str(country_id)})]
+        region_name = criteria.get("region")
+        if region_id is not None or region_name:
+            filtered = []
+            for city in matches:
+                region = self._city_region(city, regions, country_id)
+                if (
+                    region
+                    and (region_id is None or str(region["id"]) == str(region_id))
+                    and (not region_name or self._geo_name(region.get("name")) == self._geo_name(region_name))
+                ):
+                    filtered.append(city)
+            # Older/incomplete dictionaries must not break a previously unique city.
+            if filtered or len(matches) != 1 or self._city_region(matches[0], regions, country_id):
+                matches = filtered
+        for qualifier in parts[1:]:
+            regional = [
+                city
+                for city in matches
+                if (region := self._city_region(city, regions, country_id))
+                and self._geo_name(region.get("name")) == self._geo_name(qualifier)
+            ]
+            matches = regional or [city for city in matches if in_country(city, country_ids(qualifier))]
+        if len(matches) != 1:
+            raise AdapterError(
+                "LOCATION_REQUIRED", "Укажите город и уточните регион или страну", category="validation"
+            )
+        return matches[0]
+
+    def _cached_geography(self, credential, config):
+        # Index once per search, not once per offer; these dictionaries can be large.
+        return {
+            resource: {
+                str(row["id"]): row
+                for row in self._active_geo(
+                    cache.get(self._dictionary_cache_key(credential, config, resource)) or []
+                )
+                if row.get("id") is not None
+            }
+            for resource in ("geo/cities", "geo/state_regions", "geo/countries")
+        }
+
+    def _cached_location(self, geography, hotel):
+        """Display-only enrichment. Never load a dictionary just to decorate an offer."""
+        city = geography["geo/cities"].get(str(hotel.get("cityId")))
+        if city is None:
+            return {}
+        country_id = hotel.get("countryId") or city.get("countryId")
+        if (
+            hotel.get("countryId") is not None
+            and city.get("countryId") is not None
+            and str(hotel["countryId"]) != str(city["countryId"])
+        ):
+            return {}
+        region = self._city_region(city, geography["geo/state_regions"], country_id)
+        country_id = country_id if country_id is not None else (region or {}).get("countryId")
+        country = geography["geo/countries"].get(str(country_id))
+        return {
+            "city": city.get("name", ""),
+            **({"region": region["name"]} if region and region.get("name") else {}),
+            **({"country": country["name"]} if country and country.get("name") else {}),
+        }
 
     def _hotel(self, ctx, config, hotel_id):
         credential, _ = self._config(ctx)
@@ -547,21 +689,10 @@ class HotelbookAdapter(ProviderAdapter):
             else:
                 payload["cities"] = [city_id]
         else:
-            cities = self._dictionary(ctx, config, "geo/cities")
-            matches = [
-                r
-                for r in cities
-                if not r.get("trash") and r.get("name", "").casefold() == location.casefold()
-            ]
-            if len(matches) != 1:
-                raise AdapterError(
-                    "LOCATION_REQUIRED",
-                    "Укажите название тестового отеля, его ID или однозначный город",
-                    category="validation",
-                )
+            city = self._resolve_city(ctx, config, criteria, location)
             if sandbox:
                 payload["hotels"] = [
-                    h for h in TEST_HOTELS if self._hotel(ctx, config, h).get("cityId") == matches[0]["id"]
+                    h for h in TEST_HOTELS if self._hotel(ctx, config, h).get("cityId") == city["id"]
                 ]
                 if not payload["hotels"]:
                     raise AdapterError(
@@ -570,7 +701,7 @@ class HotelbookAdapter(ProviderAdapter):
                         category="availability",
                     )
             else:
-                payload["cities"] = [matches[0]["id"]]
+                payload["cities"] = [city["id"]]
         citizenship = hb.get("citizenship_id")
         if citizenship is None:
             citizenship = self._country_id(
@@ -599,6 +730,7 @@ class HotelbookAdapter(ProviderAdapter):
             )
         credential, config = self._config(ctx)
         payload = self._search_payload(ctx, credential, config, criteria)
+        geography = self._cached_geography(credential, config)
         start = self._request(ctx, "search", "POST", self._path(config, "hotel/gateway/search"), payload)
         if not start.get("searchId") or start.get("state") not in ("IN_PROCESS", "COMPLETED"):
             raise AdapterError("INVALID_RESPONSE", "Hotelbook: поиск не запущен")
@@ -633,7 +765,9 @@ class HotelbookAdapter(ProviderAdapter):
                     continue
                 seen.add(offer["offerId"])
                 hotel = self._hotel(ctx, config, offer["hotelId"])
-                snapshot = self._normalize(offer, search_id, expires_at, hotel, payload)
+                snapshot = self._normalize(
+                    offer, search_id, expires_at, hotel, payload, self._cached_location(geography, hotel)
+                )
                 if citizenship_code and (criteria.get("hotelbook") or {}).get("citizenship_id") is None:
                     snapshot["hotelbook"]["citizenship_ids"] = {
                         str(citizenship_code).upper(): payload["citizenshipId"]
@@ -697,15 +831,15 @@ class HotelbookAdapter(ProviderAdapter):
             or "Условия отмены уточняются у поставщика",
         }
 
-    def _normalize(self, offer, search_id, expires_at, hotel, search_request):
+    def _normalize(self, offer, search_id, expires_at, hotel, search_request, location=None):
         try:
-            return self._normalize_offer(offer, search_id, expires_at, hotel, search_request)
+            return self._normalize_offer(offer, search_id, expires_at, hotel, search_request, location)
         except (KeyError, TypeError, AttributeError, ValueError, InvalidOperation):
             raise AdapterError(
                 "INVALID_RESPONSE", "Hotelbook: некорректные данные предложения", category="internal"
             ) from None
 
-    def _normalize_offer(self, offer, search_id, expires_at, hotel, search_request):
+    def _normalize_offer(self, offer, search_id, expires_at, hotel, search_request, location=None):
         rooms = offer.get("rooms") or []
         if not rooms or not all(r.get("hash") for r in rooms):
             raise AdapterError(
@@ -736,6 +870,7 @@ class HotelbookAdapter(ProviderAdapter):
                 ),
                 "address": details.get("address", ""),
                 "city": "",
+                **(location or {}),
                 "check_in": offer.get("checkIn"),
                 "check_out": offer.get("checkOut"),
                 "room": ", ".join(r.get("roomName", "") for r in rooms),
@@ -787,6 +922,7 @@ class HotelbookAdapter(ProviderAdapter):
                 "hotel_id": offer["hotelId"],
                 "search_request": search_request,
                 "hotel": hotel,
+                "location": deepcopy(location or {}),
                 "offer": offer,
             },
         }
@@ -865,6 +1001,7 @@ class HotelbookAdapter(ProviderAdapter):
             offer_snapshot.get("expires_at"),
             hb.get("hotel", {}),
             hb.get("search_request", {}),
+            hb.get("location", {}),
         )
         old_terms, new_terms = self._terms(previous), self._terms(offer)
         detailed_baseline = self._has_detailed_baseline(ctx, offer_snapshot)
