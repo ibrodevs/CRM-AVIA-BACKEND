@@ -286,3 +286,10 @@ def _persist_offer(session, supplier, adapter_key, raw, seen_hashes):
     offer.applied_markup_rules = [c for c in pricing["components"] if c["name"] == "supplier_markup"]
     offer.save(update_fields=["price_amount", "applied_markup_rules"])
     return True
+
+
+@job_handler("hotel.operation", max_attempts=1, retryable=False, user_cancellable=False)
+def hotel_operation(job):
+    from services.hotel_actions.operations import execute_operation
+
+    return execute_operation(job)

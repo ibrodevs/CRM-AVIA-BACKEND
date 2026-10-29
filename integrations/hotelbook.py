@@ -54,6 +54,11 @@ class HotelbookAdapter(ProviderAdapter):
     environment_setting = "HBPRO_ENVIRONMENT"
     sync_exhausted_code = "HBPRO_SYNC_EXHAUSTED"
 
+    def hotel_action_capabilities(self, service):
+        from integrations.hotel_actions import api_hotel_capabilities
+
+        return api_hotel_capabilities(service, "hotelbook_booking")
+
     def hotel_booking_options(self, snapshot):
         offer = snapshot.get("hotelbook", {}).get("offer", {})
         return {

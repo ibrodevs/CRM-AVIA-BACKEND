@@ -58,6 +58,11 @@ class ProviderAdapter:
     environment_setting = ""
     sync_exhausted_code = "SUPPLIER_SYNC_EXHAUSTED"
 
+    def hotel_action_capabilities(self, service):
+        from integrations.hotel_actions import hotel_capabilities
+
+        return hotel_capabilities()
+
     def booking_needs_sync(self, booking):
         return False
 

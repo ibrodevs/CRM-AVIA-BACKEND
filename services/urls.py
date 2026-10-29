@@ -1,9 +1,25 @@
 from django.urls import path
 
 from services import views as v
+from services.hotel_actions.views import (
+    HotelActionsView,
+    HotelOperationConfirmView,
+    HotelOperationResolveView,
+)
 from services.hotel_views import HotelCertificateView, OfferHotelContentView, ServiceHotelContentView
 
 urlpatterns = [
+    path("services/<uuid:service_id>/hotel-actions/", HotelActionsView.as_view(), name="hotel-actions"),
+    path(
+        "services/<uuid:service_id>/hotel-actions/<uuid:operation_id>/confirm/",
+        HotelOperationConfirmView.as_view(),
+        name="hotel-operation-confirm",
+    ),
+    path(
+        "services/<uuid:service_id>/hotel-actions/<uuid:operation_id>/resolve/",
+        HotelOperationResolveView.as_view(),
+        name="hotel-operation-resolve",
+    ),
     path(
         "service-offers/<uuid:offer_id>/hotel-content/",
         OfferHotelContentView.as_view(),

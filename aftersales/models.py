@@ -144,3 +144,66 @@ class AfterSaleHistoryEntry(models.Model):
     class Meta:
         db_table = "aftersales_history"
         ordering = ["id"]
+
+
+class HotelOperation(TenantModel):
+    """An operation on a hotel supplier booking, independent of its booking status."""
+
+    class Status(models.TextChoices):
+        CREATED = "created"
+        CHECKING = "checking"
+        AWAITING_OPERATOR_CONFIRMATION = "awaiting_operator_confirmation"
+        SUBMITTED_TO_SUPPLIER = "submitted_to_supplier"
+        AWAITING_SUPPLIER = "awaiting_supplier"
+        COMPLETED = "completed"
+        REJECTED = "rejected"
+        FAILED = "failed"
+        UNKNOWN = "unknown"
+
+    order = models.ForeignKey("orders.Order", on_delete=models.PROTECT, related_name="hotel_operations")
+    service = models.ForeignKey(
+        "services.OrderService", on_delete=models.PROTECT, related_name="hotel_operations"
+    )
+    supplier = models.ForeignKey(
+        "suppliers.Supplier", null=True, blank=True, on_delete=models.PROTECT, related_name="hotel_operations"
+    )
+    operation_type = models.CharField(max_length=40)
+    scope = models.CharField(max_length=8, choices=[("booking", "booking"), ("rooms", "rooms")])
+    room_refs = models.JSONField(default=list)
+    status = models.CharField(max_length=32, choices=Status.choices, default=Status.CREATED)
+    execution_mode = models.CharField(max_length=12)
+    original_snapshot = models.JSONField(default=dict)
+    requested_changes = models.JSONField(default=dict)
+    result_snapshot = models.JSONField(default=dict)
+    financial_snapshot = models.JSONField(default=dict)
+    supplier_response = models.JSONField(default=dict)
+    supplier_reference = models.CharField(max_length=128, blank=True)
+    actor = models.ForeignKey(
+        "accounts.User", null=True, on_delete=models.SET_NULL, related_name="hotel_operations"
+    )
+    idempotency_key = models.CharField(max_length=128)
+    job = models.ForeignKey(
+        "common.BackgroundJob", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "aftersales_hotel_operation"
+        constraints = [
+            models.UniqueConstraint(fields=["service", "idempotency_key"], name="uniq_hotel_operation_key")
+        ]
+        indexes = [models.Index(fields=["tenant", "service", "status"])]
+
+
+class HotelOperationHistory(models.Model):
+    operation = models.ForeignKey(HotelOperation, on_delete=models.PROTECT, related_name="history")
+    actor = models.ForeignKey("accounts.User", null=True, on_delete=models.SET_NULL, related_name="+")
+    action = models.CharField(max_length=48)
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "aftersales_hotel_history"
+        ordering = ["id"]

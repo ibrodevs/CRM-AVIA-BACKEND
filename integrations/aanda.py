@@ -154,6 +154,11 @@ class AandaAdapter(ProviderAdapter):
     environment_setting = "AANDA_ENVIRONMENT"
     revalidation_ttl = 30
 
+    def hotel_action_capabilities(self, service):
+        from integrations.hotel_actions import api_hotel_capabilities
+
+        return api_hotel_capabilities(service, "aanda_booking")
+
     def hotel_booking_options(self, snapshot):
         return {
             "rooms": [

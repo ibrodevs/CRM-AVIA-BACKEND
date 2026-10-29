@@ -107,6 +107,8 @@ class CaseSerializer(serializers.ModelSerializer):
         if order and order.tenant_id != tenant_id:
             fields["order"] = ["Заказ не найден в текущей организации"]
         if service:
+            if service.kind == "hotel":
+                raise ApiError(code="HOTEL_ACTIONS_REQUIRED", message="Для гостиницы используйте действия гостиничного бронирования", status_code=400)
             if service.tenant_id != tenant_id:
                 fields["service"] = ["Услуга не найдена в текущей организации"]
             elif order and service.order_id != order.id:
