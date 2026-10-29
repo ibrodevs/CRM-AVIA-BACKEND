@@ -53,6 +53,7 @@ class ProviderAdapter:
     supported_kinds: list[str] = []
     requires_revalidation_before_booking = False
     requires_passenger_documents = True
+    requires_booking_contact = False
     persists_booking_snapshot = False
     environment_setting = ""
     sync_exhausted_code = "SUPPLIER_SYNC_EXHAUSTED"

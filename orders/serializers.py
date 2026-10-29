@@ -259,12 +259,28 @@ class OrderListSerializer(serializers.ModelSerializer):
 
 
 class OrderDetailSerializer(OrderListSerializer):
+    booking_contact = serializers.SerializerMethodField()
+
+    def get_booking_contact(self, obj):
+        from booking.contacts import requires_booking_contact
+        from orders.contacts import resolve_order_contact
+
+        return {**resolve_order_contact(obj), "required": requires_booking_contact(obj.services.all())}
+
+    def validate_contact_person(self, person):
+        request = self.context.get("request")
+        tenant_id = request.user.tenant_id if request else self.instance.tenant_id
+        if person is not None and (person.tenant_id != tenant_id or person.archived_at):
+            raise serializers.ValidationError("Контактное лицо недоступно")
+        return person
+
     route = RouteSerializer(read_only=True)
     participants = serializers.SerializerMethodField()
 
     class Meta(OrderListSerializer.Meta):
         fields = OrderListSerializer.Meta.fields + [
             "contact_person",
+            "booking_contact",
             "source",
             "preferred_channel",
             "agreement",
@@ -331,6 +347,16 @@ class OrderCreateSerializer(serializers.Serializer):
     route = serializers.DictField(required=False, allow_null=True)
     participants = serializers.ListField(child=serializers.DictField(), required=False)
     receipt_services = ReceiptOrderServiceCreateSerializer(many=True, required=False)
+
+    def validate_contact_person(self, person):
+        request = self.context.get("request")
+        if (
+            person is not None
+            and request
+            and (person.tenant_id != request.user.tenant_id or person.archived_at)
+        ):
+            raise serializers.ValidationError("Контактное лицо недоступно")
+        return person
 
     def validate(self, attrs):
         person, company = attrs.get("client_person"), attrs.get("client_company")

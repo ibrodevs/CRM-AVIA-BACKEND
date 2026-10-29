@@ -1,6 +1,7 @@
 from django.db import transaction
 from django.utils import timezone
 
+from booking.contacts import booking_contact_error
 from common.jobs import job_handler
 from common.models import BackgroundJob
 from common.outbox import emit_event
@@ -10,6 +11,7 @@ from integrations.adapters import (
     AmbiguousResultError,
     adapter_for_service,
 )
+from orders.contacts import booking_contact_info
 
 
 def _stored_locator(service):
@@ -53,6 +55,9 @@ def run_booking(job: BackgroundJob) -> dict:
         ctx.order_id = service.order_id
         try:
             adapter = _adapter_for(service)
+            contact_error = booking_contact_error(workflow.order, [service])
+            if contact_error:
+                raise AdapterError(contact_error["code"], contact_error["message"], category="validation")
             result = adapter.book(
                 ctx,
                 {
@@ -450,8 +455,7 @@ def _booking_passengers(service):
 
 
 def _booking_contact(order):
-    person = order.contact_person or order.client_person
-    return {"name": person.full_name, "email": person.email, "phone": person.phone} if person else {}
+    return booking_contact_info(order)
 
 
 def _booking_customer(order):

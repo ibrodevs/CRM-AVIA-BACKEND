@@ -47,7 +47,7 @@ class OrderListCreateView(GenericAPIView):
     def post(self, request):
         if not has_permission(request.user, "orders.create"):
             raise ApiError(code="PERMISSION_DENIED", message="Нет права orders.create", status_code=403)
-        serializer = OrderCreateSerializer(data=request.data)
+        serializer = OrderCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = dict(serializer.validated_data)
         order = order_service.create_order(
@@ -90,7 +90,7 @@ class OrderDetailView(APIView):
                     status_code=400,
                 )
             data = {k: v for k, v in request.data.items() if k in allowed}
-            serializer = OrderDetailSerializer(order, data=data, partial=True)
+            serializer = OrderDetailSerializer(order, data=data, partial=True, context={"request": request})
             serializer.is_valid(raise_exception=True)
             order.version += 1
             order.updated_by = request.user

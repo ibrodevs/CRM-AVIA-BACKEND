@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import has_permission, has_service_action, require
+from booking.contacts import booking_contact_error
 from booking.models import BookingWorkflow, BookingWorkflowItem
 from booking.preflight import run_preflight
 from common.audit import audit
@@ -162,6 +163,12 @@ class WorkflowStartView(APIView):
                 raise ApiError(
                     code="PREFLIGHT_REQUIRED", message="Сначала выполните успешный preflight", status_code=409
                 )
+
+            contact_error = booking_contact_error(
+                workflow.order, [item.service for item in workflow.items.select_related("service")]
+            )
+            if contact_error:
+                raise ApiError(code=contact_error["code"], message=contact_error["message"], status_code=422)
 
             if workflow.price_confirmation_required and not request.data.get("confirm"):
                 raise ApiError(

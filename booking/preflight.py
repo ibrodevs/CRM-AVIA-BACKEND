@@ -2,6 +2,8 @@ from datetime import date
 
 from django.utils import timezone
 
+from booking.contacts import booking_contact_error
+
 
 def run_preflight(workflow, user) -> dict:
     """Возвращает ok/warnings/blocking_errors/required_approvals/price_changes."""
@@ -16,6 +18,9 @@ def run_preflight(workflow, user) -> dict:
     items = list(workflow.items.select_related("service"))
     if not items:
         blocking.append({"code": "NO_SERVICES", "message": "В workflow нет услуг"})
+    contact_error = booking_contact_error(order, [item.service for item in items])
+    if contact_error:
+        blocking.append(contact_error)
 
     for item in items:
         service = item.service

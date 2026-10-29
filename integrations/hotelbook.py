@@ -49,6 +49,7 @@ class _NoRedirect(HTTPRedirectHandler):
 class HotelbookAdapter(ProviderAdapter):
     key = "hotelbook"
     requires_revalidation_before_booking = True
+    requires_booking_contact = True
     persists_booking_snapshot = True
     environment_setting = "HBPRO_ENVIRONMENT"
     sync_exhausted_code = "HBPRO_SYNC_EXHAUSTED"
@@ -1203,9 +1204,16 @@ class HotelbookAdapter(ProviderAdapter):
             )
         _, config = self._config(ctx)
         rooms = self._guests(ctx, config, updated, booking_request.get("passengers") or [])
+        from orders.contacts import normalized_contact_text
+
         contact = booking_request.get("contact_info") or config.get("contact_info") or {}
-        if not isinstance(contact, dict) or not str(contact.get("name") or "").strip():
-            raise AdapterError("CONTACT_REQUIRED", "Заполните имя контактного лица", category="validation")
+        if not isinstance(contact, dict) or not contact:
+            raise AdapterError("CONTACT_REQUIRED", "Укажите контактное лицо заказа.", category="validation")
+        contact = {**contact, "name": normalized_contact_text(contact.get("name"))}
+        if not contact["name"]:
+            raise AdapterError(
+                "CONTACT_REQUIRED", "У контактного лица не заполнено имя.", category="validation"
+            )
         remark = booking_request.get("special_requests") or snapshot.get("special_requests") or ""
         if remark and (
             not new_offer.get("isRemarkFreeFormAllowed") or not isinstance(remark, str) or len(remark) > 2000
@@ -1259,7 +1267,7 @@ class HotelbookAdapter(ProviderAdapter):
                 {
                     "clientOrderId": ref,
                     "payForm": config.get("pay_form", "CASHLESS"),
-                    "contactInfo": booking_request.get("contact_info") or config.get("contact_info") or {},
+                    "contactInfo": contact,
                     **(
                         {"customer": booking_request.get("customer") or config.get("customer")}
                         if new_offer.get("isEndCustomerNeeded")
