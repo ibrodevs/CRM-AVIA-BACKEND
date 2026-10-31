@@ -581,6 +581,25 @@ class HotelbookAdapter(ProviderAdapter):
             cache.set(key, data, self.dictionary_ttl)
         return data
 
+    @staticmethod
+    def _stay_times(criteria):
+        result = {}
+        for source, target in (
+            ("early_arrival_time", "earlyArrivalTime"),
+            ("late_departure_time", "lateDepartureTime"),
+        ):
+            value = criteria.get(source)
+            if value in (None, ""):
+                continue
+            if not isinstance(value, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+                raise AdapterError(
+                    "SEARCH_CRITERIA_INVALID",
+                    "Укажите время заезда и выезда в формате ЧЧ:ММ",
+                    category="validation",
+                )
+            result[target] = value
+        return result
+
     def _search_payload(self, ctx, credential, config, criteria):
         try:
             if not isinstance(criteria, dict):
@@ -625,6 +644,7 @@ class HotelbookAdapter(ProviderAdapter):
             raise AdapterError(
                 "SEARCH_CRITERIA_INVALID", "Проверьте даты и состав номеров Hotelbook", category="validation"
             ) from None
+        self._stay_times(criteria)
         hb = criteria.get("hotelbook") or {}
         if not isinstance(hb, dict) or (
             "confirmationMode" in hb and hb["confirmationMode"] not in ("ONLINE", "ON_REQUEST")
@@ -735,6 +755,8 @@ class HotelbookAdapter(ProviderAdapter):
             )
         credential, config = self._config(ctx)
         payload = self._search_payload(ctx, credential, config, criteria)
+        # GatewaySearch has no time fields. Retain them for Offer Details and Book.
+        search_context = {**payload, **self._stay_times(criteria)}
         geography = self._cached_geography(credential, config)
         start = self._request(ctx, "search", "POST", self._path(config, "hotel/gateway/search"), payload)
         if not start.get("searchId") or start.get("state") not in ("IN_PROCESS", "COMPLETED"):
@@ -771,7 +793,12 @@ class HotelbookAdapter(ProviderAdapter):
                 seen.add(offer["offerId"])
                 hotel = self._hotel(ctx, config, offer["hotelId"])
                 snapshot = self._normalize(
-                    offer, search_id, expires_at, hotel, payload, self._cached_location(geography, hotel)
+                    offer,
+                    search_id,
+                    expires_at,
+                    hotel,
+                    search_context,
+                    self._cached_location(geography, hotel),
                 )
                 if citizenship_code and (criteria.get("hotelbook") or {}).get("citizenship_id") is None:
                     snapshot["hotelbook"]["citizenship_ids"] = {
@@ -892,15 +919,25 @@ class HotelbookAdapter(ProviderAdapter):
                 ),
                 "phone": details.get("phone", ""),
                 **(
-                    {"check_in_time": details["earliestCheckInTime"]}
-                    if details.get("earliestCheckInTime")
+                    {
+                        "check_in_time": search_request.get("earlyArrivalTime")
+                        or details.get("earliestCheckInTime")
+                    }
+                    if search_request.get("earlyArrivalTime") or details.get("earliestCheckInTime")
                     else {}
                 ),
                 **(
-                    {"check_out_time": details["latestCheckOutTime"]}
-                    if details.get("latestCheckOutTime")
+                    {
+                        "check_out_time": search_request.get("lateDepartureTime")
+                        or details.get("latestCheckOutTime")
+                    }
+                    if search_request.get("lateDepartureTime") or details.get("latestCheckOutTime")
                     else {}
                 ),
+                "standard_check_in_time": details.get("earliestCheckInTime"),
+                "standard_check_out_time": details.get("latestCheckOutTime"),
+                "early_arrival_time": search_request.get("earlyArrivalTime"),
+                "late_departure_time": search_request.get("lateDepartureTime"),
             },
             "fare": {
                 "name": offer.get("roomGroupName") or "Тариф поставщика",
@@ -1035,6 +1072,7 @@ class HotelbookAdapter(ProviderAdapter):
         if hb.get("citizenship_ids"):
             normalized["hotelbook"]["citizenship_ids"] = deepcopy(hb["citizenship_ids"])
         normalized["hotelbook"].update(terms_source="details", revalidated_at=timezone.now().isoformat())
+        normalized["itinerary"]["stay_times_validated"] = True
         normalized["hotelbook_revalidation"] = signing.dumps(
             self._validation_identity(ctx, normalized), salt="hbpro.revalidation"
         )
@@ -1327,8 +1365,9 @@ class HotelbookAdapter(ProviderAdapter):
             booking["room_requests"] = [
                 {"room_index": index, "hash": r["hash"]} for index, r in enumerate(rooms)
             ]
-            if "client3Did" in hb["search_request"]:
-                payload["client3Did"] = hb["search_request"]["client3Did"]
+            for field in ("client3Did", "earlyArrivalTime", "lateDepartureTime"):
+                if field in hb["search_request"]:
+                    payload[field] = hb["search_request"][field]
             response = self._request(ctx, "book", "POST", self._path(config, "hotel/gateway/book"), payload)
             items = response.get("items") or []
             if not items or not all(i.get("itemId") for i in items):

@@ -88,8 +88,10 @@ def certificate_data(service):
         "phone": details.get("phone", ""),
         "check_in": offer.get("checkIn", ""),
         "check_out": offer.get("checkOut", ""),
-        "check_in_time": details.get("earliestCheckInTime"),
-        "check_out_time": details.get("latestCheckOutTime"),
+        "check_in_time": snapshot.get("itinerary", {}).get("check_in_time")
+        or details.get("earliestCheckInTime"),
+        "check_out_time": snapshot.get("itinerary", {}).get("check_out_time")
+        or details.get("latestCheckOutTime"),
         "rooms": [
             {
                 "name": r.get("roomName") or offer.get("roomGroupName") or "Категория поставщика",

@@ -202,6 +202,8 @@ def booking_summary(service):
         "service_status": service.status,
         "check_in": start,
         "check_out": end,
+        "check_in_time": itinerary.get("check_in_time") or details.get("earliestCheckInTime"),
+        "check_out_time": itinerary.get("check_out_time") or details.get("latestCheckOutTime"),
         "nights": nights,
         "room_count": len(rooms),
         "guest_count": len(guests),

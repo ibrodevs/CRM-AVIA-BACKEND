@@ -106,7 +106,8 @@ class Gateway:
                     else {"finished": True, "totalOffers": 1, "searchOffers": [deepcopy(self.current)]}
                 )
             elif url.path.endswith("/search/details"):
-                assert body == {"searchId": SEARCH_ID, "offerId": "opaque-rate-key"}
+                assert body["searchId"] == SEARCH_ID and body["offerId"] == "opaque-rate-key"
+                assert set(body) <= {"searchId", "offerId", "earlyArrivalTime", "lateDepartureTime"}
                 response = deepcopy(self.current)
             elif "/dict/gateway/hotel/hotels/" in url.path:
                 hotel_id = int(url.path.rsplit("/", 1)[1])
@@ -274,7 +275,14 @@ def post(client, path, body=None, key=None):
 
 
 def ready_booking(
-    admin_client, tenant, hb_supplier, hotel_id=1251539, *, revalidate_offer=True, preflight=True
+    admin_client,
+    tenant,
+    hb_supplier,
+    hotel_id=1251539,
+    *,
+    revalidate_offer=True,
+    preflight=True,
+    stay_times=None,
 ):
     person = Person.objects.create(
         tenant=tenant,
@@ -299,7 +307,11 @@ def ready_booking(
             "participants": [{"person": str(person.id)}],
         },
     )
-    search = post(admin_client, "service-searches/", {"kind": "hotel", "criteria": criteria(hotel_id)})
+    search = post(
+        admin_client,
+        "service-searches/",
+        {"kind": "hotel", "criteria": {**criteria(hotel_id), **(stay_times or {})}},
+    )
     jobs()
     offers = admin_client.get(f"/api/v1/service-searches/{search['search_id']}/offers/").json()
     assert offers["count"] == 1
@@ -1186,3 +1198,57 @@ def test_incomplete_penalty_amount_cannot_imply_free_cancellation():
     rules = HotelbookAdapter()._rules(value)
     assert rules["free_cancel_until"] is None
     assert "amount" not in rules["cancel"][0]["price"]
+
+
+@pytest.mark.parametrize("early,late", [("09:00", "18:00"), ("00:00", "23:30"), ("", "18:00"), ("09:30", "")])
+def test_nonstandard_stay_times_survive_details_booking_summary_and_certificate(
+    admin_client, tenant, hb_supplier, gateway, monkeypatch, early, late
+):
+    original = gateway.open
+
+    def timed_details(request, timeout):
+        if request.full_url.split("?")[0].endswith("/search/details"):
+            gateway.current["price"]["amount"] = 150
+        response = original(request, timeout)
+        if "/dict/gateway/hotel/hotels/" in request.full_url:
+            response.payload["details"].update(earliestCheckInTime="14:00", latestCheckOutTime="12:00")
+        return response
+
+    monkeypatch.setattr(gateway, "open", timed_details)
+    workflow, service_data = ready_booking(
+        admin_client,
+        tenant,
+        hb_supplier,
+        stay_times={"early_arrival_time": early, "late_departure_time": late},
+    )
+    assert start(admin_client, workflow)["items"][0]["status"] == "booked"
+    search_request = next(c[3] for c in gateway.calls if c[1].endswith("/hotel/gateway/search"))
+    assert "earlyArrivalTime" not in search_request and "lateDepartureTime" not in search_request
+    for call in gateway.calls:
+        if call[1].endswith(("/search/details", "/hotel/gateway/book")):
+            assert call[3].get("earlyArrivalTime") == (early or None)
+            assert call[3].get("lateDepartureTime") == (late or None)
+    service = OrderService.objects.get(pk=service_data["id"])
+    assert service.supplier_cost == Decimal("150")
+    itinerary = service.provider_snapshot["itinerary"]
+    assert itinerary["check_in_time"] == (early or "14:00")
+    assert itinerary["check_out_time"] == (late or "12:00")
+    assert itinerary["standard_check_in_time"] == "14:00"
+    assert itinerary["standard_check_out_time"] == "12:00"
+    assert itinerary["stay_times_validated"] is True
+    from documents.hotel_certificate import certificate_data
+    from services.hotel_actions.presentation import booking_summary
+
+    for data in (booking_summary(service), certificate_data(service)):
+        assert data["check_in_time"] == (early or "14:00")
+        assert data["check_out_time"] == (late or "12:00")
+
+
+@pytest.mark.parametrize("value", ["24:00", "09:60", "9:00", "09:00:00", True, 9])
+def test_invalid_stay_time_is_rejected_before_supplier_search(tenant, hb_supplier, gateway, value):
+    with pytest.raises(AdapterError) as exc:
+        HotelbookAdapter().search(
+            context(tenant, hb_supplier), "hotel", {**criteria(), "early_arrival_time": value}
+        )
+    assert exc.value.code == "SEARCH_CRITERIA_INVALID"
+    assert not any(c[1].endswith("/hotel/gateway/search") for c in gateway.calls)
