@@ -314,6 +314,8 @@ def test_actual_two_room_booking_one_request(admin_client, tenant, hb_supplier, 
             )
         gateway.book_rooms.append({"hash": "opaque-room-hash", "guests": guests})
     gateway.items = [ITEM_ID, "0a04ef24-24a4-4000-8000-000000000002"]
+    # Room/guest edits invalidate the original approval. Check the final inputs.
+    assert post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")["ok"]
     result = start(admin_client, workflow)
     assert result["items"][0]["status"] == "booked"
     assert sum(c[1].endswith("/hotel/gateway/book") for c in gateway.calls) == 1
@@ -376,7 +378,7 @@ def test_staged_certification_command_full_flow(
     jobs()
     run.refresh_from_db()
     calls = run.calls.all()
-    assert calls.filter(operation="revalidate").count() == 1
+    assert calls.filter(operation="revalidate").count() == 2
     assert not calls.filter(operation__in=["search_orders", "order_info"]).exists()
     assert summary(run)["readiness"] == "PASS"
     assert summary(run)["hotel_id"] == hotel_id
@@ -463,8 +465,17 @@ def test_guest_gender_missing_blocks_supplier_mutation(admin_client, tenant, hb_
     person = service.passengers.get().participant.person
     person.gender = ""
     person.save()
-    result = start(admin_client, workflow)
-    assert result["items"][0]["error_code"] == "GUEST_DATA_MISSING"
+    response = admin_client.post(
+        f"/api/v1/booking-workflows/{workflow['id']}/start/",
+        {},
+        format="json",
+        HTTP_IDEMPOTENCY_KEY="invalid-guest",
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "PREFLIGHT_REQUIRED"
+    preflight = post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")
+    assert not preflight["ok"]
+    assert any(error["code"] == "PASSENGER_DATA_MISSING" for error in preflight["blocking_errors"])
     assert not any(c[1].endswith("/hotel/gateway/book") for c in gateway.calls)
 
 
@@ -506,6 +517,7 @@ def test_special_requests_are_supported_only_when_returned_by_hbpro(
     assert (
         admin_client.put(f"/api/v1/services/{service.id}/passengers/", body, format="json").status_code == 200
     )
+    assert post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")["ok"]
     assert start(admin_client, workflow)["items"][0]["status"] == "booked"
     request = next(c[3] for c in gateway.calls if c[1].endswith("/hotel/gateway/book"))
     assert request["freeRemark"] == "Quiet room"

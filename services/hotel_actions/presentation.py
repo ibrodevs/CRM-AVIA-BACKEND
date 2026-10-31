@@ -179,7 +179,9 @@ def booking_summary(service):
     return {
         "documents": hotel_capabilities(snapshot),
         "service_id": str(service.id),
+        "provider_adapter": snapshot.get("provider_adapter"),
         "order_id": str(service.order_id),
+        "order_number": service.order.number,
         "version": service.version,
         "hotel": (hb.get("hotel") or {}).get("name") or itinerary.get("property_name") or service.title,
         "address": details.get("address") or itinerary.get("address") or "",
@@ -187,9 +189,15 @@ def booking_summary(service):
         "supplier_id": str(service.supplier_id) if service.supplier_id else None,
         "locator": booking.get("locator") or service.external_id,
         "supplier_booking_reference": str(
-            booking.get("order_id") or booking.get("reference_number") or service.external_id or ""
+            (booking.get("order_id") or "")
+            if snapshot.get("provider_adapter") == "hotelbook"
+            else booking.get("order_id") or booking.get("reference_number") or service.external_id or ""
         ),
         "confirmation_references": references,
+        "client_order_id": booking.get("client_request_id")
+        if snapshot.get("provider_adapter") == "hotelbook"
+        else None,
+        "supplier_item_ids": [str(item["itemId"]) for item in items if item.get("itemId")],
         "booking_status": booking.get("normalized_status") or service.status,
         "service_status": service.status,
         "check_in": start,

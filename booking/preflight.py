@@ -135,6 +135,15 @@ def run_preflight(workflow, user) -> dict:
                 )
             if result.get("snapshot"):
                 change = update_service(service, result)
+                if result["snapshot"].get("hotelbook_pending_confirmation"):
+                    warnings.append(
+                        {
+                            "code": "HOTELBOOK_CONFIRMATION_REQUIRED",
+                            "message": f"Подтвердите актуальную стоимость {service.client_total} {service.currency} и условия Hotelbook",
+                            "service_id": str(service.id),
+                            "conditions": (result.get("fare_rules") or {}).get("cancellation_rules", ""),
+                        }
+                    )
                 if change:
                     price_changes.append(change)
                 continue
@@ -199,6 +208,13 @@ def run_preflight(workflow, user) -> dict:
         "required_approvals": approvals,
         "price_changes": price_changes,
         "checked_at": timezone.now().isoformat(),
+    }
+    from booking.hotelbook_guard import fingerprint
+
+    result["hotelbook_inputs"] = {
+        str(item.service.pk): fingerprint(workflow, item.service)
+        for item in items
+        if (item.service.provider_snapshot or {}).get("provider_adapter") == "hotelbook"
     }
     workflow.preflight_result = result
     workflow.preflight_at = timezone.now()

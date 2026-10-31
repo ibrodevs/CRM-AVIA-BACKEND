@@ -58,6 +58,10 @@ def run_booking(job: BackgroundJob) -> dict:
             contact_error = booking_contact_error(workflow.order, [service])
             if contact_error:
                 raise AdapterError(contact_error["code"], contact_error["message"], category="validation")
+            from booking.hotelbook_guard import preflight_error
+
+            if message := preflight_error(workflow, service):
+                raise AdapterError("PREFLIGHT_REQUIRED", message, category="validation")
             result = adapter.book(
                 ctx,
                 {
@@ -68,6 +72,7 @@ def run_booking(job: BackgroundJob) -> dict:
                     "customer": _booking_customer(workflow.order),
                     "service_kind": service.kind,
                     "snapshot": service.provider_snapshot or {},
+                    "hotelbook_preflight_confirmed": bool(workflow.prices_confirmed_at),
                     "_mock": (service.provider_snapshot or {}).get("_mock", {}),
                 },
             )

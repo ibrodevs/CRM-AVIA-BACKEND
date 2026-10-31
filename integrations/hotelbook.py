@@ -83,7 +83,6 @@ class HotelbookAdapter(ProviderAdapter):
     search_timeout = 90
     poll_interval = 1
     page_size = 5000
-    revalidation_ttl = 30
     dictionary_ttl = 86400
 
     def _config(self, ctx):
@@ -818,8 +817,13 @@ class HotelbookAdapter(ProviderAdapter):
         )
         free_until = None
         now = timezone.now()
-        penalties = [p for p in cancel if Decimal(str((p.get("price") or {}).get("amount", "0"))) > 0]
-        if penalties and all(p.get("from") for p in penalties):
+        known_amounts = all((p.get("price") or {}).get("amount") is not None for p in cancel)
+        penalties = [
+            p
+            for p in cancel
+            if (p.get("price") or {}).get("amount") is not None and Decimal(str(p["price"]["amount"])) > 0
+        ]
+        if known_amounts and penalties and all(p.get("from") for p in penalties):
             dates = [parse_datetime(p["from"]) for p in penalties]
             if all(d and timezone.is_aware(d) and d > now for d in dates):
                 free_until = min(dates).isoformat()
@@ -834,7 +838,7 @@ class HotelbookAdapter(ProviderAdapter):
             "cancellation_rules": "; ".join(
                 part for part in (text, *[str(info) for info in (policies.get("info") or [])]) if part
             )
-            or "Условия отмены уточняются у поставщика",
+            or "Поставщик не передал условия отмены. Это не означает отсутствие штрафа.",
         }
 
     def _normalize(self, offer, search_id, expires_at, hotel, search_request, location=None):
@@ -945,6 +949,11 @@ class HotelbookAdapter(ProviderAdapter):
         return {
             "confirmation": offer.get("confirmationMode"),
             "fines": policies,
+            "information": offer.get("information") or [],
+            "additional_charges": offer.get("additionalCharges") or [],
+            "meal": offer.get("meal"),
+            "remark_allowed": offer.get("isRemarkFreeFormAllowed"),
+            "room_description": offer.get("roomDescription"),
             "rooms": [
                 {k: room.get(k) for k in ("hash", "quantity", "adults", "children")}
                 for room in offer.get("rooms", [])
@@ -996,11 +1005,11 @@ class HotelbookAdapter(ProviderAdapter):
         # Price must come from details, never be inherited silently from Search.
         self._price(details)
         offer = {**previous, **details}
-        # A returned policy object replaces the preliminary one, including its alias.
-        if "finePolicies" in details or "fines" in details:
-            offer.pop("finePolicies", None)
-            offer.pop("fines", None)
-            offer.update({k: details[k] for k in ("finePolicies", "fines") if k in details})
+        # Details is authoritative. Missing policy must not inherit a preliminary
+        # Search policy (in particular, a preliminary free-cancellation claim).
+        offer.pop("finePolicies", None)
+        offer.pop("fines", None)
+        offer.update({k: details[k] for k in ("finePolicies", "fines") if k in details})
         normalized = self._normalize(
             offer,
             hb["search_id"],
@@ -1018,7 +1027,7 @@ class HotelbookAdapter(ProviderAdapter):
                 "Hotelbook: изменились номера или режим подтверждения",
                 category="availability",
             )
-        for key in ("special_requests", "main_guest"):
+        for key in ("special_requests", "main_guest", "hotelbook_pending_confirmation"):
             if key in offer_snapshot:
                 normalized[key] = offer_snapshot[key]
         if ctx.certification_run_id:
@@ -1036,7 +1045,7 @@ class HotelbookAdapter(ProviderAdapter):
         )
         return {
             "status": "price_changed" if changed else "valid",
-            "terms_changed": detailed_baseline and old_terms != new_terms,
+            "terms_changed": old_terms != new_terms,
             "price": normalized["price"],
             "snapshot": normalized,
             "fare_rules": self._rules(offer),
@@ -1061,21 +1070,8 @@ class HotelbookAdapter(ProviderAdapter):
             return False
 
     def _booking_validation(self, ctx, snapshot):
-        proof = snapshot.get("hotelbook_revalidation")
-        if proof:
-            try:
-                identity = signing.loads(proof, salt="hbpro.revalidation", max_age=self.revalidation_ttl)
-                expires = parse_datetime(snapshot.get("expires_at", ""))
-                if (
-                    expires
-                    and timezone.is_aware(expires)
-                    and expires > timezone.now()
-                    and (snapshot.get("hotelbook") or {}).get("terms_source") == "details"
-                    and identity == self._validation_identity(ctx, snapshot)
-                ):
-                    return {"status": "valid", "snapshot": deepcopy(snapshot)}
-            except (signing.BadSignature, ValueError, TypeError):
-                pass
+        # A signed preflight is a comparison baseline, never permission to skip
+        # the supplier's mandatory details request immediately before booking.
         return self.revalidate(ctx, snapshot)
 
     def fare_rules(self, ctx, offer_snapshot):
@@ -1196,17 +1192,41 @@ class HotelbookAdapter(ProviderAdapter):
                     "BOOKING_ERROR", "Услуга уже забронирована или отменена", category="booking"
                 )
         ctx.order_id = service.order_id
+        validated_version = service.version
+        if snapshot != service.provider_snapshot:
+            raise AdapterError(
+                "PREFLIGHT_REQUIRED",
+                "Данные Hotelbook изменились; повторите preflight",
+                category="validation",
+            )
         validation = self._booking_validation(ctx, snapshot)
-        if validation["status"] != "valid":
-            raise AdapterError(
-                "PRICE_CHANGED", "Цена Hotelbook изменилась; повторите preflight", category="price"
-            )
         updated = validation["snapshot"]
-        new_offer = updated["hotelbook"]["offer"]
-        if validation.get("terms_changed"):
+        if validation["status"] != "valid" or validation.get("terms_changed"):
+            from services.revalidation import update_service
+
+            updated["hotelbook_pending_confirmation"] = {
+                "price_changed": validation["status"] != "valid",
+                "terms_changed": bool(validation.get("terms_changed")),
+            }
+            # Keep the authoritative price/policy for the next preflight and UI;
+            # no supplier order has been created at this point.
+            update_service(service, validation)
+            code = "PRICE_CHANGED" if validation["status"] != "valid" else "RATE_CHANGED"
             raise AdapterError(
-                "RATE_CHANGED", "Условия тарифа изменились; повторите preflight", category="availability"
+                code,
+                "Цена или условия Hotelbook изменились; повторите preflight и подтвердите изменения",
+                category="price" if code == "PRICE_CHANGED" else "availability",
             )
+        if updated.get("hotelbook_pending_confirmation") and not booking_request.get(
+            "hotelbook_preflight_confirmed"
+        ):
+            raise AdapterError(
+                "CONFIRMATION_REQUIRED",
+                "Подтвердите обновлённые условия Hotelbook в preflight",
+                category="validation",
+            )
+        updated.pop("hotelbook_pending_confirmation", None)
+        new_offer = updated["hotelbook"]["offer"]
         _, config = self._config(ctx)
         rooms = self._guests(ctx, config, updated, booking_request.get("passengers") or [])
         from orders.contacts import normalized_contact_text
@@ -1239,6 +1259,12 @@ class HotelbookAdapter(ProviderAdapter):
             if (service.provider_snapshot or {}).get("hotelbook_booking"):
                 raise AdapterError(
                     "BOOKING_UNKNOWN", "Hotelbook: операция уже выполняется", category="booking_unknown"
+                )
+            if service.version != validated_version or service.provider_snapshot != snapshot:
+                raise AdapterError(
+                    "PREFLIGHT_REQUIRED",
+                    "Данные Hotelbook изменились во время актуализации; повторите preflight",
+                    category="validation",
                 )
             # Serialize reservations for the supplier; the same concrete offer cannot
             # be booked through a second OrderService/workflow.

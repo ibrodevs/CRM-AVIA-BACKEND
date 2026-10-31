@@ -135,7 +135,17 @@ def test_certificate_pdf_saved_once_and_cancelled_version_is_explicit(
     content = b"".join(download.streaming_content)
     text = "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(content)).pages)
     assert "СЕРТИФИКАТ НА ПРОЖИВАНИЕ" in text and "IVANOV PETR" in text
-    assert "HB-FIXTURE-REF" in text and "2027-03-10" in text
+    assert "2027-03-10" in text
+    service.refresh_from_db()
+    booking = service.provider_snapshot["hotelbook_booking"]
+    for private_id in [
+        "HBPRO",
+        "HB-FIXTURE-REF",
+        str(booking["order_id"]),
+        booking["client_request_id"],
+        ITEM_ID,
+    ]:
+        assert private_id not in text
     assert "120.25" not in text and "fixture-password" not in text
     assert "не оригинальный ваучер" in " ".join(text.split())
     assert not gateway.calls
@@ -192,3 +202,22 @@ def test_demo_refuses_real_database_and_blocks_supplier_mutations(settings):
         DemoGateway().open(Request("https://api.hbpro.expert/api/v1/ru/hotel/gateway/book", data=b"{}"), 1)
     with pytest.raises(URLError, match="unsupported supplier request"):
         DemoGateway().open(Request("https://api.hbpro.expert/anything"), 1)
+
+
+def test_old_certificate_format_requires_regeneration_before_download(
+    admin_client, tenant, hb_supplier, gateway, settings, tmp_path
+):
+    settings.MEDIA_ROOT = tmp_path
+    workflow, service_data = ready_booking(admin_client, tenant, hb_supplier)
+    assert start(admin_client, workflow)["items"][0]["status"] == "booked"
+    url = f"/api/v1/services/{service_data['id']}/hotel-certificate/"
+    document_id = admin_client.post(url, {}).json()["id"]
+    document = Document.objects.get(pk=document_id)
+    document.metadata.pop("certificate_schema_version")
+    document.save(update_fields=["metadata"])
+    download_url = f"/api/v1/documents/{document_id}/download/"
+    assert admin_client.get(download_url).status_code == 409
+    assert admin_client.post(url, {}).status_code == 200
+    assert DocumentVersion.objects.filter(document_id=document_id).count() == 2
+    assert admin_client.get(download_url).status_code == 200
+    assert admin_client.get(download_url + "?file_version=1").status_code == 409

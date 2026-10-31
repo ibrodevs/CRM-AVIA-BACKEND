@@ -347,3 +347,52 @@ def test_refresh_recovers_existing_unknown_workflow_without_booking_again(admin_
     assert booked.status == "booked" and item.status == "booked" and not item.error_code
     assert item.workflow.status == "completed"
     assert sum(call[0] == "POST" and call[1].endswith("/book") for call in gateway.calls) == book_count
+
+
+def test_operator_ids_remain_distinct_and_supplier_scoped(admin_client, booked):
+    booking = booked.provider_snapshot["hotelbook_booking"]
+    summary = admin_client.get(url(booked)).json()["summary"]
+    assert summary["provider_adapter"] == "hotelbook"
+    assert summary["client_order_id"] == booking["client_request_id"]
+    assert summary["supplier_booking_reference"] == str(booking["order_id"])
+    assert summary["supplier_item_ids"] == [item["itemId"] for item in booking["items"]]
+    assert summary["confirmation_references"] == ["HB-FIXTURE-REF"]
+    assert summary["service_id"] == str(booked.pk)
+    assert summary["supplier_id"] == str(booked.supplier_id)
+    assert (
+        len(
+            {
+                summary["client_order_id"],
+                summary["supplier_booking_reference"],
+                summary["service_id"],
+                *summary["supplier_item_ids"],
+                *summary["confirmation_references"],
+            }
+        )
+        == 5
+    )
+
+
+def test_manual_free_cancel_does_not_block_normal_api_cancel_with_unknown_penalty(
+    admin_client, booked, gateway
+):
+    manual = create(
+        admin_client,
+        booked,
+        "request_free_cancel",
+        key="free-cancel-request",
+        changes={"description": "Please waive penalty"},
+    )
+    assert manual.status_code == 201
+    assert manual.json()["execution_mode"] == "manual"
+    assert not cancels(gateway)
+    normal = create(admin_client, booked, "cancel_booking", key="normal-cancellation")
+    assert normal.status_code == 201
+    operation = normal.json()
+    assert operation["financial_snapshot"]["penalty"] is None
+    assert operation["financial_snapshot"]["penalty_exact"] is False
+    assert operation["execution_mode"] == "api"
+    assert confirm(admin_client, booked, operation).status_code == 202
+    jobs()
+    assert len(cancels(gateway)) == 1
+    assert HotelOperation.objects.get(pk=manual.json()["id"]).status == "created"

@@ -20,6 +20,8 @@ from documents.models import Document
 from documents.services import add_document_version
 from integrations.hotelbook_observability import normalized_status
 
+CERTIFICATE_SCHEMA_VERSION = 2
+
 
 def certificate_status(snapshot):
     if snapshot.get("provider_adapter") != "hotelbook":
@@ -97,11 +99,6 @@ def certificate_data(service):
         ],
         "meal": (offer.get("meal") or {}).get("description", ""),
         "guests": guests,
-        "supplier_order": str(booking.get("order_id") or ""),
-        "references": [
-            str((item.get("providerData") or {}).get("providerReferenceId") or item.get("itemId") or "")
-            for item in booking.get("items", [])
-        ],
         "synced_at": booking.get("updated_at", ""),
     }
 
@@ -169,8 +166,6 @@ def render_certificate(data):
         content.insert(0, p("ДЕМОНСТРАЦИЯ - РЕАЛЬНОГО БРОНИРОВАНИЯ НЕТ", "HotelStatus"))
     rows = [
         ("Заказ CRM", data["order_number"]),
-        ("Заказ HBPRO", data["supplier_order"]),
-        ("Номер подтверждения", ", ".join(data["references"])),
         ("Адрес гостиницы", data["address"]),
         ("Телефон гостиницы", data["phone"]),
         ("Заезд", " ".join(filter(None, [data["check_in"], data["check_in_time"]]))),
@@ -200,14 +195,14 @@ def render_certificate(data):
         table,
         Spacer(1, 20),
         p(
-            "Сформировано CRM по последним сохранённым данным HBPRO. Это документ CRM, а не оригинальный ваучер поставщика. Изменения брони после указанного времени в документе не отражены."
+            "Сформировано CRM по последним сохранённым данным бронирования. Это документ CRM, а не оригинальный ваучер поставщика. Изменения брони после указанного времени в документе не отражены."
         ),
     ]
 
     def footer(canvas, document):
         canvas.setFont("HotelSans", 8)
         canvas.setFillColor(colors.HexColor("#68778b"))
-        canvas.drawString(44, 28, "CRM / HBPRO - Сертификат на проживание")
+        canvas.drawString(44, 28, "CRM - Сертификат на проживание")
         canvas.drawRightString(A4[0] - 44, 28, str(document.page))
 
     doc.build(content, onFirstPage=footer, onLaterPages=footer)
@@ -235,7 +230,12 @@ def ensure_certificate(service, user):
             metadata__generator="hbpro_certificate",
             archived_at__isnull=True,
         ).first()
-        if document and document.metadata.get("fingerprint") == fingerprint and document.current_version:
+        if (
+            document
+            and document.metadata.get("certificate_schema_version") == CERTIFICATE_SCHEMA_VERSION
+            and document.metadata.get("fingerprint") == fingerprint
+            and document.current_version
+        ):
             return document
         if document is None:
             document = Document.objects.create(
@@ -250,6 +250,7 @@ def ensure_certificate(service, user):
         document.title = "Сертификат на проживание" + (" - ОТМЕНЕНО" if data["status"] == "cancelled" else "")
         document.metadata = {
             "generator": "hbpro_certificate",
+            "certificate_schema_version": CERTIFICATE_SCHEMA_VERSION,
             "fingerprint": fingerprint,
             "booking_status": data["status"],
             "supplier_original": False,

@@ -215,6 +215,12 @@ class WorkflowStartView(APIView):
             if contact_error:
                 raise ApiError(code=contact_error["code"], message=contact_error["message"], status_code=422)
 
+            from booking.hotelbook_guard import preflight_error
+
+            for item in workflow.items.select_related("service"):
+                if message := preflight_error(workflow, item.service):
+                    raise ApiError(code="PREFLIGHT_REQUIRED", message=message, status_code=409)
+
             if workflow.price_confirmation_required and not request.data.get("confirm"):
                 raise ApiError(
                     code="CONFIRMATION_REQUIRED",
