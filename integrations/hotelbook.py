@@ -26,7 +26,7 @@ from django.utils.dateparse import parse_datetime
 
 from common.fields import decrypt_value, encrypt_value
 from integrations.adapters import AdapterError, ProviderAdapter
-from integrations.hotelbook_content import public_image
+from integrations.hotelbook_content import hotel_coordinates, public_image
 from integrations.hotelbook_lock import booking_lease
 from integrations.hotelbook_observability import external_ids, normalized_status, private_values, sanitize
 from suppliers.models import SupplierCredential
@@ -897,6 +897,7 @@ class HotelbookAdapter(ProviderAdapter):
             "itinerary": {
                 "property_name": hotel.get("name") or TEST_HOTELS.get(offer["hotelId"], "Гостиница"),
                 "hotel_id": offer["hotelId"],
+                **hotel_coordinates(hotel),
                 "photo_url": next(
                     (
                         public_image(p.get("photoUrl"))

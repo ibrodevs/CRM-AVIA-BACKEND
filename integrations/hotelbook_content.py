@@ -1,8 +1,24 @@
 """Read-only HBPRO hotel content; dictionaries stay scoped to the supplier cache."""
 
+from math import isfinite
 from urllib.parse import urlsplit
 
 from django.utils.html import strip_tags
+
+
+def hotel_coordinates(hotel):
+    """Supplier hotel coordinates only; a city centre is not a hotel location."""
+    for source in (hotel.get("details") or {}, hotel):
+        lat, lon = source.get("latitude"), source.get("longitude")
+        if lat is None or lon is None or isinstance(lat, bool) or isinstance(lon, bool):
+            continue
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            continue
+        if isfinite(lat) and isfinite(lon) and abs(lat) <= 90 and abs(lon) <= 180:
+            return {"latitude": lat, "longitude": lon}
+    return {}
 
 
 def public_image(url):
@@ -49,6 +65,7 @@ def hotel_content(adapter, ctx, snapshot):
         "source": "hotelbook",
         "hotel": {
             "id": hb["hotel_id"],
+            **hotel_coordinates(hotel),
             "name": hotel.get("name") or snapshot.get("itinerary", {}).get("property_name", ""),
             "address": details.get("address", ""),
             "description": strip_tags(details.get("description") or ""),

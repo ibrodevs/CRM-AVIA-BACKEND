@@ -68,6 +68,7 @@ def content_gateway(gateway, monkeypatch):
                 }
             ]
             result.payload["roomAmenities"] = [{"id": 8, "description": "Wi-Fi"}]
+            result.payload["details"].update(latitude=55.798, longitude=37.817)
         return result
 
     monkeypatch.setattr(gateway, "open", open_content)
@@ -86,6 +87,7 @@ def test_supplier_content_cached_exported_and_scoped(
     response = admin_client.get(offer_url)
     assert response.status_code == 200, response.content
     data = response.json()
+    assert data["hotel"]["latitude"] == 55.798 and data["hotel"]["longitude"] == 37.817
     assert data["selected_room_ids"] == ["hb-room"]
     assert len(data["rooms"]) == 2
     assert data["rooms"][0]["description"] == "Две кровати"
@@ -221,3 +223,42 @@ def test_old_certificate_format_requires_regeneration_before_download(
     assert DocumentVersion.objects.filter(document_id=document_id).count() == 2
     assert admin_client.get(download_url).status_code == 200
     assert admin_client.get(download_url + "?file_version=1").status_code == 409
+
+
+@pytest.mark.parametrize(
+    "coords",
+    [
+        {"latitude": "55.798", "longitude": "37.817"},
+        {"latitude": 0, "longitude": 0},
+    ],
+)
+def test_supplier_hotel_coordinates_are_validated_without_replacing_them_with_city_centres(coords):
+    from integrations.hotelbook_content import hotel_coordinates
+
+    expected = {key: float(value) for key, value in coords.items()}
+    assert hotel_coordinates({"details": coords}) == expected
+    assert hotel_coordinates(coords) == expected
+    for invalid in (
+        {},
+        {"latitude": 55},
+        {"latitude": "", "longitude": 20},
+        {"latitude": 91, "longitude": 20},
+        {"latitude": True, "longitude": 20},
+        {"latitude": "NaN", "longitude": 20},
+        {"latitude": 20, "longitude": "Infinity"},
+    ):
+        assert hotel_coordinates({"details": invalid}) == {}
+
+
+def test_coordinates_survive_search_revalidation_attach_and_booking(
+    admin_client, tenant, hb_supplier, content_gateway
+):
+    workflow, service_data = ready_booking(admin_client, tenant, hb_supplier)
+    offer = ServiceOffer.objects.get()
+    assert offer.itinerary["latitude"] == 55.798 and offer.itinerary["longitude"] == 37.817
+    service = OrderService.objects.get(pk=service_data["id"])
+    assert service.provider_snapshot["itinerary"]["latitude"] == 55.798
+    assert start(admin_client, workflow)["items"][0]["status"] == "booked"
+    service.refresh_from_db()
+    assert service.provider_snapshot["itinerary"]["latitude"] == 55.798
+    assert service.provider_snapshot["itinerary"]["longitude"] == 37.817
