@@ -141,6 +141,18 @@ class ServiceOfferSerializer(serializers.ModelSerializer):
 
 
 class OrderServiceSerializer(serializers.ModelSerializer):
+    booking_reference = serializers.SerializerMethodField()
+
+    def get_booking_reference(self, obj):
+        from services.travel_presentation import service_booking_reference
+        return service_booking_reference(obj)
+
+    itinerary = serializers.SerializerMethodField()
+
+    def get_itinerary(self, obj):
+        from services.travel_presentation import service_itinerary
+        return service_itinerary(obj.provider_snapshot)
+
     hotel_documents = serializers.SerializerMethodField()
     hotel_details = serializers.SerializerMethodField()
 
@@ -188,6 +200,8 @@ class OrderServiceSerializer(serializers.ModelSerializer):
             "client_price",
             "hotel_documents",
             "hotel_details",
+            "itinerary",
+            "booking_reference",
             "payment_deadline",
             "ticketing_deadline",
             "responsible",

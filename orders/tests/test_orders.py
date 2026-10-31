@@ -313,3 +313,25 @@ class TestOrderIdentifierSearch:
         response = auth_client(operator_user).get("/api/v1/orders/", {"q": created["id"]})
         assert response.status_code == 200, response.content
         assert response.json()["results"] == []
+
+
+def test_overview_exposes_public_travel_itinerary(admin_client, order_payload, tenant, admin_user):
+    from services.models import OrderService
+    from services.views import OrderServiceSerializer
+
+    order_id = admin_client.post('/api/v1/orders/', order_payload, format='json').json()['id']
+    service = OrderService.objects.create(
+        tenant=tenant, order_id=order_id, kind='avia', title='FRU → SVO · SU 1883',
+        created_by=admin_user, external_id='WZAG56/01', provider_snapshot={'itinerary': {'segments': [{
+            'origin': 'FRU', 'destination': 'SVO', 'departure': '2026-10-30T12:40',
+            'arrival': '2026-10-30T15:35', 'flight_number': '1883', 'provider_token': 'secret',
+        }]}},
+    )
+    response = admin_client.get(f'/api/v1/orders/{order_id}/overview/')
+    assert response.status_code == 200
+    assert response.json()['services'][0]['booking_reference'] == 'WZAG56/01'
+    assert OrderServiceSerializer(service).data['booking_reference'] == 'WZAG56/01'
+    itinerary = response.json()['services'][0]['itinerary']
+    assert itinerary['segments'][0]['arrival'] == '2026-10-30T15:35'
+    assert 'provider_token' not in itinerary['segments'][0]
+    assert OrderServiceSerializer(service).data['itinerary'] == itinerary
