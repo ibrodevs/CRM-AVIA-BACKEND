@@ -45,7 +45,11 @@ def verify_supplier_credentials(supplier) -> dict:
                 result, message = "sandbox_disabled", "Sandbox-адаптер запрещён в production"
             elif hasattr(adapter, "verify_credentials"):
                 verification_message = adapter.verify_credentials(credential)
-                if verification_message:
+                if isinstance(verification_message, dict):
+                    message = str(verification_message.get("message") or "Реквизиты настроены")
+                    if verification_message.get("verified") is not True:
+                        result = "configured"
+                elif verification_message:
                     message = str(verification_message)
         except AdapterError as error:
             result, message = (
@@ -53,7 +57,7 @@ def verify_supplier_credentials(supplier) -> dict:
                 str(error),
             )
 
-        credential.status = "active" if result == "ok" else "failed"
+        credential.status = "active" if result in ("ok", "configured") else "failed"
         credential.last_verified_at = timezone.now()
         credential.save(update_fields=["status", "last_verified_at"])
         results.append(
@@ -70,9 +74,17 @@ def verify_supplier_credentials(supplier) -> dict:
 
     connected = any(item["result"] == "ok" for item in results)
     return {
-        "status": "connected" if connected else "failed",
+        "status": "connected"
+        if connected
+        else "configured"
+        if any(item["result"] == "configured" for item in results)
+        else "failed",
         "checked": results,
-        "message": "Подключение готово" if connected else "Подключение требует настройки",
+        "message": "Подключение готово"
+        if connected
+        else "Реквизиты настроены; live-доступ ещё не подтверждён"
+        if any(item["result"] == "configured" for item in results)
+        else "Подключение требует настройки",
     }
 
 

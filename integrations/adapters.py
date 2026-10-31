@@ -360,6 +360,9 @@ _ADAPTERS: dict[str, ProviderAdapter] = {}
 _ADAPTER_FACTORIES = {
     "hotelbook": ("integrations.hotelbook", "HotelbookAdapter"),
     "aanda": ("integrations.aanda", "AandaAdapter"),
+    "ostrovok": ("integrations.ostrovok", "OstrovokAdapter"),
+    "iway": ("integrations.iway", "IwayAdapter"),
+    "onelya": ("integrations.onelya", "OnelyaAdapter"),
 }
 
 

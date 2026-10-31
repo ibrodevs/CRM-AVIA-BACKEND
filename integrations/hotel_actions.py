@@ -58,7 +58,8 @@ def api_hotel_capabilities(service, booking_key):
         if service.status in ("cancelled", "refunded"):
             result["cancel_booking"] = {"mode": "unsupported", "reason": "Бронь уже отменена."}
         elif (
-            booking.get("cancel_requested_ids")
+            booking.get("cancel_sent")
+            or booking.get("cancel_requested_ids")
             or booking.get("cancel_state") in ("sending", "requested", "unknown", "complete")
             or booking.get("state") == "cancelling"
         ):

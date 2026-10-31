@@ -12,7 +12,7 @@ from orders.contacts import contact_person_name
 
 def booking_data(service):
     snapshot = service.provider_snapshot or {}
-    return snapshot.get("hotelbook_booking") or snapshot.get("aanda_booking") or {}
+    return snapshot.get(str(snapshot.get("provider_adapter", "")) + "_booking") or {}
 
 
 def capabilities(service):
@@ -76,7 +76,13 @@ def booking_summary(service):
         or (snapshot.get("fare") or {}).get("cancellation_rules")
         or {}
     )
-    source_rooms = offer.get("rooms") or aa.get("rooms") or itinerary.get("rooms") or []
+    source_rooms = (
+        offer.get("rooms")
+        or aa.get("rooms")
+        or (snapshot.get(str(snapshot.get("provider_adapter", ""))) or {}).get("rooms")
+        or itinerary.get("rooms")
+        or []
+    )
     source_rooms = source_rooms if isinstance(source_rooms, list) else []
     items = booking.get("items") or []
     passengers = list(

@@ -210,7 +210,7 @@ class SupplierCheckConnectionView(APIView):
             request=request,
             after={"status": result["status"]},
         )
-        response_status = http.HTTP_200_OK if result["status"] == "connected" else http.HTTP_409_CONFLICT
+        response_status = http.HTTP_200_OK if result["status"] in ("connected", "configured") else http.HTTP_409_CONFLICT
         return Response(result, status=response_status)
 
 

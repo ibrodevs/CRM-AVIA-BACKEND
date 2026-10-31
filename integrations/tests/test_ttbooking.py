@@ -154,5 +154,5 @@ def test_supplier_connection_accepts_ttbooking_config(admin_client):
     )
 
     assert response.status_code == 200, response.content
-    assert response.json()["status"] == "connected"
+    assert response.json()["status"] == "configured"
     assert response.json()["checked"][0]["provider_adapter"] == "ttbooking"

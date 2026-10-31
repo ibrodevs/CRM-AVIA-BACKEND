@@ -20,6 +20,45 @@ class WorkflowItemSerializer(serializers.ModelSerializer):
     service_kind = serializers.CharField(source="service.kind", read_only=True)
     service_title = serializers.CharField(source="service.title", read_only=True)
     supplier_confirmation = serializers.SerializerMethodField()
+    can_resume = serializers.SerializerMethodField()
+    can_void = serializers.SerializerMethodField()
+    can_cancel_transfer = serializers.SerializerMethodField()
+
+    def get_can_cancel_transfer(self, obj):
+        booking = (obj.service.provider_snapshot or {}).get("iway_booking") or {}
+        return bool(
+            (obj.service.provider_snapshot or {}).get("provider_adapter") == "iway"
+            and obj.service.kind == "transfer"
+            and (
+                obj.status in ("booked", "issued")
+                or obj.status == "unknown"
+                and booking.get("payment_confirmed")
+            )
+            and booking.get("transaction")
+            and not booking.get("cancel_sent")
+        )
+
+    def get_can_void(self, obj):
+        snapshot = obj.service.provider_snapshot or {}
+        booking = snapshot.get("ttbooking_booking") or {}
+        return bool(
+            obj.status == "issued"
+            and obj.service.kind == "avia"
+            and snapshot.get("provider_adapter") == "ttbooking"
+            and booking.get("supplier_status") == "COMPLETE"
+            and not booking.get("cancel_sent")
+        )
+
+    def get_can_resume(self, obj):
+        from integrations.adapters import AdapterError, adapter_for_service
+
+        try:
+            adapter = adapter_for_service(obj.service)
+            return obj.status == "unknown" and bool(
+                getattr(adapter, "can_resume_booking", lambda service: False)(obj.service)
+            )
+        except AdapterError:
+            return False
 
     def get_supplier_confirmation(self, obj):
         snapshot = obj.service.provider_snapshot or {}
@@ -34,6 +73,9 @@ class WorkflowItemSerializer(serializers.ModelSerializer):
             "supplier_statuses": booking.get("supplier_statuses")
             or [i.get("status") for i in booking.get("items", [])],
             "updated_at": booking.get("updated_at"),
+            "local_only": bool(booking.get("abandoned_unapproved")),
+            "payment_confirmed": bool(booking.get("payment_confirmed")),
+            "notice": booking.get("notice", ""),
         }
 
     class Meta:
@@ -44,6 +86,9 @@ class WorkflowItemSerializer(serializers.ModelSerializer):
             "service_kind",
             "service_title",
             "supplier_confirmation",
+            "can_resume",
+            "can_void",
+            "can_cancel_transfer",
             "sequence",
             "status",
             "locator",
@@ -231,13 +276,118 @@ class WorkflowIssueView(APIView):
         return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
 
 
+class WorkflowTransferCancellationView(APIView):
+    permission_classes = [require("services.cancel")]
+
+    def post(self, request, workflow_id):
+        from integrations.adapters import AdapterContext, AdapterError, adapter_for_service
+
+        workflow = _get_workflow(request, workflow_id)
+        get_order_or_404(request.user, workflow.order_id)
+        item = (
+            workflow.items.select_related("service")
+            .filter(pk=serializers.UUIDField().run_validation(request.data.get("item")))
+            .first()
+        )
+        if item is None or not WorkflowItemSerializer().get_can_cancel_transfer(item):
+            raise ApiError(
+                code="CANCEL_UNAVAILABLE", message="Отмена этой услуги недоступна", status_code=409
+            )
+        if not has_service_action(request.user, item.service.kind, "cancel"):
+            raise ApiError(code="PERMISSION_DENIED", message="Нет права отмены этой услуги", status_code=403)
+        adapter = adapter_for_service(item.service)
+        if not request.data.get("confirmation"):
+            try:
+                quote = adapter.cancellation_quote(
+                    AdapterContext(tenant_id=item.tenant_id, supplier_id=item.service.supplier_id),
+                    item.locator,
+                )
+            except AdapterError as exc:
+                raise ApiError(code=exc.code, message=str(exc), status_code=409) from None
+            return Response(quote)
+        job = enqueue(
+            "booking.cancel_transfer",
+            {"item_id": str(item.id), "confirmation": request.data["confirmation"]},
+            request=request,
+        )
+        audit("booking.transfer_cancel_requested", actor=request.user, resource=workflow, request=request)
+        return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
+
+
+class WorkflowVoidView(APIView):
+    permission_classes = [require("services.cancel")]
+
+    @idempotent_command("booking.void")
+    def post(self, request, workflow_id):
+        workflow = _get_workflow(request, workflow_id)
+        get_order_or_404(request.user, workflow.order_id)
+        item = (
+            workflow.items.select_related("service")
+            .filter(pk=serializers.UUIDField().run_validation(request.data.get("item")), status="issued")
+            .first()
+        )
+        if request.data.get("confirm") is not True:
+            raise ApiError(
+                code="CONFIRM_REQUIRED", message="Подтвердите войд выписанных билетов", status_code=409
+            )
+        if item is None or not WorkflowItemSerializer().get_can_void(item):
+            raise ApiError(code="VOID_UNAVAILABLE", message="Войд этой услуги недоступен", status_code=409)
+        if not has_service_action(request.user, item.service.kind, "cancel"):
+            raise ApiError(
+                code="PERMISSION_DENIED", message="Нет права аннуляции этой услуги", status_code=403
+            )
+        job = enqueue("booking.void", {"item_id": str(item.id)}, request=request)
+        audit("booking.void_requested", actor=request.user, resource=workflow, request=request)
+        return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
+
+
+class WorkflowResumeView(APIView):
+    permission_classes = [require("services.book")]
+
+    @idempotent_command("booking.resume")
+    def post(self, request, workflow_id):
+        from integrations.adapters import adapter_for_service
+
+        workflow = _get_workflow(request, workflow_id)
+        get_order_or_404(request.user, workflow.order_id)
+        item = (
+            workflow.items.select_related("service")
+            .filter(pk=serializers.UUIDField().run_validation(request.data.get("item")), status="unknown")
+            .first()
+        )
+        if item is None:
+            raise ApiError(
+                code="VALIDATION_ERROR",
+                message="Нужна услуга с неизвестным результатом бронирования",
+                status_code=400,
+            )
+        if not has_service_action(request.user, item.service.kind, "book"):
+            raise ApiError(
+                code="PERMISSION_DENIED", message="Нет права бронирования этой услуги", status_code=403
+            )
+        adapter = adapter_for_service(item.service)
+        if not getattr(adapter, "can_resume_booking", lambda service: False)(item.service):
+            raise ApiError(
+                code="RESUME_UNSAFE",
+                message="Возобновление этой операции запрещено; проверьте статус",
+                status_code=409,
+            )
+        job = enqueue("booking.resume", {"item_id": str(item.id)}, request=request)
+        audit("booking.resume_requested", actor=request.user, resource=workflow, request=request)
+        return Response({"job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
+
+
 class WorkflowInquiryView(APIView):
     permission_classes = [require("services.issue", "services.book")]
 
     def post(self, request, workflow_id):
         workflow = _get_workflow(request, workflow_id)
         item = workflow.items.select_related("service").filter(pk=request.data.get("item")).first()
-        allowed = {BookingWorkflowItem.Status.UNKNOWN, BookingWorkflowItem.Status.BOOKED}
+        allowed = {
+            BookingWorkflowItem.Status.UNKNOWN,
+            BookingWorkflowItem.Status.BOOKED,
+            BookingWorkflowItem.Status.ISSUED,
+        }
         if item is not None and item.service.kind == "hotel":
             # A completed cancellation still needs a fresh supplier inquiry.
             allowed.add(BookingWorkflowItem.Status.COMPENSATED)

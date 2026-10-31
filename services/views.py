@@ -490,6 +490,9 @@ class OrderServicesView(GenericAPIView):
                 participant_ids=request.data.get("participants"),
                 user=request.user,
             )
+            if (service.provider_snapshot or {}).get("provider_adapter") == "ostrovok":
+                service.provider_snapshot["booking_user_ip"] = request.META.get("REMOTE_ADDR", "")
+                service.save(update_fields=["provider_snapshot"])
             _provider_booking_options(service, request.data)
             emit_event("service.updated", service, payload={"action": "created", "order_id": str(order.id)})
             audit("services.created", actor=request.user, resource=service, request=request)

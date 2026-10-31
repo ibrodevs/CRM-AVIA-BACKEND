@@ -275,3 +275,12 @@ if AANDA_ENVIRONMENT not in ("sandbox", "production"):
     raise ValueError("AANDA_ENVIRONMENT must be sandbox or production")
 # No assumed production endpoint. An operator must configure the contracted URL.
 AANDA_PRODUCTION_URL = env("AANDA_PRODUCTION_URL", default="")
+
+# Supplier credentials are routed only within their explicitly selected environment.
+TTBOOKING_ENVIRONMENT = env("TTBOOKING_ENVIRONMENT", default="sandbox")
+OSTROVOK_ENVIRONMENT = env("OSTROVOK_ENVIRONMENT", default="sandbox")
+IWAY_ENVIRONMENT = env("IWAY_ENVIRONMENT", default="sandbox")
+ONELYA_ENVIRONMENT = env("ONELYA_ENVIRONMENT", default="sandbox")
+for supplier_environment in (TTBOOKING_ENVIRONMENT, OSTROVOK_ENVIRONMENT, IWAY_ENVIRONMENT, ONELYA_ENVIRONMENT):
+    if supplier_environment not in ("sandbox", "production"):
+        raise ValueError("Supplier environment must be sandbox or production")

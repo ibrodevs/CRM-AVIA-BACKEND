@@ -3,6 +3,15 @@ from django.urls import path
 from booking import views as v
 
 urlpatterns = [
+    path(
+        "booking-workflows/<uuid:workflow_id>/cancel-transfer/",
+        v.WorkflowTransferCancellationView.as_view(),
+        name="workflow-cancel-transfer",
+    ),
+    path("booking-workflows/<uuid:workflow_id>/void/", v.WorkflowVoidView.as_view(), name="workflow-void"),
+    path(
+        "booking-workflows/<uuid:workflow_id>/resume/", v.WorkflowResumeView.as_view(), name="workflow-resume"
+    ),
     path("booking-workflows/", v.WorkflowCreateView.as_view(), name="workflow-create"),
     path(
         "booking-workflows/<uuid:workflow_id>/preflight/",
