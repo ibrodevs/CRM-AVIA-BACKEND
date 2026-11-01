@@ -98,6 +98,8 @@ def test_calendar_feed_contains_real_trip_context(admin_client, tenant, admin_us
         kind="avia",
         title="FRU → IST",
         status="booked",
+        external_id="BOOK-123",
+        provider_snapshot={"itinerary": {"segments": [{"origin": "FRU", "destination": "IST", "flight_number": "348", "provider_token": "secret"}]}, "fare": {"cabin": "economy", "baggage": "1PC", "api_key": "secret"}},
         starts_at=starts_at,
         ends_at=starts_at + timedelta(hours=5),
         ticketing_deadline=starts_at - timedelta(days=1),
@@ -197,6 +199,10 @@ def test_calendar_feed_contains_real_trip_context(admin_client, tenant, admin_us
     assert payload["participants"][0]["name"] == order.client_person.full_name
     services = {row["title"]: row for row in payload["services"]}
     assert services["FRU → IST"]["paid"] is False
+    assert services["FRU → IST"]["itinerary"] == {"segments": [{"origin": "FRU", "destination": "IST", "flight_number": "348"}]}
+    assert services["FRU → IST"]["fare"] == {"cabin": "economy", "baggage": "1PC"}
+    assert services["FRU → IST"]["booking_reference"] == "BOOK-123"
+    assert services["FRU → IST"]["client_total"] == "500.00"
     assert services["Оплаченная гостиница"]["paid"] is True
     assert services["Трансфер без клиентского начисления"]["paid"] is None
     assert payload["documents"][0]["name"] == "Билет FRU → IST"

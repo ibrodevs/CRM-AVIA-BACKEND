@@ -13,6 +13,7 @@ from common.audit import audit
 from common.errors import ApiError
 from common.outbox import emit_event
 from common.pagination import DefaultPagination
+from services.travel_presentation import service_itinerary, service_fare, service_booking_reference
 
 
 class TripSerializer(serializers.ModelSerializer):
@@ -109,6 +110,11 @@ class TripSerializer(serializers.ModelSerializer):
                     "external_id": service.external_id,
                     "starts_at": service.starts_at,
                     "ends_at": service.ends_at,
+                    "itinerary": service_itinerary(service.provider_snapshot),
+                    "fare": service_fare(service.provider_snapshot),
+                    "currency": service.currency,
+                    "client_total": str(service.client_total),
+                    "booking_reference": service_booking_reference(service),
                     "payment_deadline": service.payment_deadline,
                     "ticketing_deadline": service.ticketing_deadline,
                     "paid": None
