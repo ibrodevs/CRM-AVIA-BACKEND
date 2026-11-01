@@ -312,7 +312,7 @@ class OrderOverviewView(APIView):
         if order is None:
             raise ApiError(code="NOT_FOUND", message="Заказ не найден", status_code=404)
         from documents.hotel_certificate import hotel_capabilities
-        from services.travel_presentation import service_itinerary, service_booking_reference
+        from services.travel_presentation import service_itinerary, service_booking_reference, service_fare
 
         services_summary = [
             {
@@ -324,6 +324,7 @@ class OrderOverviewView(APIView):
                 "hotel_details": hotel_service_details(s.provider_snapshot),
                 "itinerary": service_itinerary(s.provider_snapshot),
                 "booking_reference": service_booking_reference(s),
+                "fare": service_fare(s.provider_snapshot, s.cancellation_rules),
                 "title": s.title,
                 "supplier": s.supplier.name if s.supplier else "",
                 "supplier_cost": str(s.supplier_cost) if s.supplier_cost is not None else None,

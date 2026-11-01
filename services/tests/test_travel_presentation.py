@@ -27,3 +27,10 @@ def test_booking_references_are_service_specific_and_do_not_expose_tokens():
     assert service_booking_reference(flight) == 'WZAG56/01'
     assert service_booking_reference(hotel) == 'HOTEL-2'
     assert service_booking_reference(missing) == ''
+
+
+def test_fare_projection_keeps_conditions_but_excludes_provider_tokens():
+    from services.travel_presentation import service_fare
+    assert service_fare({'fare': {'cabin': 'business', 'baggage': '0PC', 'refundable': False, 'provider_token': 'secret'}}) == {'cabin': 'business', 'baggage': '0PC', 'refundable': False}
+    assert service_fare(None, {'cabin': 'economy', 'baggage': '1PC'}) == {'cabin': 'economy', 'baggage': '1PC'}
+    assert service_fare({'fare': 'raw supplier data'}) == {}

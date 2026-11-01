@@ -14,7 +14,7 @@ def service_itinerary(snapshot):
     segment_fields = (
         "origin", "destination", "origin_city", "destination_city", "origin_city_ru",
         "destination_city_ru", "departure", "arrival", "airline", "flight_number",
-        "cabin", "booking_class", "baggage",
+        "cabin", "booking_class", "baggage", "hand_baggage", "cabin_baggage", "fare_basis",
     )
     if isinstance(itinerary.get("segments"), list):
         result["segments"] = [
@@ -33,3 +33,12 @@ def service_booking_reference(service):
         or service.external_id
     )
     return str(reference) if reference is not None else ''
+
+
+def service_fare(snapshot, fallback=None):
+    fare = (snapshot or {}).get('fare') or fallback or {}
+    if not isinstance(fare, dict):
+        return {}
+    fields = ('cabin', 'booking_class', 'baggage', 'hand_baggage', 'cabin_baggage',
+              'fare_name', 'name', 'brand', 'fare_basis', 'refundable', 'changeable', 'exchangeable', 'eticket')
+    return {key: fare[key] for key in fields if key in fare}
