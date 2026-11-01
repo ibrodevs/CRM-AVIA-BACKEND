@@ -9,6 +9,9 @@ def service_itinerary(snapshot):
         "property_name", "city", "city_name", "city_name_ru", "check_in", "check_out",
         "check_in_time", "check_out_time", "address", "room", "meal_plan", "nights",
         "origin", "destination", "departure", "arrival", "train_number",
+        "description", "pickup_time", "car_class", "capacity", "luggage_capacity",
+        "car_type", "service_class", "places", "vehicle", "vehicle_class",
+        "coverage", "policy_number", "country", "insured_amount", "visa_type", "duration", "meeting_point", "notes",
     )
     result = {key: itinerary[key] for key in fields if key in itinerary}
     segment_fields = (

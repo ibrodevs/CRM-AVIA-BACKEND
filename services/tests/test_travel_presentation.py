@@ -34,3 +34,7 @@ def test_fare_projection_keeps_conditions_but_excludes_provider_tokens():
     assert service_fare({'fare': {'cabin': 'business', 'baggage': '0PC', 'refundable': False, 'provider_token': 'secret'}}) == {'cabin': 'business', 'baggage': '0PC', 'refundable': False}
     assert service_fare(None, {'cabin': 'economy', 'baggage': '1PC'}) == {'cabin': 'economy', 'baggage': '1PC'}
     assert service_fare({'fare': 'raw supplier data'}) == {}
+
+
+def test_transfer_itinerary_retains_service_details_without_credentials():
+    assert service_itinerary({'itinerary': {'origin': 'Москва', 'destination': 'Шереметьево', 'pickup_time': '2026-11-01T10:00', 'car_class': 'Минивэн', 'capacity': 6, 'api_key': 'secret'}}) == {'origin': 'Москва', 'destination': 'Шереметьево', 'pickup_time': '2026-11-01T10:00', 'car_class': 'Минивэн', 'capacity': 6}
