@@ -262,3 +262,41 @@ def test_coordinates_survive_search_revalidation_attach_and_booking(
     service.refresh_from_db()
     assert service.provider_snapshot["itinerary"]["latitude"] == 55.798
     assert service.provider_snapshot["itinerary"]["longitude"] == 37.817
+
+
+def test_old_offer_and_order_expose_saved_exact_coordinates_without_provider_call(
+    admin_client, tenant, hb_supplier, content_gateway
+):
+    from services.views import OrderServiceSerializer, ServiceOfferSerializer
+
+    _, service_data = ready_booking(admin_client, tenant, hb_supplier)
+    offer = ServiceOffer.objects.get()
+    offer.itinerary.pop("latitude", None)
+    offer.itinerary.pop("longitude", None)
+    offer.save(update_fields=["itinerary"])
+    calls_before = len(content_gateway.calls)
+    public_offer = ServiceOfferSerializer(offer).data["itinerary"]
+    assert public_offer["latitude"] == 55.798
+    assert public_offer["longitude"] == 37.817
+    assert "latitude" not in offer.itinerary  # Presentation must not rewrite the stored offer.
+    service = OrderService.objects.get(pk=service_data["id"])
+    service.provider_snapshot["itinerary"].pop("latitude", None)
+    service.provider_snapshot["itinerary"].pop("longitude", None)
+    public_service = OrderServiceSerializer(service).get_itinerary(service)
+    assert public_service["latitude"] == 55.798
+    assert public_service["longitude"] == 37.817
+    assert "hotelbook" not in public_service
+    assert len(content_gateway.calls) == calls_before
+
+
+def test_saved_hotel_point_requires_matching_identity_and_valid_coordinates():
+    from services.hotel_presentation import hotel_map_coordinates
+
+    hotel = {"id": 123, "details": {"latitude": 55.7, "longitude": 37.8}}
+    snapshot = {"provider_adapter": "hotelbook", "hotelbook": {"hotel_id": 123, "hotel": hotel}}
+    assert hotel_map_coordinates({}, snapshot) == {"latitude": 55.7, "longitude": 37.8}
+    assert hotel_map_coordinates({"hotel_id": 999}, snapshot) == {}
+    assert hotel_map_coordinates({}, {**snapshot, "provider_adapter": "other"}) == {}
+    assert hotel_map_coordinates({"latitude": 1, "longitude": 2}, snapshot) == {"latitude": 1.0, "longitude": 2.0}
+    hotel["details"]["latitude"] = 100
+    assert hotel_map_coordinates({}, snapshot) == {}

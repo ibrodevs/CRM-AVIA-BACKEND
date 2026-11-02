@@ -24,6 +24,9 @@ def service_itinerary(snapshot):
             {key: segment[key] for key in segment_fields if key in segment}
             for segment in itinerary["segments"] if isinstance(segment, dict)
         ]
+    from services.hotel_presentation import hotel_map_coordinates
+
+    result.update(hotel_map_coordinates(itinerary, snapshot))
     return result
 
 

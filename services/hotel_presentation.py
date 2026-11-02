@@ -68,3 +68,21 @@ def hotel_service_details(snapshot):
             for item in booking.get("items", [])
         ],
     }
+
+
+def hotel_map_coordinates(itinerary, snapshot=None, provider=""):
+    """Recover an exact point from saved supplier content for older search results."""
+    from integrations.hotelbook_content import hotel_coordinates
+
+    point = hotel_coordinates(itinerary)
+    if point:
+        return point
+    snapshot = snapshot or {}
+    if (provider or snapshot.get("provider_adapter")) != "hotelbook":
+        return {}
+    saved = snapshot.get("hotelbook") or {}
+    hotel = saved.get("hotel") or {}
+    expected = (itinerary or {}).get("hotel_id") or saved.get("hotel_id")
+    if not expected or str(hotel.get("id")) != str(expected):
+        return {}
+    return hotel_coordinates(hotel)

@@ -118,6 +118,14 @@ class SearchSessionSerializer(serializers.ModelSerializer):
 
 
 class ServiceOfferSerializer(serializers.ModelSerializer):
+    itinerary = serializers.SerializerMethodField()
+
+    def get_itinerary(self, obj):
+        from services.hotel_presentation import hotel_map_coordinates
+
+        itinerary = obj.itinerary or {}
+        return {**itinerary, **hotel_map_coordinates(itinerary, obj.raw_snapshot, obj.provider_adapter)}
+
     price = MoneyField(amount_field="price_amount", currency_field="price_currency")
 
     class Meta:
