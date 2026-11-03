@@ -1943,7 +1943,7 @@ def _patch_supplier_pdf_raw(content: bytes, before: dict, after: dict) -> tuple[
     return _write_reader_pages(reader), report
 
 
-def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
+def _patch_supplier_pdf_amounts(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
     """Patch a supplier PDF, falling back to raw font-encoded stream edits."""
 
     structured_report = None
@@ -1981,6 +1981,27 @@ def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes
         report["structured_error"] = structured_error
     elif structured_report and structured_report.get("unapplied"):
         report["structured_unapplied"] = structured_report["unapplied"]
+    return corrected, report
+
+
+def patch_supplier_pdf(content: bytes, before: dict, after: dict) -> tuple[bytes | None, dict]:
+    from documents.receipt_financial_rows import additional_rows, insert_financial_rows
+
+    rows = additional_rows(before, after)
+    corrected, report = _patch_supplier_pdf_amounts(content, before, after)
+    if not rows:
+        return corrected, report
+    if corrected is None and report.get("unapplied"):
+        return None, report
+    try:
+        corrected, additions = insert_financial_rows(corrected or content, rows)
+    except Exception as exc:
+        report["unapplied"] = [*report.get("unapplied", []), "additional_breakdown_rows"]
+        report["additional_rows_error"] = type(exc).__name__
+        return None, report
+    report.update(additions)
+    report["requested"] += len(rows)
+    report["applied"] += len(rows)
     return corrected, report
 
 
