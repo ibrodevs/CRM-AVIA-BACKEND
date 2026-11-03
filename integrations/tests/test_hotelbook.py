@@ -283,6 +283,7 @@ def ready_booking(
     revalidate_offer=True,
     preflight=True,
     stay_times=None,
+    booking_options=None,
 ):
     person = Person.objects.create(
         tenant=tenant,
@@ -322,7 +323,7 @@ def ready_booking(
     assert "hotelbook" not in picked and "raw_snapshot" not in picked
     if revalidate_offer:
         post(admin_client, f"service-offers/{picked['id']}/revalidate/")
-    service = post(admin_client, f"orders/{order['id']}/services/", {"offer_id": picked["id"]})
+    service = post(admin_client, f"orders/{order['id']}/services/", {"offer_id": picked["id"], **(booking_options or {})})
     workflow = post(admin_client, "booking-workflows/", {"order": order["id"], "services": [service["id"]]})
     if preflight:
         result = post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")
@@ -1252,3 +1253,37 @@ def test_invalid_stay_time_is_rejected_before_supplier_search(tenant, hb_supplie
         )
     assert exc.value.code == "SEARCH_CRITERIA_INVALID"
     assert not any(c[1].endswith("/hotel/gateway/search") for c in gateway.calls)
+
+
+def test_attached_free_remark_survives_preflight_and_reaches_hotelbook_book(
+    admin_client, tenant, hb_supplier, gateway
+):
+    remark = "Тихий номер на высоком этаже"
+    gateway.current["isRemarkFreeFormAllowed"] = True
+    workflow, service_data = ready_booking(
+        admin_client, tenant, hb_supplier, booking_options={"special_requests": remark}
+    )
+    service = OrderService.objects.get(pk=service_data["id"])
+    assert service.provider_snapshot["special_requests"] == remark
+    assert start(admin_client, workflow)["items"][0]["status"] == "booked"
+    payload = next(call[3] for call in gateway.calls if call[1].endswith("/hotel/gateway/book"))
+    assert payload["freeRemark"] == remark
+    service.refresh_from_db()
+    assert service.provider_snapshot["special_requests"] == remark
+    log = IntegrationLog.objects.get(operation="book")
+    assert log.request_sanitized["freeRemark"] == "[REDACTED]"
+
+
+def test_missing_search_penalties_are_loaded_from_details_before_booking(tenant, hb_supplier, gateway):
+    policies = gateway.current.pop("finePolicies")
+    adapter = get_adapter("hotelbook")
+    ctx = context(tenant, hb_supplier)
+    snapshot = adapter.search(ctx, "hotel", criteria())[0]
+    assert snapshot["fare"]["cancel"] == []
+    gateway.current["finePolicies"] = policies
+    gateway.current["isRemarkFreeFormAllowed"] = True
+    detailed = adapter.revalidate(ctx, snapshot)
+    assert Decimal(str(detailed["fare_rules"]["cancel"][0]["price"]["amount"])) == Decimal("120.25")
+    assert detailed["snapshot"]["fare"]["isRemarkFreeFormAllowed"] is True
+    assert detailed["snapshot"]["hotelbook"]["terms_source"] == "details"
+    assert not any(call[1].endswith("/hotel/gateway/book") for call in gateway.calls)
