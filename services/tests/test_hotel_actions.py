@@ -109,7 +109,7 @@ def test_whole_cancel_requires_financial_confirmation_and_executes_once(admin_cl
     assert op["status"] == "awaiting_operator_confirmation"
     assert not cancels(gateway)
     assert confirm(admin_client, booked, op, confirmed=False).status_code == 400
-    assert confirm(admin_client, booked, op, accept_unknown_penalty=False).status_code == 400
+    assert op["financial_snapshot"]["penalty_exact"] is True
     assert confirm(admin_client, booked, op).status_code == 202
     assert confirm(admin_client, booked, op).status_code == 202
     assert BackgroundJob.objects.filter(kind="hotel.operation").count() == 1
@@ -123,7 +123,7 @@ def test_whole_cancel_requires_financial_confirmation_and_executes_once(admin_cl
     )
     operation = HotelOperation.objects.get(pk=op["id"])
     assert operation.status == "completed" and operation.confirmed_at and operation.completed_at
-    assert operation.financial_snapshot["confirmation"]["accepted_unknown_penalty"] is True
+    assert operation.financial_snapshot["confirmation"]["accepted_unknown_penalty"] is False
     assert operation.history.filter(action="financial_confirmation").exists()
     assert operation.history.filter(action="result").exists()
     assert AuditEvent.objects.filter(action="hotel.result", resource_id=str(operation.pk)).exists()
@@ -255,6 +255,7 @@ def test_supplier_response_is_sanitized_and_unknown_not_success(admin_client, bo
 
 def test_stale_confirmation_and_cross_service_operations_are_rejected(admin_client, booked):
     op = create(admin_client, booked, "cancel_booking").json()
+    booked.refresh_from_db()
     booked.version += 1
     booked.save(update_fields=["version"])
     assert confirm(admin_client, booked, op).status_code == 409
@@ -315,7 +316,7 @@ def test_late_worker_result_cannot_undo_confirmed_status_inquiry(admin_client, b
     op = create(admin_client, booked, "cancel_booking").json()
     confirm(admin_client, booked, op)
 
-    def already_reconciled(*args):
+    def already_reconciled(*args, **kwargs):
         from django.utils import timezone
 
         HotelOperation.objects.filter(pk=op["id"]).update(
@@ -373,7 +374,7 @@ def test_operator_ids_remain_distinct_and_supplier_scoped(admin_client, booked):
     )
 
 
-def test_manual_free_cancel_does_not_block_normal_api_cancel_with_unknown_penalty(
+def test_manual_free_cancel_does_not_block_normal_api_cancel_with_fresh_penalty(
     admin_client, booked, gateway
 ):
     manual = create(
@@ -389,8 +390,8 @@ def test_manual_free_cancel_does_not_block_normal_api_cancel_with_unknown_penalt
     normal = create(admin_client, booked, "cancel_booking", key="normal-cancellation")
     assert normal.status_code == 201
     operation = normal.json()
-    assert operation["financial_snapshot"]["penalty"] is None
-    assert operation["financial_snapshot"]["penalty_exact"] is False
+    assert operation["financial_snapshot"]["penalty"] == "0"
+    assert operation["financial_snapshot"]["penalty_exact"] is True
     assert operation["execution_mode"] == "api"
     assert confirm(admin_client, booked, operation).status_code == 202
     jobs()

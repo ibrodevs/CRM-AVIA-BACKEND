@@ -6,7 +6,7 @@ from common.logging import redact
 
 _PRIVATE = re.compile(
     r"^(login|first_?name|last_?name|middle_?name|full_?name|name|email|phone|birth_?date|"
-    r"dateOfBirth|address|inn|freeRemark|comments|contactInfo|customer|cookie|set-cookie)$",
+    r"dateOfBirth|address|inn|freeRemark|data|comments|contactInfo|customer|cookie|set-cookie)$",
     re.I,
 )
 _SECRET = re.compile(r"password|passwd|secret|token|authorization|api.?key", re.I)

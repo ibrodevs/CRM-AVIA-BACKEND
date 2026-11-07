@@ -1065,7 +1065,7 @@ class HotelbookAdapter(ProviderAdapter):
                 "Hotelbook: изменились номера или режим подтверждения",
                 category="availability",
             )
-        for key in ("special_requests", "main_guest", "hotelbook_pending_confirmation"):
+        for key in ("special_requests", "hotel_remarks", "main_guest", "hotelbook_pending_confirmation"):
             if key in offer_snapshot:
                 normalized[key] = offer_snapshot[key]
         if ctx.certification_run_id:
@@ -1287,6 +1287,9 @@ class HotelbookAdapter(ProviderAdapter):
                 "Пожелания недоступны для тарифа или превышают 2000 символов",
                 category="validation",
             )
+        from integrations.hotelbook_options import validated_remarks
+
+        static_remarks = validated_remarks(self, ctx, updated.get("hotel_remarks", []))
         ref = booking_request["client_request_id"]
         locator = "HB" + hashlib.sha256(ref.encode()).hexdigest()[:30]
         booking = {"locator": locator, "client_request_id": ref, "state": "creating_order", "items": []}
@@ -1361,6 +1364,8 @@ class HotelbookAdapter(ProviderAdapter):
                 "confirmationMode": new_offer["confirmationMode"],
                 "rooms": rooms,
             }
+            if updated.get("hotel_remarks"):
+                payload["remarks"] = static_remarks
             if remark:
                 payload["freeRemark"] = remark
             booking["room_requests"] = [
@@ -1484,6 +1489,8 @@ class HotelbookAdapter(ProviderAdapter):
             )
             for i in ids
         ]
+        if any(str(item.get("itemId")) != str(expected) for expected, item in zip(ids, items, strict=True)):
+            raise AdapterError("INVALID_RESPONSE", "Hotelbook: itemId ответа не соответствует брони", category="sync")
         cancelling = booking.get("state") == "cancelling"
         booking.update(
             items=items,
@@ -1493,15 +1500,33 @@ class HotelbookAdapter(ProviderAdapter):
         self._save_booking_snapshot(ctx, service.id, snapshot)
         return result
 
-    def cancel(self, ctx, locator):
+    def cancellation_quote(self, ctx, locator):
+        from integrations.hotelbook_options import cancellation_quote
+
         service, _, _ = self._stored_booking(ctx, locator)
         with booking_lease(service):
-            return self._cancel_locked(ctx, locator)
+            result = self._retrieve_locked(ctx, locator)
+            service, snapshot, booking = self._stored_booking(ctx, locator)
+            booking["cancellation_quote"] = cancellation_quote(booking["items"], snapshot["price"]["currency"])
+            self._save_booking_snapshot(ctx, service.pk, snapshot)
+            result["provider_snapshot"] = snapshot
+            return result
 
-    def _cancel_locked(self, ctx, locator):
+    def cancel(self, ctx, locator, *, confirmation=None):
+        service, _, _ = self._stored_booking(ctx, locator)
+        with booking_lease(service):
+            return self._cancel_locked(ctx, locator, confirmation=confirmation)
+
+    def _cancel_locked(self, ctx, locator, *, confirmation=None):
         self._retrieve_locked(ctx, locator)
         service, snapshot, booking = self._stored_booking(ctx, locator)
         _, config = self._config(ctx)
+        if confirmation is not None:
+            from integrations.hotelbook_options import cancellation_quote, check_quote
+
+            check_quote(confirmation, cancellation_quote(booking["items"], snapshot["price"]["currency"]))
+        if any(i.get("status") != "CANCELED" and not i.get("isCancellationAllowed") for i in booking["items"]):
+            raise AdapterError("CANCEL_NOT_ALLOWED", "Hotelbook: отмена сейчас недоступна", category="booking")
         for index, item in enumerate(booking["items"]):
             if item.get("status") == "CANCELED":
                 continue

@@ -39,7 +39,8 @@ def financial_data(service):
                 }
         except (ValueError, TypeError, InvalidOperation):
             pass
-    return {
+    quote = (snapshot.get("hotelbook_booking") or {}).get("cancellation_quote")
+    result = {
         "supplier_cost": str(service.supplier_cost) if service.supplier_cost is not None else None,
         "client_cost": str(service.client_total) if service.client_total is not None else None,
         "service_fee": str(service.agency_fee) if service.agency_fee is not None else None,
@@ -50,6 +51,14 @@ def financial_data(service):
         "reported_penalty": reported_penalty,
         "warning": "API не предоставляет зафиксированный расчёт штрафа и возврата для этой операции. Отсутствие суммы не означает отмену без штрафа.",
     }
+    if quote:
+        result.update(
+            penalty=quote["penalty"], penalty_exact=quote["penalty_exact"], currency=quote["currency"],
+            cancellation_quote=quote,
+            warning="Штраф рассчитан по актуальным условиям HBPRO. Перед отправкой отмены условия проверяются повторно. Возврат денег и сервисный сбор учитываются отдельно."
+            if quote["penalty_exact"] else "HBPRO не передал однозначную сумму штрафа. Обновите сведения или обратитесь к поставщику; API-отмена заблокирована.",
+        )
+    return result
 
 
 def booking_summary(service):
@@ -70,7 +79,9 @@ def booking_summary(service):
         or itinerary.get("check_out")
         or (service.ends_at.date().isoformat() if service.ends_at else "")
     )
+    current_policies = (booking.get("cancellation_quote") or {}).get("items")
     policy = (
+        [{"cancel": row["policy"]} for row in current_policies] if current_policies else
         service.cancellation_rules
         or offer.get("finePolicies")
         or (snapshot.get("fare") or {}).get("cancellation_rules")

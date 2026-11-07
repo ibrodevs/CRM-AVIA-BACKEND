@@ -6,9 +6,15 @@ from services.hotel_actions.views import (
     HotelOperationConfirmView,
     HotelOperationResolveView,
 )
-from services.hotel_views import HotelCertificateView, OfferHotelContentView, ServiceHotelContentView
+from services.hotel_views import (
+    HotelCertificateView,
+    OfferHotelContentView,
+    OfferHotelRemarksView,
+    ServiceHotelContentView,
+)
 
 urlpatterns = [
+    path("service-offers/<uuid:offer_id>/hotel-remarks/", OfferHotelRemarksView.as_view(), name="offer-hotel-remarks"),
     path("services/<uuid:service_id>/hotel-actions/", HotelActionsView.as_view(), name="hotel-actions"),
     path(
         "services/<uuid:service_id>/hotel-actions/<uuid:operation_id>/confirm/",

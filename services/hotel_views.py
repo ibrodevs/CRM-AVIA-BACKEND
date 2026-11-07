@@ -73,6 +73,26 @@ class OfferHotelContentView(APIView):
         return content_response(request, offer.supplier_id, offer.raw_snapshot or {})
 
 
+class OfferHotelRemarksView(APIView):
+    permission_classes = [require("services.search")]
+
+    def get(self, request, offer_id):
+        from integrations.hotelbook_options import remark_catalog
+        from orders.selectors import get_order_or_404
+        from services.views import _get_offer
+
+        offer = _get_offer(request, offer_id)
+        if offer.session_id and offer.session.order_id:
+            get_order_or_404(request.user, offer.session.order_id)
+        if offer.provider_adapter != "hotelbook":
+            raise ApiError(code="INVALID_PROVIDER", message="Пожелания доступны для HBPRO", status_code=400)
+        try:
+            rows = remark_catalog(get_adapter("hotelbook"), AdapterContext(tenant_id=request.user.tenant_id, supplier_id=offer.supplier_id))
+        except AdapterError as exc:
+            raise ApiError(code=exc.code, message=str(exc), status_code=502) from None
+        return Response({"results": rows})
+
+
 class ServiceHotelContentView(APIView):
     permission_classes = [require("orders.view")]
 

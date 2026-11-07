@@ -119,6 +119,13 @@ class Gateway:
                 }
             elif url.path.endswith("/geo/countries"):
                 response = [{"id": 77, "alpha2": "KG", "name": "Kyrgyzstan", "trash": False}]
+            elif url.path.endswith("/hotel/remarks"):
+                response = [
+                    {"id": 7, "title": "Тихий номер", "trash": False, "dataType": "NONE"},
+                    {"id": 10, "title": "Контакт: {value}", "trash": False, "dataType": "STRING"},
+                    {"id": 1, "title": "Время заезда", "trash": False, "dataType": "DATETIME"},
+                    {"id": 2, "title": "Удалено", "trash": True, "dataType": "NONE"},
+                ]
             elif url.path.endswith("/geo/cities"):
                 response = [{"id": 42, "name": "Fixture City", "trash": False}]
             elif url.path.endswith("/order/gateway/orders") and request.method == "POST":
@@ -188,6 +195,7 @@ class Gateway:
             "createdAt": "2026-10-21T12:00:00+00:00",
             "updatedAt": "2026-10-21T12:30:00+00:00",
             "price": self.current["price"],
+            "finePolicies": deepcopy(self.current.get("finePolicies")),
         }
 
     @staticmethod

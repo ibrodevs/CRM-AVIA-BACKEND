@@ -74,6 +74,14 @@ def create_operation(service, user, data, key):
         if action != "refresh"
         else "view",
     )
+    if action == "cancel_booking" and not service.hotel_operations.filter(idempotency_key=key).exists():
+        adapter = adapter_for_service(service)
+        if adapter.key == "hotelbook":
+            try:
+                result = adapter.cancellation_quote(AdapterContext(tenant_id=service.tenant_id, supplier_id=service.supplier_id), booking_summary(service)["locator"])
+                service = _apply_supplier_result(service, result)
+            except AdapterError as exc:
+                raise ApiError(code=exc.code, message="Не удалось получить актуальные условия отмены HBPRO", status_code=502) from None
     with transaction.atomic():
         service = OrderService.objects.select_for_update().get(pk=service.pk)
         old = service.hotel_operations.filter(idempotency_key=key).first()
@@ -186,7 +194,15 @@ def confirm_operation(service, operation_id, user, data):
         if operation.status != "awaiting_operator_confirmation":
             # Retransmission of the confirmation never queues another cancel.
             return operation
-        if data.get("confirmed") is not True or data.get("accept_unknown_penalty") is not True:
+        quote = operation.financial_snapshot.get("cancellation_quote")
+        if quote:
+            from integrations.hotelbook_options import check_quote
+
+            try:
+                check_quote(quote, quote)
+            except AdapterError as exc:
+                raise ApiError(code=exc.code, message=str(exc), status_code=409) from None
+        if data.get("confirmed") is not True or (quote is None and data.get("accept_unknown_penalty") is not True):
             raise ApiError(
                 code="CONFIRMATION_REQUIRED",
                 message="Подтвердите отмену всей брони и финансовые условия с неизвестным точным штрафом",
@@ -218,7 +234,7 @@ def confirm_operation(service, operation_id, user, data):
         operation.financial_snapshot["confirmation"] = {
             "actor": str(user.pk),
             "at": operation.confirmed_at.isoformat(),
-            "accepted_unknown_penalty": True,
+            "accepted_unknown_penalty": quote is None,
         }
         operation.save(update_fields=["confirmed_at", "financial_snapshot"])
         record(operation, "financial_confirmation", actor=user)
@@ -297,7 +313,9 @@ def execute_operation(job):
             require_permission(operation.actor, "cancel")
             require_permission(operation.actor, "financial_confirmation")
         result = (
-            adapter.cancel(ctx, locator)
+            adapter.cancel(ctx, locator, confirmation=operation.financial_snapshot.get("cancellation_quote"))
+            if operation.operation_type == "cancel_booking" and adapter.key == "hotelbook"
+            else adapter.cancel(ctx, locator)
             if operation.operation_type == "cancel_booking"
             else adapter.retrieve_booking(ctx, locator)
         )
