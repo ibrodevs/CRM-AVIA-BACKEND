@@ -414,3 +414,38 @@ class TestServiceCards:
         )
         assert response.status_code == 200
         assert response.json()["action"] == "choose"
+
+
+def test_public_hotel_card_hides_operator_data_without_changing_saved_card(admin_client, order):
+    from rest_framework.test import APIClient
+
+    from offers.models import ServiceCard
+
+    content = {
+        "title": "Отель",
+        "orderNo": order["number"],
+        "supplier": "HbPro",
+        "snapshot": {"info": [
+            {"l": "Стоимость поставщика", "v": "891.23 RUB"},
+            {"l": "Поставщик", "v": "HbPro"},
+            {"l": "Номер заказа CRM", "v": order["number"]},
+            {"l": "Условия отмены", "v": "HBPRO: до 10.12.2026 штраф 250 RUB"},
+            {"l": "Бронь отеля", "v": "HOTEL-CONFIRM-123"},
+        ]},
+        "fin": {"supplierPrice": 891.23, "cost": 891.23, "profit": 108.77,
+                "clientTotal": 1000, "fee": 50, "model": {"total": 1000}},
+    }
+    response = admin_client.post('/api/v1/service-cards/', {
+        'order': order['id'], 'kind': 'hotel', 'content': content,
+        'price_snapshot': {'amount': '1000', 'currency': 'RUB', 'supplier_cost': '891.23'},
+    }, format='json')
+    assert response.status_code == 201, response.content
+    card = response.json()
+    public = APIClient().get(f"/api/v1/public/service-cards/{card['public_token']}/").json()
+    rendered = str(public)
+    for private in ['891.23', '108.77', 'HbPro', 'HBPRO', order['number'], 'supplierPrice', 'supplier_cost']:
+        assert private not in rendered
+    assert public['price'] == {'amount': '1000', 'currency': 'RUB'}
+    assert public['content']['fin']['model']['total'] == 1000
+    assert '250 RUB' in rendered and '10.12.2026' in rendered and 'HOTEL-CONFIRM-123' in rendered
+    assert ServiceCard.objects.get(pk=card['id']).content == content

@@ -15,12 +15,13 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from common.client_hotel import client_hotel_text
 from common.errors import ApiError
 from documents.models import Document
 from documents.services import add_document_version
 from integrations.hotelbook_observability import normalized_status
 
-CERTIFICATE_SCHEMA_VERSION = 2
+CERTIFICATE_SCHEMA_VERSION = 3
 
 
 def certificate_status(snapshot):
@@ -79,7 +80,6 @@ def certificate_data(service):
             guests.append(name)
     return {
         "demo": bool(snapshot.get("local_demo")),
-        "order_number": service.order.number,
         "status": status,
         "hotel": (hb.get("hotel") or {}).get("name")
         or snapshot.get("itinerary", {}).get("property_name")
@@ -152,7 +152,7 @@ def render_certificate(data):
     )
 
     def p(text, style="HotelBody"):
-        return Paragraph(escape(str(text or "Не указано")).replace("\n", "<br/>"), styles[style])
+        return Paragraph(escape(client_hotel_text(text or "Не указано")).replace("\n", "<br/>"), styles[style])
 
     content = [
         p("СЕРТИФИКАТ НА ПРОЖИВАНИЕ", "HotelTitle"),
@@ -167,7 +167,6 @@ def render_certificate(data):
     if data.get("demo"):
         content.insert(0, p("ДЕМОНСТРАЦИЯ - РЕАЛЬНОГО БРОНИРОВАНИЯ НЕТ", "HotelStatus"))
     rows = [
-        ("Заказ CRM", data["order_number"]),
         ("Адрес гостиницы", data["address"]),
         ("Телефон гостиницы", data["phone"]),
         ("Заезд", " ".join(filter(None, [data["check_in"], data["check_in_time"]]))),
@@ -262,8 +261,26 @@ def ensure_certificate(service, user):
             document,
             content=render_certificate(data),
             mime="application/pdf",
-            name=f"hotel-certificate-{service.id}.pdf",
+            name="hotel-certificate.pdf",
             user=user,
             origin="generated",
         )
         return document
+
+
+def validate_certificate_document(document, requested_version=None):
+    """Reject stale files on both download and delivery, including old formats."""
+    if document.metadata.get("generator") != "hbpro_certificate":
+        return
+    if (
+        not document.service_id
+        or document.metadata.get("certificate_schema_version") != CERTIFICATE_SCHEMA_VERSION
+        or certificate_status(document.service.provider_snapshot or {})
+        != document.metadata.get("booking_status")
+        or (requested_version and str(requested_version) != str(document.current_version))
+    ):
+        raise ApiError(
+            code="DOCUMENT_STALE",
+            message="Данные или формат сертификата устарели. Сформируйте сертификат заново в услуге гостиницы.",
+            status_code=409,
+        )

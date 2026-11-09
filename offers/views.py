@@ -686,12 +686,17 @@ class ServiceCardCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
         with transaction.atomic():
-            previous = ServiceCard.objects.select_for_update().filter(
-                tenant_id=request.user.tenant_id,
-                service=validated.get("service"),
-                order=validated.get("order"),
-                kind=validated.get("kind"),
-            ).order_by("-card_version").first()
+            previous = (
+                ServiceCard.objects.select_for_update()
+                .filter(
+                    tenant_id=request.user.tenant_id,
+                    service=validated.get("service"),
+                    order=validated.get("order"),
+                    kind=validated.get("kind"),
+                )
+                .order_by("-card_version")
+                .first()
+            )
             next_version = (previous.card_version + 1) if previous else 1
             if previous and previous.status not in (
                 ServiceCard.Status.CHOSEN,
@@ -783,13 +788,20 @@ class PublicServiceCardView(APIView):
             card.status = ServiceCard.Status.VIEWED
             card.save(update_fields=["status"])
             emit_event("service.updated", card, payload={"action": "card_viewed"}, tenant_id=card.tenant_id)
+        content, price = card.content, card.price_snapshot
+        if card.kind in {"hotel", "hotels", "Гостиница", "Гостиницы"} or (
+            card.service_id and card.service.kind == "hotel"
+        ):
+            from common.client_hotel import public_hotel_card
+
+            content, price = public_hotel_card(card)
         return Response(
             {
                 "kind": card.kind,
                 "status": card.status,
                 "valid_until": card.valid_until,
-                "content": card.content,
-                "price": card.price_snapshot,
+                "content": content,
+                "price": price,
                 "card_version": card.card_version,
             }
         )

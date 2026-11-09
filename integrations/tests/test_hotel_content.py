@@ -141,6 +141,9 @@ def test_certificate_pdf_saved_once_and_cancelled_version_is_explicit(
     service.refresh_from_db()
     booking = service.provider_snapshot["hotelbook_booking"]
     for private_id in [
+        service.order.number,
+        str(service.id),
+        "Заказ CRM",
         "HBPRO",
         "HB-FIXTURE-REF",
         str(booking["order_id"]),
@@ -151,6 +154,33 @@ def test_certificate_pdf_saved_once_and_cancelled_version_is_explicit(
     assert "120.25" not in text and "fixture-password" not in text
     assert "не оригинальный ваучер" in " ".join(text.split())
     assert not gateway.calls
+    # A pre-privacy certificate must be regenerated even if booking status is unchanged.
+    from common.errors import ApiError
+    from documents.delivery import queue_document_send
+    from documents.hotel_certificate import CERTIFICATE_SCHEMA_VERSION
+
+    old = Document.objects.get(pk=document["id"])
+    old.metadata["certificate_schema_version"] = CERTIFICATE_SCHEMA_VERSION - 1
+    old.save(update_fields=["metadata"])
+    assert admin_client.get(download_url).status_code == 409
+    with pytest.raises(ApiError):
+        queue_document_send(old, channel="email", recipient="guest@example.test")
+    from common.models import OutboundDelivery
+    from common.scheduled_tasks import dispatch_outbound_deliveries
+    blocked = OutboundDelivery.objects.create(
+        tenant=tenant, document=old, resource_type="Document", resource_id=str(old.id),
+        purpose="document", channel="email", recipient="guest@example.test",
+    )
+    assert "failed 1" in dispatch_outbound_deliveries()
+    blocked.refresh_from_db()
+    assert blocked.state == "failed" and "устарели" in blocked.error
+
+    old.metadata["certificate_schema_version"] = CERTIFICATE_SCHEMA_VERSION
+    old.save(update_fields=["metadata"])
+    queued = queue_document_send(old, channel="email", recipient="guest@example.test")
+    delivery = OutboundDelivery.objects.get(pk=queued["delivery"])
+    assert service.order.number not in delivery.body
+    assert str(service.id) not in DocumentVersion.objects.get(document=old, version=1).original_name
     # Simulate a status sync only in local DB; never send cancellation to HBPRO.
     service.refresh_from_db()
     snapshot = service.provider_snapshot

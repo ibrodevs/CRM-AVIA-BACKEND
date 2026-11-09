@@ -40,22 +40,29 @@ def resolve_recipient(document, channel: str, explicit: str = "") -> str:
         return (getattr(person, "phone", "") or getattr(company, "phone", "") or "").strip()
     if channel in ("telegram", "max"):
         # Мессенджер-идентификатор клиента хранится в переписке с ним.
-        thread = document.order.chat_threads.filter(
-            type="client", external_channel=channel
-        ).first() if document.order_id else None
+        thread = (
+            document.order.chat_threads.filter(type="client", external_channel=channel).first()
+            if document.order_id
+            else None
+        )
         return (thread.external_account if thread else "").strip()
     return ""
 
 
 def queue_document_send(document, *, channel: str, recipient: str = "", requested_by=None) -> dict:
     """Ставит документ в очередь и возвращает описание состояния для интерфейса."""
+    from documents.hotel_certificate import validate_certificate_document
+
+    validate_certificate_document(document)
     address = resolve_recipient(document, channel, recipient)
     subject = f"{_KIND_TITLES.get(document.kind, 'Документ')}: {document.title}"
-    order_line = f"\nЗаказ: {document.order.number}" if document.order_id else ""
-    body = (
-        f"Здравствуйте!\n\nВо вложении — {subject.lower()}.{order_line}\n\n"
-        "С уважением, служба поддержки."
-    )
+    hotel = document.service_id and document.service.kind == "hotel"
+    order_line = f"\nЗаказ: {document.order.number}" if document.order_id and not hotel else ""
+    if hotel:
+        from common.client_hotel import client_hotel_text
+
+        subject = client_hotel_text(subject, [document.order.number] if document.order_id else [])
+    body = f"Здравствуйте!\n\nВо вложении — {subject.lower()}.{order_line}\n\nС уважением, служба поддержки."
 
     delivery = OutboundDelivery.objects.create(
         tenant_id=document.tenant_id,
