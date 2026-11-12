@@ -20,14 +20,16 @@ pytestmark = pytest.mark.django_db
 
 def test_static_remarks_survive_offer_order_preflight_and_booking(admin_client, tenant, hb_supplier, gateway):
     selected = [{"remarkId": 7, "data": None}, {"remarkId": 10, "data": "PRIVATE-REMARK-123"}]
-    workflow, service = ready_booking(admin_client, tenant, hb_supplier, booking_options={"hotel_remarks": selected})
+    workflow, service = ready_booking(admin_client, tenant, hb_supplier, booking_options={"hotel_remarks": selected, "hotel_operator_request": "PRIVATE-OPERATOR-NOTE"})
     assert start(admin_client, workflow)["items"][0]["status"] == "booked"
     sent = next(row[3] for row in gateway.calls if row[1].endswith('/hotel/gateway/book'))
     assert sent["remarks"] == selected
     assert "freeRemark" not in sent
+    assert "PRIVATE-OPERATOR-NOTE" not in str(sent)
     assert "PRIVATE-REMARK-123" not in str(list(IntegrationLog.objects.values()))
     service = OrderService.objects.get(pk=service["id"])
     assert service.provider_snapshot["hotel_remarks"] == selected
+    assert service.provider_snapshot["hotel_operator_request"] == "PRIVATE-OPERATOR-NOTE"
     offer = ServiceOffer.objects.latest('created_at')
     rows = admin_client.get(f'/api/v1/service-offers/{offer.pk}/hotel-remarks/').json()['results']
     assert {row['id'] for row in rows} == {1, 7, 10}
@@ -83,3 +85,23 @@ def test_quote_expiry_and_remark_data_redaction():
     with pytest.raises(AdapterError):
         check_quote(quote, quote)
     assert sanitize({'remarks': [{'remarkId': 10, 'data': 'PRIVATE'}]}) == {'remarks': [{'remarkId': 10, 'data': '[REDACTED]'}]}
+
+
+@pytest.mark.parametrize("value", [None, 123, {}, "x" * 2001])
+def test_invalid_operator_request_rejected_before_supplier_mutation(admin_client, tenant, hb_supplier, gateway, value):
+    from common.errors import ApiError
+    from services.views import _provider_booking_options
+
+    _, data = ready_booking(admin_client, tenant, hb_supplier)
+    service = OrderService.objects.get(pk=data["id"])
+    with pytest.raises(ApiError):
+        _provider_booking_options(service, {"hotel_operator_request": value})
+    assert not any(row[0] == "POST" and row[1].endswith("/orders") for row in gateway.calls)
+
+
+def test_local_operator_note_is_private_and_redacted():
+    from common.client_hotel import client_hotel_content
+
+    note = {"hotel_operator_request": "PRIVATE"}
+    assert client_hotel_content(note) == {}
+    assert sanitize(note) == {"hotel_operator_request": "[REDACTED]"}

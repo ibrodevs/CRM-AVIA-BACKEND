@@ -219,6 +219,10 @@ def booking_summary(service):
         "room_count": len(rooms),
         "guest_count": len(guests),
         "rooms": rooms,
+        "hotel_operator_request": (
+            snapshot.get("hotel_operator_request", snapshot.get("special_requests", ""))
+            if snapshot.get("provider_adapter") == "hotelbook" else ""
+        ),
         "unassigned_guests": [g for g in guests if not any(g in r["guests"] for r in rooms)],
         "financial": financial_data(service),
         "cancellation_policy": deepcopy(policy),

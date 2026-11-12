@@ -649,7 +649,7 @@ def _provider_booking_options(service, data):
     adapter = get_adapter(snapshot.get("provider_adapter") or "mock")
     if not adapter.requires_revalidation_before_booking or service.kind != "hotel":
         return
-    if snapshot.get(adapter.key + "_booking") and any(k in data for k in ("participants", "room_assignments", "special_requests", "hotel_remarks", "main_guest")):
+    if snapshot.get(adapter.key + "_booking") and any(k in data for k in ("participants", "room_assignments", "special_requests", "hotel_remarks", "hotel_operator_request", "main_guest")):
         raise ApiError(code="BOOKING_LOCKED", message="Состав отправленной брони нельзя менять", status_code=409)
     options = adapter.hotel_booking_options(snapshot)
     rooms = options["rooms"]
@@ -675,6 +675,11 @@ def _provider_booking_options(service, data):
         if not isinstance(remark, str) or len(remark) > 2000 or (remark and not options["allows_special_requests"]):
             raise ApiError(code="INVALID_REQUEST", message="Пожелания не поддерживаются тарифом или превышают 2000 символов", status_code=400)
         snapshot["special_requests"] = remark
+    if "hotel_operator_request" in data:
+        note = data["hotel_operator_request"]
+        if adapter.key != "hotelbook" or not isinstance(note, str) or len(note) > 2000:
+            raise ApiError(code="INVALID_REQUEST", message="Запрос оператору HBPRO должен быть текстом до 2000 символов", status_code=400)
+        snapshot["hotel_operator_request"] = note.strip()
     if "hotel_remarks" in data:
         if adapter.key != "hotelbook":
             raise ApiError(code="INVALID_REMARK", message="Статичные пожелания доступны только для HBPRO", status_code=400)

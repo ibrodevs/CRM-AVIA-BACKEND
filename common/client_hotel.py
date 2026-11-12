@@ -47,6 +47,7 @@ _PRIVATE_KEYS = {
     "token",
     "password",
     "credentials",
+    "hoteloperatorrequest",
 }
 _PRIVATE_LABEL = re.compile(
     r"^(?:заказ|поставщик|название поставщика)$|(?:стоимость|цена|заказ|бронь|номер).*поставщик|закупоч|себестоимост|маржа|комисси|заказ.*(?:crm|срм|внутрен|api)|"

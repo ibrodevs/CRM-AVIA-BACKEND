@@ -1263,23 +1263,28 @@ def test_invalid_stay_time_is_rejected_before_supplier_search(tenant, hb_supplie
     assert not any(c[1].endswith("/hotel/gateway/search") for c in gateway.calls)
 
 
-def test_attached_free_remark_survives_preflight_and_reaches_hotelbook_book(
+def test_operator_request_survives_preflight_without_reaching_hotelbook_book(
     admin_client, tenant, hb_supplier, gateway
 ):
     remark = "Тихий номер на высоком этаже"
     gateway.current["isRemarkFreeFormAllowed"] = True
     workflow, service_data = ready_booking(
-        admin_client, tenant, hb_supplier, booking_options={"special_requests": remark}
+        admin_client, tenant, hb_supplier, booking_options={"hotel_operator_request": remark}
     )
     service = OrderService.objects.get(pk=service_data["id"])
-    assert service.provider_snapshot["special_requests"] == remark
+    assert service.provider_snapshot["hotel_operator_request"] == remark
     assert start(admin_client, workflow)["items"][0]["status"] == "booked"
     payload = next(call[3] for call in gateway.calls if call[1].endswith("/hotel/gateway/book"))
-    assert payload["freeRemark"] == remark
+    assert "freeRemark" not in payload
+    assert "hotel_operator_request" not in payload
+    assert remark not in str(payload)
     service.refresh_from_db()
-    assert service.provider_snapshot["special_requests"] == remark
+    assert service.provider_snapshot["hotel_operator_request"] == remark
     log = IntegrationLog.objects.get(operation="book")
-    assert log.request_sanitized["freeRemark"] == "[REDACTED]"
+    assert remark not in str(log.request_sanitized)
+    from services.hotel_actions.presentation import booking_summary
+
+    assert booking_summary(service)["hotel_operator_request"] == remark
 
 
 def test_missing_search_penalties_are_loaded_from_details_before_booking(tenant, hb_supplier, gateway):

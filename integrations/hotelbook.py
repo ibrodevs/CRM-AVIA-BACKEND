@@ -63,7 +63,7 @@ class HotelbookAdapter(ProviderAdapter):
         offer = snapshot.get("hotelbook", {}).get("offer", {})
         return {
             "rooms": offer.get("rooms", []),
-            "allows_special_requests": bool(offer.get("isRemarkFreeFormAllowed")),
+            "allows_special_requests": False,
         }
 
     def booking_needs_sync(self, booking):
@@ -1065,7 +1065,7 @@ class HotelbookAdapter(ProviderAdapter):
                 "Hotelbook: изменились номера или режим подтверждения",
                 category="availability",
             )
-        for key in ("special_requests", "hotel_remarks", "main_guest", "hotelbook_pending_confirmation"):
+        for key in ("special_requests", "hotel_remarks", "hotel_operator_request", "main_guest", "hotelbook_pending_confirmation"):
             if key in offer_snapshot:
                 normalized[key] = offer_snapshot[key]
         if ctx.certification_run_id:
@@ -1278,15 +1278,8 @@ class HotelbookAdapter(ProviderAdapter):
             raise AdapterError(
                 "CONTACT_REQUIRED", "У контактного лица не заполнено имя.", category="validation"
             )
-        remark = booking_request.get("special_requests") or snapshot.get("special_requests") or ""
-        if remark and (
-            not new_offer.get("isRemarkFreeFormAllowed") or not isinstance(remark, str) or len(remark) > 2000
-        ):
-            raise AdapterError(
-                "INVALID_REQUEST",
-                "Пожелания недоступны для тарифа или превышают 2000 символов",
-                category="validation",
-            )
+        # Free-form remarks are retired by HBPRO. Operator requests remain in
+        # the CRM snapshot and must never become a supplier booking parameter.
         from integrations.hotelbook_options import validated_remarks
 
         static_remarks = validated_remarks(self, ctx, updated.get("hotel_remarks", []))
@@ -1366,8 +1359,6 @@ class HotelbookAdapter(ProviderAdapter):
             }
             if updated.get("hotel_remarks"):
                 payload["remarks"] = static_remarks
-            if remark:
-                payload["freeRemark"] = remark
             booking["room_requests"] = [
                 {"room_index": index, "hash": r["hash"]} for index, r in enumerate(rooms)
             ]
