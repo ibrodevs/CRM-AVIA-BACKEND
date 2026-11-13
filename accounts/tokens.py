@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 
 from django.utils import timezone
@@ -31,14 +32,27 @@ def rotate_session_tokens(user: User, session: UserSession, old_refresh: Refresh
     """Ротация refresh: старый в blacklist, sid сохраняется."""
     old_refresh.blacklist()
     new_refresh = RefreshToken.for_user(user)
+    session.previous_refresh_jti = old_refresh["jti"]
     session.refresh_jti = new_refresh["jti"]
     session.last_seen_at = timezone.now()
     session.expires_at = timezone.now() + new_refresh.lifetime
-    session.save(update_fields=["refresh_jti", "last_seen_at", "expires_at"])
     _stamp(new_refresh, user, session)
     access = new_refresh.access_token
     _stamp(access, user, session)
-    return {"access": str(access), "refresh": str(new_refresh)}
+    tokens = {"access": str(access), "refresh": str(new_refresh)}
+    session.refresh_retry_until = timezone.now() + timedelta(seconds=30)
+    session.refresh_retry_tokens = json.dumps(tokens)
+    session.save(
+        update_fields=[
+            "previous_refresh_jti",
+            "refresh_jti",
+            "last_seen_at",
+            "expires_at",
+            "refresh_retry_until",
+            "refresh_retry_tokens",
+        ]
+    )
+    return tokens
 
 
 def issue_2fa_challenge(user: User) -> str:

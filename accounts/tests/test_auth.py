@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+
 import pyotp
 import pytest
 from django.utils import timezone
@@ -127,10 +130,48 @@ class TestSessions:
         new_tokens = response.json()
 
         response = client.post("/api/v1/auth/token/refresh/", {"refresh": tokens["refresh"]})
+        assert response.status_code == 200
+        assert response.json() == new_tokens
+
+        UserSession.objects.update(refresh_retry_until=timezone.now() - timedelta(seconds=1))
+        response = client.post("/api/v1/auth/token/refresh/", {"refresh": tokens["refresh"]})
         assert response.status_code == 401
 
         response = client.post("/api/v1/auth/token/refresh/", {"refresh": new_tokens["refresh"]})
         assert response.status_code == 200
+
+    def test_refresh_retry_rejects_revoked_session_and_access_tokens(self, admin_user):
+        client = APIClient()
+        tokens = login(client, admin_user.email)
+        assert client.post("/api/v1/auth/token/refresh/", {"refresh": tokens["access"]}).status_code == 401
+        assert client.post("/api/v1/auth/token/refresh/", {"refresh": tokens["refresh"]}).status_code == 200
+        UserSession.objects.update(revoked_at=timezone.now())
+        assert client.post("/api/v1/auth/token/refresh/", {"refresh": tokens["refresh"]}).status_code == 401
+
+    @pytest.mark.django_db(transaction=True)
+    def test_parallel_refresh_returns_identical_tokens(self, admin_user):
+        from django.db import close_old_connections
+
+        tokens = login(APIClient(), admin_user.email)
+
+        def refresh_once(_):
+            close_old_connections()
+            try:
+                response = APIClient().post("/api/v1/auth/token/refresh/", {"refresh": tokens["refresh"]})
+                return response.status_code, response.json()
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            responses = list(pool.map(refresh_once, range(4)))
+        assert all(code == 200 for code, _ in responses)
+        assert all(body == responses[0][1] for _, body in responses)
+        assert (
+            APIClient()
+            .post("/api/v1/auth/token/refresh/", {"refresh": responses[0][1]["refresh"]})
+            .status_code
+            == 200
+        )
 
     def test_logout_revokes_access(self, admin_user):
         client = auth_client(admin_user)

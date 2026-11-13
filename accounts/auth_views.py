@@ -1,4 +1,5 @@
 import hashlib
+import json
 import secrets
 from datetime import timedelta
 
@@ -6,6 +7,7 @@ import pyotp
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers, status
@@ -15,7 +17,7 @@ from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 
 from accounts.models import FailedLoginAttempt, PasswordResetToken, TwoFactorConfig, User, UserSession
 from accounts.serializers import MeSerializer
@@ -249,21 +251,53 @@ class TokenRefreshView(APIView):
     def post(self, request):
         serializer = RefreshSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        raw = serializer.validated_data["refresh"]
         try:
-            refresh = RefreshToken(serializer.validated_data["refresh"])
+            # Verify signature and expiry first. A just-rotated token is allowed
+            # only below, for the same active session and a bounded retry window.
+            verified = UntypedToken(raw)
+            if verified.get("token_type") != "refresh":
+                raise TokenError("Expected refresh token")
+            refresh = RefreshToken(raw, verify=False)
         except TokenError:
             raise ApiError(
                 code="INVALID_REFRESH_TOKEN", message="Недействительный refresh token", status_code=401
             ) from None
 
-        session = UserSession.objects.filter(refresh_jti=refresh["jti"]).select_related("user").first()
-        if session is None or not session.is_active:
-            raise ApiError(code="SESSION_REVOKED", message="Сессия завершена", status_code=401)
-        user = session.user
-        if user.status != User.Status.ACTIVE:
-            raise ApiError(code="USER_INACTIVE", message="Учётная запись неактивна", status_code=401)
-
-        tokens = rotate_session_tokens(user, session, refresh)
+        with transaction.atomic():
+            session = (
+                UserSession.objects.select_for_update()
+                .filter(pk=refresh.get("sid"))
+                .select_related("user")
+                .first()
+            )
+            if (
+                session is None
+                or not session.is_active
+                or str(session.user_id) != str(refresh.get("user_id"))
+            ):
+                raise ApiError(code="SESSION_REVOKED", message="Сессия завершена", status_code=401)
+            user = session.user
+            if user.status != User.Status.ACTIVE:
+                raise ApiError(code="USER_INACTIVE", message="Учётная запись неактивна", status_code=401)
+            if (
+                session.previous_refresh_jti == refresh["jti"]
+                and session.refresh_retry_until
+                and timezone.now() < session.refresh_retry_until
+                and session.refresh_retry_tokens
+            ):
+                return Response(json.loads(session.refresh_retry_tokens))
+            if session.refresh_jti != refresh["jti"]:
+                raise ApiError(
+                    code="INVALID_REFRESH_TOKEN", message="Недействительный refresh token", status_code=401
+                )
+            try:
+                refresh.check_blacklist()
+            except TokenError:
+                raise ApiError(
+                    code="INVALID_REFRESH_TOKEN", message="Недействительный refresh token", status_code=401
+                ) from None
+            tokens = rotate_session_tokens(user, session, refresh)
         return Response(tokens)
 
 
