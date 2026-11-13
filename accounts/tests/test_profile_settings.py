@@ -147,6 +147,9 @@ def test_profile_and_preferences_share_language(admin_client):
     assert admin_client.get('/api/v1/me/').json()['language'] == 'ky'
 
 
+# Closing a streaming response emits request_finished and closes DB connections.
+# Use a real transaction boundary so subsequent client requests can reconnect.
+@pytest.mark.django_db(transaction=True)
 def test_avatar_validates_bytes_and_is_private(admin_client, settings, tmp_path):
     from io import BytesIO
 

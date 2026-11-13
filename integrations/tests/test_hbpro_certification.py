@@ -496,7 +496,7 @@ def test_sync_exhaustion_creates_incident_and_stops(admin_client, tenant, hb_sup
     assert queue_hotelbook_status_sync() == "queued 0"
 
 
-def test_special_requests_are_supported_only_when_returned_by_hbpro(
+def test_legacy_free_remark_flags_do_not_reenable_retired_requests(
     admin_client, tenant, hb_supplier, gateway
 ):
     workflow, service_data = ready_booking(admin_client, tenant, hb_supplier)
@@ -514,15 +514,24 @@ def test_special_requests_are_supported_only_when_returned_by_hbpro(
     service.provider_snapshot = snapshot
     service.save()
     gateway.current["isRemarkFreeFormAllowed"] = True
-    assert (
-        admin_client.put(f"/api/v1/services/{service.id}/passengers/", body, format="json").status_code == 200
-    )
+    response = admin_client.put(f"/api/v1/services/{service.id}/passengers/", body, format="json")
+    assert response.status_code == 400
+    # Free text belongs to the operator's CRM draft even if an older offer
+    # still advertises the retired freeRemark capability.
+    body.pop("special_requests")
+    body["hotel_operator_request"] = "Quiet room"
+    response = admin_client.put(f"/api/v1/services/{service.id}/passengers/", body, format="json")
+    assert response.status_code == 200
+    service.refresh_from_db()
+    assert service.provider_snapshot["hotel_operator_request"] == "Quiet room"
     assert post(admin_client, f"booking-workflows/{workflow['id']}/preflight/")["ok"]
     assert start(admin_client, workflow)["items"][0]["status"] == "booked"
     request = next(c[3] for c in gateway.calls if c[1].endswith("/hotel/gateway/book"))
-    assert request["freeRemark"] == "Quiet room"
+    assert "freeRemark" not in request
+    assert "hotel_operator_request" not in request
+    assert "Quiet room" not in str(request)
     log = IntegrationLog.objects.get(operation="book")
-    assert log.request_sanitized["freeRemark"] == "[REDACTED]"
+    assert "Quiet room" not in str(log.request_sanitized)
 
 
 @pytest.mark.parametrize("hotel_id", [0, -131687])
