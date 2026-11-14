@@ -60,6 +60,24 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "email", "status", "last_login", "created_at"]
 
+    def to_representation(self, instance):
+        from accounts.absence import effective_absence
+        data = super().to_representation(instance)
+        row, active, has_periods = effective_absence(instance)
+        if row:
+            data['absence_period'] = {'id': row.pk, 'kind': row.kind, 'starts_on': str(row.starts_on), 'ends_on': str(row.ends_on), 'active': active}
+        else:
+            data['absence_period'] = None
+        # Approved periods are effective only on their own dates, without a cron job.
+        if has_periods:
+            data['work_status'] = row.kind if active else 'working'
+        return data
+
+    def validate_work_status(self, value):
+        if self.instance and value != self.instance.work_status:
+            raise serializers.ValidationError('Измените статус через заявку на отсутствие с датами и согласованием')
+        return value
+
     def validate_timezone(self, value):
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 

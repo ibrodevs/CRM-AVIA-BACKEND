@@ -1,9 +1,12 @@
 from django.urls import path
 
 from accounts import views as v
+from accounts.absence import AbsenceListView, AbsenceDecisionView
 from accounts.profile_views import MyStatisticsView
 
 urlpatterns = [
+    path("absences/", AbsenceListView.as_view()),
+    path("absences/<int:absence_id>/decision/", AbsenceDecisionView.as_view()),
     path("public/demo-access/", v.DemoAccessRequestView.as_view(), name="demo-access"),
     path("me/statistics/", MyStatisticsView.as_view(), name="me-statistics"),
     path("me/", v.MeView.as_view(), name="me"),

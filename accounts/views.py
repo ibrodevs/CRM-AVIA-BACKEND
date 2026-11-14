@@ -175,7 +175,7 @@ class UserListCreateView(GenericAPIView):
         qs = (
             User.objects.filter(tenant_id=request.user.tenant_id)
             .exclude(status=User.Status.ARCHIVED)
-            .prefetch_related("user_roles__role")
+            .prefetch_related("user_roles__role", "absence_requests")
             .order_by("last_name", "first_name")
         )
         q = request.query_params.get("q", "").strip()

@@ -279,3 +279,22 @@ class DemoAccessRequest(models.Model):
     class Meta:
         db_table = "accounts_demo_access_request"
         indexes = [models.Index(fields=["status", "-created_at"]), models.Index(fields=["email"])]
+
+
+class AbsenceRequest(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='absence_requests')
+    kind = models.CharField(max_length=12, choices=[('vacation', 'Отпуск'), ('sick_leave', 'Больничный'), ('day_off', 'Выходной')])
+    starts_on = models.DateField()
+    ends_on = models.DateField()
+    comment = models.CharField(max_length=2000, blank=True)
+    status = models.CharField(max_length=12, default='pending', choices=[('pending', 'На согласовании'), ('approved', 'Согласовано'), ('rejected', 'Отклонено'), ('cancelled', 'Отменено')])
+    reviewer = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name='+')
+    created_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name='+')
+    decided_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name='+')
+    decided_at = models.DateTimeField(null=True)
+    decision_comment = models.CharField(max_length=2000, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(ends_on__gte=models.F('starts_on')), name='absence_valid_period')]
+        indexes = [models.Index(fields=['user', 'status', 'starts_on'])]
