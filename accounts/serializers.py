@@ -42,6 +42,8 @@ class UserSerializer(serializers.ModelSerializer):
             "avatar",
             "position",
             "department",
+            "org_unit",
+            "job_position",
             "manager",
             "work_phone",
             "internal_phone",
@@ -58,7 +60,7 @@ class UserSerializer(serializers.ModelSerializer):
             "created_at",
             "roles",
         ]
-        read_only_fields = ["id", "email", "status", "last_login", "created_at"]
+        read_only_fields = ["org_unit", "job_position", "id", "email", "status", "last_login", "created_at"]
 
     def to_representation(self, instance):
         from accounts.absence import effective_absence

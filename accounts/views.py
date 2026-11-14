@@ -96,7 +96,10 @@ class MeView(APIView):
             "presence",
             "work_status",
         }
-        data = {k: v for k, v in request.data.items() if k in allowed}
+        protected = ['position', 'department', 'telegram', 'max', 'whatsapp']
+        if any(key in request.data and str(request.data[key] or '') != str(getattr(request.user, key) or '') for key in protected):
+            raise ApiError(code="PROFILE_APPROVAL_REQUIRED", message="Должность и подразделение меняются через согласование оргструктуры, мессенджеры — через подтверждение аккаунта", status_code=400)
+        data = {k: v for k, v in request.data.items() if k in allowed and k not in protected}
         serializer = MeSerializer(request.user, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -276,6 +279,8 @@ class UserDetailView(APIView):
             "sla_response_minutes",
         }
         data = {k: v for k, v in request.data.items() if k in allowed}
+        if any(key in data and str(data[key] or '') != str((getattr(user, 'manager_id') if key == 'manager' else getattr(user, key)) or '') for key in ['position', 'department', 'manager', 'telegram', 'max', 'whatsapp']):
+            raise ApiError(code="ORG_ASSIGNMENT_REQUIRED", message="Измените подразделение, должность и руководителя через схему оргструктуры", status_code=400)
         serializer = UserSerializer(user, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         before = {k: str(getattr(user, k)) for k in data}

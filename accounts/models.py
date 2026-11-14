@@ -68,6 +68,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     manager = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="subordinates"
     )
+    org_unit = models.ForeignKey('OrgUnit', null=True, blank=True, on_delete=models.PROTECT, related_name='members')
+    job_position = models.ForeignKey('JobPosition', null=True, blank=True, on_delete=models.PROTECT, related_name='members')
     work_phone = models.CharField(max_length=32, blank=True)
     internal_phone = models.CharField(max_length=16, blank=True)
     telegram = models.CharField(max_length=64, blank=True)
@@ -298,3 +300,60 @@ class AbsenceRequest(models.Model):
     class Meta:
         constraints = [models.CheckConstraint(condition=models.Q(ends_on__gte=models.F('starts_on')), name='absence_valid_period')]
         indexes = [models.Index(fields=['user', 'status', 'starts_on'])]
+
+
+class OrgUnit(models.Model):
+    tenant = models.ForeignKey('tenancy.Organization', on_delete=models.CASCADE)
+    name = models.CharField(max_length=150)
+    name_key = models.CharField(max_length=150)
+    parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.PROTECT)
+    manager = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    default_role = models.ForeignKey(Role, null=True, blank=True, on_delete=models.SET_NULL)
+    status = models.CharField(max_length=12, default='pending')
+    decision_comment = models.CharField(max_length=2000, blank=True)
+    created_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name='+')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['tenant', 'name_key'], name='org_unit_unique_name')]
+
+
+class JobPosition(models.Model):
+    tenant = models.ForeignKey('tenancy.Organization', on_delete=models.CASCADE)
+    unit = models.ForeignKey(OrgUnit, null=True, on_delete=models.PROTECT)
+    name = models.CharField(max_length=150)
+    name_key = models.CharField(max_length=150)
+    role = models.ForeignKey(Role, null=True, blank=True, on_delete=models.SET_NULL)
+    status = models.CharField(max_length=12, default='pending')
+    decision_comment = models.CharField(max_length=2000, blank=True)
+    created_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name='+')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['tenant', 'unit', 'name_key'], name='org_position_unique_name', nulls_distinct=False)]
+
+
+class OrgChangeRequest(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='org_requests')
+    unit = models.ForeignKey(OrgUnit, on_delete=models.PROTECT)
+    position = models.ForeignKey(JobPosition, on_delete=models.PROTECT)
+    status = models.CharField(max_length=12, default='pending')
+    comment = models.CharField(max_length=2000, blank=True)
+    decision_comment = models.CharField(max_length=2000, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name='+')
+    decided_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True)
+
+
+class MessengerBinding(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='messenger_bindings')
+    channel = models.CharField(max_length=12)
+    address = models.CharField(max_length=150)
+    pending_address = models.CharField(max_length=150, blank=True)
+    code_hash = models.CharField(max_length=64, blank=True)
+    expires_at = models.DateTimeField(null=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    verified_at = models.DateTimeField(null=True)
+    sent_at = models.DateTimeField(null=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user', 'channel'], name='messenger_user_channel')]

@@ -449,15 +449,22 @@ class IncomingWebhookView(APIView):
         external_event_id = str(request.data.get("event_id", ""))
         if not external_event_id:
             raise ApiError(code="VALIDATION_ERROR", message="event_id обязателен", status_code=400)
+        stored_payload = request.data
+        if provider == 'telegram' and str((request.data.get('message') or {}).get('text', '')).startswith('/start') and 'psc_' in str((request.data.get('message') or {}).get('text', '')):
+            stored_payload = {**request.data, 'message': {**(request.data.get('message') or {}), 'text': '[account binding]'}}
         event, created = WebhookEvent.objects.get_or_create(
             provider=provider,
             external_event_id=external_event_id,
-            defaults={"payload": request.data, "signature_valid": signature_valid},
+            defaults={"payload": stored_payload, "signature_valid": signature_valid},
         )
         if not created:
             return Response({"status": "duplicate"})
 
         message_data = request.data.get("message") or {}
+        if provider == 'telegram' and signature_valid:
+            from accounts.messenger_bindings import complete_telegram_binding
+            if complete_telegram_binding(message_data.get('text', ''), request.data.get('sender', '')):
+                return Response({'status': 'binding_confirmed'})
         thread = ChatThread.objects.filter(
             external_channel=provider,
             external_account=str(request.data.get("account", "")),

@@ -1,10 +1,25 @@
 from django.urls import path
 
 from accounts import views as v
-from accounts.absence import AbsenceListView, AbsenceDecisionView
+from accounts.absence import AbsenceDecisionView, AbsenceListView
+from accounts.messenger_bindings import MessengerBindingsView, MessengerBindingView
+from accounts.org_structure import (
+    OrgCatalogDecisionView,
+    OrgCatalogView,
+    OrgDecisionView,
+    OrgRequestView,
+    OrgStructureView,
+)
 from accounts.profile_views import MyStatisticsView
 
 urlpatterns = [
+    path("org-structure/catalog/<str:kind>/<int:entry_id>/reject/", OrgCatalogDecisionView.as_view()),
+    path("org-structure/", OrgStructureView.as_view()),
+    path("org-structure/catalog/<str:kind>/", OrgCatalogView.as_view()),
+    path("org-structure/requests/", OrgRequestView.as_view()),
+    path("org-structure/requests/<int:request_id>/decision/", OrgDecisionView.as_view()),
+    path("me/messenger-bindings/", MessengerBindingsView.as_view()),
+    path("me/messenger-bindings/<str:channel>/<str:action>/", MessengerBindingView.as_view()),
     path("absences/", AbsenceListView.as_view()),
     path("absences/<int:absence_id>/decision/", AbsenceDecisionView.as_view()),
     path("public/demo-access/", v.DemoAccessRequestView.as_view(), name="demo-access"),

@@ -11,11 +11,12 @@ pytestmark = pytest.mark.django_db
 
 
 def test_profile_contacts_and_preferences_round_trip(admin_client):
-    result = admin_client.patch('/api/v1/me/', {'max': 'max-user', 'whatsapp': '+996555123456', 'telegram': '@tester', 'work_phone': '+996555111222'}, format='json')
+    result = admin_client.patch('/api/v1/me/', {'work_phone': '+996555123456', 'internal_phone': '123'}, format='json')
     assert result.status_code == 200
     saved = admin_client.get('/api/v1/me/').json()
-    assert saved['max'] == 'max-user'
-    assert saved['whatsapp'] == '+996555123456'
+    assert saved['work_phone'] == '+996555123456'
+    assert saved['internal_phone'] == '123'
+    assert admin_client.patch('/api/v1/me/', {'telegram': '@unverified'}, format='json').status_code == 400
     assert 'preferences' in saved and 'service_access' in saved
     response = admin_client.patch('/api/v1/me/preferences/', {'time_format': '12 часов (AM/PM)', 'date_format': 'ГГГГ-ММ-ДД', 'start_page': 'Заказы', 'theme': 'dark', 'page_size': 50}, format='json')
     assert response.status_code == 200, response.content
