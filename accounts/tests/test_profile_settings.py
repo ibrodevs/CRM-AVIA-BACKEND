@@ -211,3 +211,25 @@ def test_motivation_history_retains_replaced_rules(admin_client, operator_user):
     history = admin_client.get(f'{path}?user={operator_user.pk}&history=1').json()
     assert len(history) == 2
     assert sum(bool(row['archived_at']) for row in history) == 1
+
+
+def test_integrations_only_role_can_manage_keys_without_order_access(tenant):
+    from accounts.models import RolePermission
+    from conftest import auth_client
+
+    user = make_user(tenant, 'integrations-only@example.test', 'operator')
+    role = user.user_roles.get().role
+    RolePermission.objects.filter(role=role).delete()
+    RolePermission.objects.create(role=role, permission_code='integrations.manage')
+    client = auth_client(user)
+    path = '/api/v1/workspace-actions/'
+    created = client.post(path, {'action': 'integration.api_key.generate', 'payload': {'organization': 'Partner', 'access': ['Доступ к данным']}}, format='json')
+    assert created.status_code == 201, created.content
+    rows = client.get(path + '?action=integration.api_key.generate')
+    assert rows.status_code == 200
+    assert len(rows.json()) == 1
+    assert client.get(path).status_code == 403
+    assert client.post(path, {'action': 'order.fake', 'payload': {}}, format='json').status_code == 403
+    response = client.post(path, {'action': 'settings.api_access.revoke', 'resource_id': created.json()['id']}, format='json')
+    assert response.status_code == 201, response.content
+    assert client.get(path + '?action=integration.api_key.generate').json() == []

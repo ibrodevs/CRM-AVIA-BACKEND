@@ -243,6 +243,13 @@ class WorkspaceSettingView(APIView):
 class WorkspaceActionListCreateView(APIView):
     permission_classes = [require("orders.view", "settings.manage")]
 
+    def get_permissions(self):
+        # Integration administrators may manage keys without unrelated order rights.
+        action = self.request.query_params.get("action") if self.request.method == "GET" else self.request.data.get("action")
+        if action in ("integration.api_key.generate", "settings.api_access.update", "settings.api_access.revoke"):
+            return [require("integrations.manage", "settings.manage")()]
+        return super().get_permissions()
+
     ALLOWED_PREFIXES = (
         "chat.", "client.", "company.", "document.", "finance.", "group.",
         "integration.", "order.", "profile.", "service.", "settings.", "supplier.", "travel.",
