@@ -85,8 +85,11 @@ def test_pending_values_are_private_and_used_schemes_cannot_silently_change(admi
     job = catalog(operator_client, 'positions', name='Job', unit=unit['id'])
     result = admin_client.post('/api/v1/org-structure/requests/', {'user': str(operator_user.pk), 'unit': unit['id'], 'position': job['id']})
     assert result.status_code == 201
-    assert admin_client.post('/api/v1/org-structure/catalog/units/', {'id': unit['id'], 'name': 'Changed'}).status_code == 409
-    assert OrgUnit.objects.get(pk=unit['id']).name == 'Private proposal'
+    assert admin_client.post('/api/v1/org-structure/catalog/units/', {'id': unit['id'], 'name': 'Changed'}).status_code == 201
+    assert OrgUnit.objects.get(pk=unit['id']).name == 'Changed'
+    operator_user.refresh_from_db()
+    assert operator_user.department == 'Private proposal'
+    assert operator_user.org_requests.filter(status='pending').exists()
     assert JobPosition.objects.get(pk=job['id']).status == 'approved'
 
 

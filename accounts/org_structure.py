@@ -127,6 +127,32 @@ class OrgStructureView(APIView):
         return Response({'units': [unit_data(u) for u in units.order_by('name')], 'positions': [position_data(p) for p in positions.order_by('name')], 'requests': [request_data(r, actor) for r in requests.order_by('-created_at')], 'roles': list(Role.objects.filter(tenant_id=actor.tenant_id).values('id', 'code', 'name'))})
 
 
+def queue_scheme_changes(entry, actor):
+    if isinstance(entry, OrgUnit):
+        ids = {entry.pk}
+        while True:
+            children = set(OrgUnit.objects.filter(tenant_id=actor.tenant_id, parent_id__in=ids).values_list('pk', flat=True))
+            if children <= ids:
+                break
+            ids |= children
+        affected = User.objects.filter(tenant_id=actor.tenant_id, org_unit_id__in=ids)
+    else:
+        affected = User.objects.filter(tenant_id=actor.tenant_id, job_position=entry)
+    count = 0
+    for user in affected.select_for_update(of=('self',)).select_related('job_position'):
+        if not user.org_unit_id or not user.job_position_id or user.org_requests.filter(status='pending').exists():
+            continue
+        unit_id = user.org_unit_id
+        if isinstance(entry, JobPosition) and entry.unit_id:
+            unit_id = entry.unit_id
+        OrgChangeRequest.objects.create(user=user, unit_id=unit_id, position_id=user.job_position_id, created_by=actor, comment='Пересогласование после изменения схемы: ' + entry.name)
+        notify(actor, 'Изменена схема подразделения или должности', 'Назначение и права сохраняются до согласования новой схемы: ' + entry.name, user)
+        count += 1
+    if count:
+        notify(actor, 'Сотрудники ожидают пересогласования схемы', f'{entry.name}. Заявок создано: {count}', actor)
+    return count
+
+
 class OrgCatalogView(APIView):
     @transaction.atomic
     def post(self, request, kind):
@@ -174,9 +200,6 @@ class OrgCatalogView(APIView):
             fail('Такое значение уже есть в справочнике', 409)
         was_pending = bool(existing and existing.status == 'pending')
         if existing:
-            assigned = existing.members.exists()
-            if assigned:
-                fail('Используемую схему нельзя менять без пересогласования сотрудников. Создайте новую схему.', 409)
             for key, value in fields.items():
                 setattr(existing, key, value)
             existing.status = 'approved'
@@ -185,6 +208,8 @@ class OrgCatalogView(APIView):
         else:
             row = model.objects.create(tenant_id=actor.tenant_id, created_by=actor, status='approved' if admin(actor) else 'pending', **fields)
         audit('accounts.org_catalog', request=request, resource=row, after={'name': row.name, 'status': row.status, 'decision_comment': row.decision_comment})
+        if existing:
+            queue_scheme_changes(row, actor)
         if was_pending and row.created_by_id and row.created_by_id != actor.pk:
             notify(actor, 'Предложение для справочника согласовано', row.name, row.created_by)
         if not admin(actor):
