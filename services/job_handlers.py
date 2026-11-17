@@ -93,6 +93,7 @@ def run_search(job: BackgroundJob) -> dict:
     suppliers = _suppliers_for_search(session)
     succeeded = failed = total_offers = 0
     seen_hashes: set[str] = set()
+    markup_cache = {}
 
     routes = []
     for supplier in suppliers:
@@ -150,7 +151,7 @@ def run_search(job: BackgroundJob) -> dict:
             for raw in adapter.iter_search(ctx, session.kind, session.criteria):
                 if SearchSession.objects.filter(pk=session.pk, status="cancelled").exists():
                     return {"status": "cancelled"}
-                if _persist_offer(session, supplier, adapter_key, raw, seen_hashes):
+                if _persist_offer(session, supplier, adapter_key, raw, seen_hashes, markup_cache):
                     created += 1
                     emit_event(
                         "search.progress",
@@ -226,7 +227,7 @@ def _criteria_route(criteria: dict) -> str:
     return f"{origin}-{destination}" if origin and destination else ""
 
 
-def _persist_offer(session, supplier, adapter_key, raw, seen_hashes):
+def _persist_offer(session, supplier, adapter_key, raw, seen_hashes, markup_cache=None):
     raw = {**raw, "provider_adapter": adapter_key}
     price = raw.get("price", {})
     base = Decimal(str(price.get("amount", "0")))
@@ -250,14 +251,15 @@ def _persist_offer(session, supplier, adapter_key, raw, seen_hashes):
     geography = raw.get("geography", "")
     if countries and all(countries):
         geography = "domestic" if all(country == "RU" for country in countries) else "intl"
-    markup_rules = resolve_markup_rules(
-        supplier,
-        kind=session.kind,
-        route=_criteria_route(session.criteria),
-        cabin=str(session.criteria.get("cabin", "")),
-        airline=str(first_segment.get("airline") or raw.get("airline") or ""),
-        geography=geography,
-    )
+    cache = markup_cache if markup_cache is not None else {}
+    markup_key = (str(supplier.id) if supplier else None, session.kind, _criteria_route(session.criteria),
+                  str(session.criteria.get("cabin", "")), str(first_segment.get("airline") or raw.get("airline") or ""), geography)
+    if markup_key not in cache:
+        cache[markup_key] = resolve_markup_rules(
+            supplier, kind=session.kind, route=markup_key[2], cabin=markup_key[3],
+            airline=markup_key[4], geography=geography,
+        )
+    markup_rules = cache[markup_key]
     offer = ServiceOffer.objects.create(
         tenant_id=session.tenant_id,
         session=session,

@@ -98,10 +98,14 @@ class HotelLocationSuggestionsView(APIView):
 
 class SearchSessionSerializer(serializers.ModelSerializer):
     provider_runs = serializers.SerializerMethodField()
+    offers_count = serializers.SerializerMethodField()
 
     class Meta:
         model = SearchSession
-        fields = ["id", "kind", "criteria", "status", "order", "expires_at", "created_at", "provider_runs"]
+        fields = ["id", "kind", "criteria", "status", "order", "expires_at", "created_at", "provider_runs", "offers_count"]
+
+    def get_offers_count(self, obj):
+        return obj.offers.count()
 
     def get_provider_runs(self, obj):
         return [
@@ -345,17 +349,23 @@ class SearchCreateView(APIView):
         order = None
         if order_id := request.data.get("order"):
             order = get_order_or_404(request.user, order_id)
-        session = SearchSession.objects.create(
-            tenant_id=request.user.tenant_id,
-            user=request.user,
-            order=order,
-            kind=kind,
-            criteria=criteria,
-            created_by=request.user,
-        )
-        job = enqueue("services.search", {"session_id": str(session.id)}, request=request)
-        session.job = job
-        session.save(update_fields=["job"])
+        from services.search_reuse import flight_routing_stamp, reusable_flight_search
+
+        # Serialize only requests from the same operator to avoid double-click races.
+        with transaction.atomic():
+            type(request.user).objects.select_for_update().get(pk=request.user.pk)
+            stamp = flight_routing_stamp(request.user.tenant_id) if kind == "avia" else None
+            if kind == "avia" and not request.data.get("refresh"):
+                existing = reusable_flight_search(user=request.user, order=order, criteria=criteria, stamp=stamp)
+                if existing:
+                    return Response({"search_id": str(existing.id), "job_id": str(existing.job_id), "reused": True}, status=http.HTTP_202_ACCEPTED)
+            session = SearchSession.objects.create(
+                tenant_id=request.user.tenant_id, user=request.user, order=order, kind=kind,
+                criteria=criteria, created_by=request.user,
+            )
+            job = enqueue("services.search", {"session_id": str(session.id), **({"routing_stamp": stamp} if stamp else {})}, request=request)
+            session.job = job
+            session.save(update_fields=["job"])
         return Response({"search_id": str(session.id), "job_id": str(job.id)}, status=http.HTTP_202_ACCEPTED)
 
 
