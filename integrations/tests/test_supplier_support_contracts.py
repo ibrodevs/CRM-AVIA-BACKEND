@@ -702,3 +702,37 @@ def test_ticket_links_to_crm_passenger_and_void_updates_existing_ticket(supplier
     assert ticket.status == "void"
     row.refresh_from_db()
     assert row.status == "cancelled"
+
+
+@pytest.mark.parametrize("severity", ["MESSAGE", "ERROR"])
+def test_tt_t27_has_actionable_diagnostic_and_never_repeats_payment(supplier, transport, severity):
+    adapter, row, request, result = book_tt(supplier, transport)
+    refused = file_result("ERROR")
+    refused["respond"]["messages"] = {"message": [{
+        "type": severity,
+        "message": "ETS TCH: T27 ОПЕРАТОР НЕ ОПРЕДЕЛЕН private-passport-echo",
+    }]}
+    transport.responses = [file_result(), refused]
+    with pytest.raises(AdapterError) as error:
+        adapter.issue(context(supplier), {"locator": result["locator"]})
+    assert error.value.code == "TTBOOKING_OPERATOR_NOT_CONFIGURED"
+    assert error.value.category == "configuration"
+    assert error.value.retry_safe is False
+    assert "ETS ТКП" in str(error.value)
+    assert "private-passport-echo" not in str(error.value)
+    row.refresh_from_db()
+    assert row.provider_snapshot["ttbooking_booking"]["issue_sent"] is True
+    transport.responses = [file_result("ERROR")]
+    with pytest.raises(AdapterError):
+        adapter.issue(context(supplier), {"locator": result["locator"]})
+    assert commands(transport).count("PAYDEPOSIT") == 1
+    assert "CANCELBOOKING" not in commands(transport)
+
+
+def test_tt_t27_code_recognised_without_exposing_supplier_text():
+    with pytest.raises(AdapterError) as error:
+        TTBookingAdapter()._respond({"respond": {"messages": {"message": {
+            "type": "ERROR", "code": "T27", "message": "private contact echo",
+        }}}})
+    assert error.value.code == "TTBOOKING_OPERATOR_NOT_CONFIGURED"
+    assert "private contact" not in str(error.value)

@@ -7,6 +7,7 @@ HTTP 200 and an order token alone never imply ticket issuance.
 import hashlib
 import hmac
 import json
+import re
 from collections import Counter
 from copy import deepcopy
 from datetime import date
@@ -69,6 +70,27 @@ class TTBookingAsyncMixin:
         messages = (data.get("messages") or {}).get("message") or []
         if isinstance(messages, dict):
             messages = [messages]
+        # Only recognise the known provider diagnostic; never expose arbitrary
+        # supplier messages, which can echo passports, contacts or credentials.
+        operator_missing = any(
+            isinstance(message, dict)
+            and (
+                str(message.get("code", "")).strip().upper() == "T27"
+                or (
+                    re.search(r"\bT27\b", str(message.get("message", "")), re.IGNORECASE)
+                    and "ОПЕРАТОР НЕ ОПРЕДЕЛЕН" in str(message.get("message", "")).upper().replace("Ё", "Е")
+                )
+            )
+            for message in messages
+        )
+        if operator_missing:
+            raise AdapterError(
+                "TTBOOKING_OPERATOR_NOT_CONFIGURED",
+                "TTBooking / Сирена: T27 — оператор не определён. "
+                "Попросите поддержку проверить API-пользователя и настройку оператора ETS ТКП. "
+                "До сверки заказа и возможного списания не повторяйте оплату.",
+                category="configuration",
+            )
         has_error = any(
             isinstance(m, dict) and str(m.get("type", "")).upper() in ("ERROR", "FATAL") for m in messages
         )
