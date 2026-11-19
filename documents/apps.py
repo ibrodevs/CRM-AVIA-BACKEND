@@ -41,7 +41,6 @@ class DocumentsConfig(AppConfig):
         install_receipt_quality_guard()
         install_receipt_recognition_engine()
         install_receipt_recognition_performance_patch()
-        install_receipt_ocr_fallback()
         # Run the client-format hardening after all parser/OCR compatibility
         # wrappers so its complete segment and structured hotel data cannot be
         # collapsed again by an older fallback parser.
@@ -72,6 +71,8 @@ class DocumentsConfig(AppConfig):
         # the generic wrappers must not extract the same PDF again and turn a
         # valid upload into a gateway timeout on constrained production hosts.
         install_receipt_rzd_fastpath()
+        # Try all text-based supplier parsers before the expensive scan fallback.
+        install_receipt_ocr_fallback()
         # Ticket-level storage consumes the final parser result.
         install_receipt_ticket_level_patch()
         # Run after ticket-level storage so review status/progress is preserved
@@ -90,3 +91,8 @@ class DocumentsConfig(AppConfig):
         # so aggregate CRM totals and derived rail aliases can never block the
         # corrected supplier copy from being produced.
         install_receipt_supplier_pdf_group_fix()
+
+        # Last wrapper: reuse extraction work only during this import.
+        from documents.receipt_text_cache import install_receipt_text_cache
+
+        install_receipt_text_cache()

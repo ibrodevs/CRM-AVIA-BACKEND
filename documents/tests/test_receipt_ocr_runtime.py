@@ -46,3 +46,32 @@ def test_check_receipt_ocr_fails_deploy_when_runtime_is_missing(monkeypatch):
 
     with pytest.raises(CommandError, match="setup_pythonanywhere_ocr.py"):
         call_command("check_receipt_ocr", stdout=StringIO())
+
+
+def test_completed_text_parse_does_not_run_ocr(monkeypatch):
+    from documents import services
+
+    result = {'status': 'parsed', 'fields': {'total': '100'}}
+    monkeypatch.setattr(services, 'extract_receipt_fields', lambda *a, **kw: result)
+    monkeypatch.setattr(receipt_ocr_fallback, '_ocr_content', lambda *a, **kw: pytest.fail('Text PDF must not use OCR'))
+    receipt_ocr_fallback.install_receipt_ocr_fallback()
+    assert services.extract_receipt_fields(b'%PDF text', mime='application/pdf') is result
+
+
+def test_scan_still_uses_ocr_fallback(monkeypatch):
+    from documents import services
+
+    calls = []
+    initial = {'status': 'failed', 'fields': {}}
+    recognized = {'status': 'parsed', 'fields': {'total': '100'}}
+
+    def parser(content, **kwargs):
+        calls.append(kwargs['mime'])
+        return recognized if kwargs['mime'] == 'text/plain' else initial
+
+    monkeypatch.setattr(services, 'extract_receipt_fields', parser)
+    monkeypatch.setattr(receipt_ocr_fallback, '_ocr_content', lambda *a, **kw: ('Recognized scanned ticket content', {}))
+    monkeypatch.setattr(receipt_ocr_fallback, '_merge_ocr_result', lambda *a: recognized)
+    receipt_ocr_fallback.install_receipt_ocr_fallback()
+    assert services.extract_receipt_fields(b'%PDF scan', mime='application/pdf') is recognized
+    assert calls == ['application/pdf', 'text/plain']
