@@ -43,6 +43,7 @@ class ThreadParticipant(TenantModel):
     )
     last_read_at = models.DateTimeField(null=True, blank=True)
     is_pinned = models.BooleanField(default=False)
+    is_archived = models.BooleanField(default=False)
 
     class Meta:
         db_table = "communications_participant"

@@ -7,6 +7,7 @@ urlpatterns = [
     path("chat/threads/<uuid:thread_id>/messages/", v.ThreadMessagesView.as_view(), name="chat-messages"),
     path("chat/threads/<uuid:thread_id>/send/", v.ThreadSendView.as_view(), name="chat-send"),
     path("chat/threads/<uuid:thread_id>/read/", v.ThreadReadView.as_view(), name="chat-read"),
+    path("chat/threads/<uuid:thread_id>/archive/", v.ThreadArchiveView.as_view(), name="chat-archive"),
     path("chat/threads/<uuid:thread_id>/pin/", v.ThreadPinView.as_view(), name="chat-pin"),
     path("chat/threads/<uuid:thread_id>/history/", v.ThreadHistoryView.as_view(), name="chat-history"),
     path(

@@ -3,7 +3,7 @@ import hmac
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework import status as http
@@ -33,6 +33,7 @@ class ThreadSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     order_number = serializers.CharField(source="order.number", read_only=True, default="")
     pinned = serializers.SerializerMethodField()
+    is_archived = serializers.SerializerMethodField()
 
     class Meta:
         model = ChatThread
@@ -48,6 +49,7 @@ class ThreadSerializer(serializers.ModelSerializer):
             "unread_count",
             "last_message",
             "pinned",
+            "is_archived",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]
@@ -82,6 +84,10 @@ class ThreadSerializer(serializers.ModelSerializer):
         return obj.participants.filter(
             user=request.user, left_at__isnull=True, is_pinned=True
         ).exists()
+
+    def get_is_archived(self, obj) -> bool:
+        request = self.context.get("request")
+        return bool(request and obj.participants.filter(user=request.user, left_at__isnull=True, is_archived=True).exists())
 
 
 class MessageSerializer(serializers.ModelSerializer):
@@ -138,6 +144,10 @@ class ThreadListCreateView(GenericAPIView):
     def get(self, request):
         qs = _threads_qs(request)
         params = request.query_params
+        archived = params.get("archived", "all")
+        if archived in ("true", "false"):
+            membership = ThreadParticipant.objects.filter(thread_id=OuterRef("pk"), user=request.user, left_at__isnull=True, is_archived=True)
+            qs = qs.annotate(personally_archived=Exists(membership)).filter(personally_archived=archived == "true")
         if thread_type := params.get("type"):
             qs = qs.filter(type=thread_type)
         if order_id := params.get("order"):
@@ -307,6 +317,25 @@ class ThreadPinView(APIView):
             request=request,
         )
         return Response({"pinned": participant.is_pinned})
+
+
+class ThreadArchiveView(APIView):
+    permission_classes = [require("communications.view_internal", "communications.view_client")]
+
+    def post(self, request, thread_id):
+        thread = _get_thread(request, thread_id)
+        data = serializers.Serializer(data=request.data)
+        data.fields["archived"] = serializers.BooleanField()
+        data.is_valid(raise_exception=True)
+        participant, _ = ThreadParticipant.objects.get_or_create(
+            thread=thread, user=request.user, left_at__isnull=True,
+            defaults={"tenant_id": thread.tenant_id, "created_by": request.user},
+        )
+        participant.is_archived = data.validated_data["archived"]
+        participant.updated_by = request.user
+        participant.save(update_fields=["is_archived", "updated_by", "updated_at"])
+        audit("communications.thread_archived" if participant.is_archived else "communications.thread_unarchived", actor=request.user, resource=thread, request=request)
+        return Response({"is_archived": participant.is_archived})
 
 
 class ThreadHistoryView(APIView):
