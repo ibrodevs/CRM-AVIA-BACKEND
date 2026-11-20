@@ -566,6 +566,9 @@ class ReceiptImportCreateView(APIView):
             raise ApiError(code="VALIDATION_ERROR", message="Файл file обязателен", status_code=400)
         validate_upload(file)
         content = file.read()
+        if request.query_params.get('async') == '1':
+            from documents.receipt_async import create_receipt_import
+            return create_receipt_import(request, file, content)
         extraction = extract_receipt_fields(content, mime=file.content_type, name=file.name)
         fields = extraction["fields"]
         with transaction.atomic():
@@ -644,6 +647,11 @@ class ReceiptImportResultView(APIView):
         import_job = ReceiptImportJob.objects.filter(pk=import_id, tenant_id=request.user.tenant_id).first()
         if import_job is None:
             raise ApiError(code="NOT_FOUND", message="Импорт не найден", status_code=404)
+        if import_job.parser_status in {"queued", "processing"} and import_job.job_id:
+            if import_job.job.status in {"failed", "dead", "cancelled"}:
+                import_job.parser_status = "failed"
+                import_job.warnings = ["Фоновое распознавание остановлено. Оригинал сохранён, проверьте документ вручную."]
+                import_job.save(update_fields=["parser_status", "warnings"])
         draft = getattr(import_job, "draft", None)
         raw_extraction = import_job.raw_extraction or {}
         verified_source = {

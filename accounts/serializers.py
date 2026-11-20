@@ -103,10 +103,11 @@ class MeSerializer(UserSerializer):
     service_access = serializers.SerializerMethodField()
     manager_name = serializers.CharField(source="manager.get_full_name", read_only=True, default="")
     preferences = serializers.SerializerMethodField()
+    session_security = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
 
     class Meta(UserSerializer.Meta):
-        fields = UserSerializer.Meta.fields + ["permissions", "service_access", "manager_name", "preferences"]
+        fields = UserSerializer.Meta.fields + ["permissions", "service_access", "manager_name", "preferences", "session_security"]
 
     def get_permissions(self, obj) -> list[str]:
         return sorted(user_permission_codes(obj))
@@ -116,6 +117,15 @@ class MeSerializer(UserSerializer):
 
     def get_service_access(self, obj):
         return UserServiceAccessSerializer(obj.service_access.all(), many=True).data
+
+    def get_session_security(self, obj):
+        from accounts.models import UserSession
+        from accounts.session_security import security_payload
+        preference, _ = UserPreference.objects.get_or_create(user=obj)
+        request = self.context.get('request')
+        sid = request.auth.get('sid') if request and request.auth else None
+        session = UserSession.objects.filter(pk=sid, user=obj).first() if sid else None
+        return security_payload(preference, session)
 
     def get_preferences(self, obj):
         preference, _ = UserPreference.objects.get_or_create(user=obj)

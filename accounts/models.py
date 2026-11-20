@@ -176,6 +176,9 @@ class UserServiceAccess(models.Model):
 
 class UserPreference(models.Model):
     user = models.OneToOneField(User, primary_key=True, on_delete=models.CASCADE, related_name="preferences")
+    pin_hash = models.CharField(max_length=255, blank=True)
+    auto_lock_minutes = models.PositiveSmallIntegerField(default=0)
+    auto_logout_minutes = models.PositiveSmallIntegerField(default=0)
     theme = models.CharField(max_length=16, default="light")
     date_format = models.CharField(max_length=16, default="DD.MM.YYYY")
     time_format = models.CharField(max_length=8, default="24h")
@@ -197,6 +200,8 @@ class UserSession(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="sessions")
     refresh_jti = models.CharField(max_length=64, unique=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    last_activity_at = models.DateTimeField(default=timezone.now)
     previous_refresh_jti = models.CharField(max_length=64, blank=True)
     refresh_retry_until = models.DateTimeField(null=True, blank=True)
     refresh_retry_tokens = EncryptedTextField(blank=True)

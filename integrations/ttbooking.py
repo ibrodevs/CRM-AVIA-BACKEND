@@ -386,8 +386,8 @@ class TTBookingAdapter(TTBookingAsyncMixin, JsonProviderAdapter):
                 continue
             for selected in itertools.product(*choices):
                 segments = [
-                    self._segment(seg)
-                    for flight in selected
+                    {**self._segment(seg), "journey_index": journey_index}
+                    for journey_index, flight in enumerate(selected)
                     for seg in self._list((flight.get("segments") or {}).get("segment"))
                     if isinstance(seg, dict)
                 ]

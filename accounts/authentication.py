@@ -6,6 +6,13 @@ from tenancy.context import set_current_tenant_id
 
 
 class SessionAwareJWTAuthentication(JWTAuthentication):
+    def authenticate(self, request):
+        result = super().authenticate(request)
+        if result:
+            from accounts.session_security import enforce_session_security
+            enforce_session_security(result[0], result[1], request.path, request.method)
+        return result
+
     def get_user(self, validated_token):
         if validated_token.get("scope") == "2fa":
             raise AuthenticationFailed("Токен 2FA-challenge не даёт доступа к API", code="2fa_challenge")

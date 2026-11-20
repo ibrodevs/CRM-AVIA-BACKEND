@@ -96,3 +96,5 @@ class DocumentsConfig(AppConfig):
         from documents.receipt_text_cache import install_receipt_text_cache
 
         install_receipt_text_cache()
+        # Register receipt recognition for the persistent worker queue.
+        from documents import receipt_async  # noqa: F401

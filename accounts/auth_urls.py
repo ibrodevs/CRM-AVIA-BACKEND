@@ -1,8 +1,13 @@
 from django.urls import path
 
 from accounts import auth_views as v
+from accounts.session_security import ActivityView, LockView, SecurityView, UnlockView
 
 urlpatterns = [
+    path("security/", SecurityView.as_view()),
+    path("activity/", ActivityView.as_view()),
+    path("lock/", LockView.as_view()),
+    path("unlock/", UnlockView.as_view()),
     path("login/", v.LoginView.as_view(), name="auth-login"),
     path("2fa/status/", v.TwoFactorStatusView.as_view(), name="auth-2fa-status"),
     path("2fa/setup/", v.TwoFactorSetupView.as_view(), name="auth-2fa-setup"),

@@ -74,7 +74,7 @@ def _get_user_or_404(request, user_id) -> User:
 
 class MeView(APIView):
     def get(self, request):
-        return Response(MeSerializer(request.user).data)
+        return Response(MeSerializer(request.user, context={'request': request}).data)
 
     @transaction.atomic
     def patch(self, request):
@@ -279,7 +279,7 @@ class UserDetailView(APIView):
             "sla_response_minutes",
         }
         data = {k: v for k, v in request.data.items() if k in allowed}
-        if any(key in data and str(data[key] or '') != str((getattr(user, 'manager_id') if key == 'manager' else getattr(user, key)) or '') for key in ['position', 'department', 'manager', 'telegram', 'max', 'whatsapp']):
+        if any(key in data and str(data[key] or '') != str((user.manager_id if key == 'manager' else getattr(user, key)) or '') for key in ['position', 'department', 'manager', 'telegram', 'max', 'whatsapp']):
             raise ApiError(code="ORG_ASSIGNMENT_REQUIRED", message="Измените подразделение, должность и руководителя через схему оргструктуры", status_code=400)
         serializer = UserSerializer(user, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
