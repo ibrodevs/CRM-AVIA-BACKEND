@@ -177,6 +177,7 @@ class UserServiceAccess(models.Model):
 class UserPreference(models.Model):
     user = models.OneToOneField(User, primary_key=True, on_delete=models.CASCADE, related_name="preferences")
     pin_hash = models.CharField(max_length=255, blank=True)
+    pin_length = models.PositiveSmallIntegerField(default=6)
     auto_lock_minutes = models.PositiveSmallIntegerField(default=0)
     auto_logout_minutes = models.PositiveSmallIntegerField(default=0)
     theme = models.CharField(max_length=16, default="light")

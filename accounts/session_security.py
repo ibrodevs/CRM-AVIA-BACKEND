@@ -39,14 +39,14 @@ def enforce_session_security(user, token, path, method="GET"):
 
 class SecuritySerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, required=False, trim_whitespace=False)
-    pin = serializers.RegexField(r'^[0-9]{6}$', required=False, write_only=True)
+    pin = serializers.RegexField(r'^[0-9]{4}$', required=False, write_only=True)
     disable_pin = serializers.BooleanField(required=False, default=False)
     auto_lock_minutes = serializers.ChoiceField(choices=ALLOWED_MINUTES, required=False)
     auto_logout_minutes = serializers.ChoiceField(choices=ALLOWED_MINUTES, required=False)
 
 
 def security_payload(pref, session=None):
-    return {'pin_enabled': bool(pref.pin_hash), 'auto_lock_minutes': pref.auto_lock_minutes,
+    return {'pin_enabled': bool(pref.pin_hash), 'pin_length': pref.pin_length if pref.pin_hash else 4, 'auto_lock_minutes': pref.auto_lock_minutes,
             'auto_logout_minutes': pref.auto_logout_minutes, 'locked': bool(session and session.locked_at)}
 
 
@@ -68,6 +68,7 @@ class SecurityView(APIView):
             pref, _ = UserPreference.objects.select_for_update().get_or_create(user=request.user)
             if values.get('pin'):
                 pref.pin_hash = make_password(values['pin'])
+                pref.pin_length = 4
             if values.get('disable_pin'):
                 pref.pin_hash = ''
                 pref.auto_lock_minutes = 0
@@ -75,7 +76,7 @@ class SecurityView(APIView):
                 if key in values:
                     setattr(pref, key, int(values[key]))
             if pref.auto_lock_minutes and not pref.pin_hash:
-                raise ApiError(code='PIN_REQUIRED', message='Сначала задайте PIN из 6 цифр', status_code=400)
+                raise ApiError(code='PIN_REQUIRED', message='Сначала задайте PIN из 4 цифр', status_code=400)
             if pref.auto_logout_minutes and pref.auto_lock_minutes >= pref.auto_logout_minutes:
                 raise ApiError(code='INVALID_INTERVAL', message='Выход должен происходить позже блокировки', status_code=400)
             pref.save()
@@ -117,7 +118,7 @@ class UnlockView(APIView):
             raise ApiError(code='PIN_RATE_LIMIT', message='Слишком много попыток. Войдите по паролю или повторите через 15 минут', status_code=429)
         pref, _ = UserPreference.objects.get_or_create(user=request.user)
         pin = str(request.data.get('pin', ''))
-        if len(pin) != 6 or not pin.isascii() or not pin.isdigit() or not pref.pin_hash or not check_password(pin, pref.pin_hash):
+        if len(pin) != pref.pin_length or not pin.isascii() or not pin.isdigit() or not pref.pin_hash or not check_password(pin, pref.pin_hash):
             FailedLoginAttempt.objects.create(identifier=identifier)
             raise ApiError(code='INVALID_PIN', message='Неверный PIN', status_code=400)
         UserSession.objects.filter(pk=request.auth.get('sid'), user=request.user, revoked_at__isnull=True).update(
