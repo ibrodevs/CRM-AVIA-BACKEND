@@ -252,3 +252,38 @@ class ServiceCardResponse(models.Model):
                 name="uniq_terminal_card_response",
             ),
         ]
+
+
+class ProposalWorkspace(models.Model):
+    """Operator draft and current client interaction; publications are immutable."""
+
+    proposal = models.OneToOneField(Proposal, on_delete=models.CASCADE, related_name="workspace")
+    public_token = models.CharField(max_length=64, unique=True, default=_card_token)
+    draft = models.JSONField(default=dict)
+    checks = models.JSONField(default=dict)
+    selection = models.JSONField(default=dict)
+    stage = models.CharField(max_length=24, default="draft")
+    version = models.PositiveIntegerField(default=1)
+    revision = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ProposalPublication(models.Model):
+    workspace = models.ForeignKey(ProposalWorkspace, on_delete=models.CASCADE, related_name="publications")
+    revision = models.PositiveIntegerField()
+    payload = models.JSONField()
+    final = models.BooleanField(default=False)
+    created_by = models.ForeignKey("accounts.User", null=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["workspace", "revision"], name="uniq_kp_publication")]
+
+
+class ProposalInteraction(models.Model):
+    workspace = models.ForeignKey(ProposalWorkspace, on_delete=models.CASCADE, related_name="interactions")
+    revision = models.PositiveIntegerField(default=0)
+    action = models.CharField(max_length=32)
+    data = models.JSONField(default=dict)
+    actor = models.ForeignKey("accounts.User", null=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)

@@ -58,6 +58,12 @@ class ProposalVariantSerializer(serializers.ModelSerializer):
 
 
 class ProposalSerializer(serializers.ModelSerializer):
+    interactive = serializers.SerializerMethodField()
+
+    def get_interactive(self, obj):
+        from offers.workspace import workspace_summary
+        return workspace_summary(obj)
+
     variants = ProposalVariantSerializer(many=True, read_only=True)
 
     class Meta:
@@ -79,6 +85,7 @@ class ProposalSerializer(serializers.ModelSerializer):
             "template",
             "current_version",
             "approved_variant",
+            "interactive",
             "variants",
             "created_at",
             "version",
@@ -156,7 +163,7 @@ class ProposalListCreateView(GenericAPIView):
     def get(self, request):
         qs = (
             Proposal.objects.filter(tenant_id=request.user.tenant_id, archived_at__isnull=True)
-            .prefetch_related("variants__items")
+            .prefetch_related("variants__items").select_related("workspace")
             .order_by("-created_at")
         )
         if order_id := request.query_params.get("order"):

@@ -1,8 +1,15 @@
 from django.urls import path
 
 from offers import views as v
+from offers import workspace_views as w
 
 urlpatterns = [
+    path("proposals/<uuid:proposal_id>/prepare-services/", w.WorkspaceServicesView.as_view()),
+    path("proposals/<uuid:proposal_id>/workspace/", w.WorkspaceView.as_view()),
+    path("proposals/<uuid:proposal_id>/publish/", w.WorkspacePublishView.as_view()),
+    path("public/proposals/<str:token>/", w.PublicWorkspaceView.as_view()),
+    path("public/proposals/<str:token>/respond/", w.PublicWorkspaceRespondView.as_view()),
+    path("public/proposals/<str:token>/refresh/", w.PublicWorkspaceRefreshView.as_view()),
     path("proposals/", v.ProposalListCreateView.as_view(), name="proposal-list"),
     path("proposals/<uuid:proposal_id>/", v.ProposalDetailView.as_view(), name="proposal-detail"),
     path("proposals/<uuid:proposal_id>/draft/", v.ProposalDraftReplaceView.as_view(), name="proposal-draft"),
@@ -16,7 +23,11 @@ urlpatterns = [
     path("proposals/<uuid:proposal_id>/archive/", v.ProposalArchiveView.as_view(), name="proposal-archive"),
     path("proposals/<uuid:proposal_id>/pdf/", v.ProposalPdfView.as_view(), name="proposal-pdf"),
     path("proposal-templates/", v.ProposalTemplatesView.as_view(), name="proposal-templates"),
-    path("proposal-templates/<uuid:template_id>/", v.ProposalTemplateDetailView.as_view(), name="proposal-template-detail"),
+    path(
+        "proposal-templates/<uuid:template_id>/",
+        v.ProposalTemplateDetailView.as_view(),
+        name="proposal-template-detail",
+    ),
     path("service-cards/", v.ServiceCardCreateView.as_view(), name="service-card-create"),
     path("service-cards/<uuid:card_id>/send/", v.ServiceCardSendView.as_view(), name="service-card-send"),
     path(
