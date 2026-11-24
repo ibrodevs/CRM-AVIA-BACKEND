@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
+from django.utils.dateparse import parse_date, parse_datetime
 
 from common.audit import audit
 from common.errors import ApiError
@@ -18,7 +18,19 @@ from common.outbox import emit_event
 from offers.models import ProposalInteraction, ProposalWorkspace
 from services.models import OrderService, ServiceOffer
 
-KINDS = {"avia", "hotel", "transfer", "rail", "insurance", "bus", "lounge", "aeroexpress", "tour", "visa", "other"}
+KINDS = {
+    "avia",
+    "hotel",
+    "transfer",
+    "rail",
+    "insurance",
+    "bus",
+    "lounge",
+    "aeroexpress",
+    "tour",
+    "visa",
+    "other",
+}
 STAGES = {
     "draft": "Черновик",
     "published": "Выбор клиента",
@@ -115,6 +127,10 @@ def seed(proposal):
     return {
         "title": proposal.purpose or f"Предложение {proposal.number}",
         "intro": "",
+        "recipient": proposal.recipient,
+        "route": text(proposal.brief.get("route", ""), 500),
+        "travel_start": "",
+        "travel_end": "",
         "currency": proposal.currency,
         "mode": "packages" if packages else "flexible",
         "valid_until": proposal.valid_until.isoformat() if proposal.valid_until else None,
@@ -147,7 +163,26 @@ def normalize(raw, proposal, *, previous=None):
         if timezone.is_naive(value):
             value = timezone.make_aware(value)
         valid_until = value.isoformat()
+    travel_dates = {}
+    for key in ("travel_start", "travel_end"):
+        value = raw.get(key) or ""
+        if value and (not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
+            fail("Укажите даты поездки в формате ГГГГ-ММ-ДД")
+        try:
+            parsed = parse_date(value) if value else None
+        except ValueError:
+            parsed = None
+        if value and parsed is None:
+            fail("Некорректная дата поездки")
+        travel_dates[key] = value
+    if travel_dates["travel_end"] and not travel_dates["travel_start"]:
+        fail("Укажите начало поездки")
+    if travel_dates["travel_end"] and travel_dates["travel_end"] < travel_dates["travel_start"]:
+        fail("Окончание поездки не может быть раньше начала")
     payload = {
+        **travel_dates,
+        "recipient": text(raw.get("recipient", proposal.recipient), 255),
+        "route": text(raw.get("route", ""), 500),
         "title": text(raw.get("title", ""), 255),
         "intro": text(raw.get("intro", "")),
         "currency": currency,
@@ -628,7 +663,11 @@ def workspace_summary(proposal):
         "stage": workspace.stage,
         "label": STAGES[workspace.stage],
         "revision": workspace.revision,
-        "title": payload.get("title", ""),
+        "title": workspace.draft.get("title", ""),
+        "recipient": workspace.draft.get("recipient", proposal.recipient),
+        "route": workspace.draft.get("route", ""),
+        "travel_start": workspace.draft.get("travel_start", ""),
+        "travel_end": workspace.draft.get("travel_end", ""),
         "currency": payload.get("currency", proposal.currency),
         "option_count": len(options),
         "group_count": len(payload.get("groups", [])),

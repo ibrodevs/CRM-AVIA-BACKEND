@@ -342,3 +342,44 @@ def test_preparing_services_is_manual_and_does_not_duplicate(admin_client, prepa
     assert first.json()["prepared_services"] == second.json()["prepared_services"]
     assert OrderService.objects.count() == 2
     assert set(OrderService.objects.values_list("status", flat=True)) == {"proposed"}
+
+
+def test_trip_context_is_versioned_and_visible_to_customer(admin_client, prepared):
+    path, value, public_path = prepared
+    draft = value["draft"]
+    draft.update(
+        recipient="Иван Петров · Компания",
+        route="Москва → Стамбул",
+        travel_start="2026-12-10",
+        travel_end="2026-12-14",
+    )
+    saved = admin_client.put(
+        path + "/workspace/", {"version": value["version"], "draft": draft}, format="json"
+    )
+    assert saved.status_code == 200, saved.json()
+    published = admin_client.post(path + "/publish/", {"version": saved.json()["version"]}, format="json")
+    assert published.status_code == 200, published.json()
+    customer = APIClient().get(public_path + "/").json()["payload"]
+    assert customer["recipient"] == "Иван Петров · Компания"
+    assert customer["route"] == "Москва → Стамбул"
+    assert customer["travel_start"] == "2026-12-10"
+    assert customer["travel_end"] == "2026-12-14"
+    assert published.json()["public_token"] == value["public_token"]
+    listing = admin_client.get("/api/v1/proposals/").json()
+    rows = listing.get("results", listing) if isinstance(listing, dict) else listing
+    summary = next(row for row in rows if str(row["id"]) == path.split("/")[-1])["interactive"]
+    assert summary["recipient"] == customer["recipient"]
+    assert summary["travel_start"] == "2026-12-10"
+
+
+@pytest.mark.parametrize(
+    "start,end", [("2026-12-14", "2026-12-10"), ("2026-02-30", ""), ("", "2026-12-10"), ("bad", "")]
+)
+def test_trip_context_rejects_invalid_dates(admin_client, prepared, start, end):
+    path, value, _ = prepared
+    draft = value["draft"]
+    draft.update(travel_start=start, travel_end=end)
+    response = admin_client.put(
+        path + "/workspace/", {"version": value["version"], "draft": draft}, format="json"
+    )
+    assert response.status_code == 400, response.json()
