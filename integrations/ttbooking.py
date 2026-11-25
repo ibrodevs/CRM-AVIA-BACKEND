@@ -323,7 +323,16 @@ class TTBookingAdapter(TTBookingAsyncMixin, JsonProviderAdapter):
 
     def _segment(self, raw):
         carrier = raw.get("carrier") or {}
-        baggage = raw.get("baggage") or {}
+        baggage = raw.get("baggage")
+        if isinstance(baggage, dict):
+            unit, quantity = baggage.get("type", ""), baggage.get("value")
+            baggage = (
+                f"{quantity}{unit}"
+                if quantity is not None and not any(c.isdigit() for c in str(unit))
+                else unit
+            )
+        if baggage is None:
+            baggage = ""
         return {
             "origin": self._item(raw.get("locationBegin"))["code"],
             "destination": self._item(raw.get("locationEnd"))["code"],
@@ -334,7 +343,7 @@ class TTBookingAdapter(TTBookingAsyncMixin, JsonProviderAdapter):
             "cabin": str(raw.get("serviceClass") or "").lower(),
             "booking_class": str(raw.get("bookingClass") or ""),
             "fare_basis": str(raw.get("fareBasis") or ""),
-            "baggage": baggage.get("type") or baggage.get("value") or "",
+            "baggage": baggage,
             "provider_token": raw.get("token", ""),
         }
 

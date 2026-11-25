@@ -95,9 +95,7 @@ def test_ttbooking_normalizes_search_to_crm_offer():
                         "fares": {
                             "fareTotal": {"total": 25000},
                             "fareSeats": {
-                                "fareSeat": [
-                                    {"passengerType": "ADULT", "count": 1, "total": 25000}
-                                ]
+                                "fareSeat": [{"passengerType": "ADULT", "count": 1, "total": 25000}]
                             },
                         },
                     }
@@ -156,3 +154,19 @@ def test_supplier_connection_accepts_ttbooking_config(admin_client):
     assert response.status_code == 200, response.content
     assert response.json()["status"] == "configured"
     assert response.json()["checked"][0]["provider_adapter"] == "ttbooking"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ({"type": "PC", "value": 1}, "1PC"),
+        ({"type": "KG", "value": 23}, "23KG"),
+        ({"type": "PC", "value": 0}, "0PC"),
+        ({"type": "1PC"}, "1PC"),
+        ({"type": "1PC", "value": 1}, "1PC"),
+        ("2PC", "2PC"),
+        (None, ""),
+    ],
+)
+def test_segment_keeps_baggage_quantity_and_unit(raw, expected):
+    assert TTBookingAdapter()._segment({"baggage": raw})["baggage"] == expected

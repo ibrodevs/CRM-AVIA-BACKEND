@@ -383,3 +383,26 @@ def test_trip_context_rejects_invalid_dates(admin_client, prepared, start, end):
         path + "/workspace/", {"version": value["version"], "draft": draft}, format="json"
     )
     assert response.status_code == 400, response.json()
+
+
+def test_recipient_binding_is_private_and_tenant_scoped(admin_client, prepared, tenant, other_tenant):
+    from crm.models import Person
+
+    path, value, public_path = prepared
+    own = Person.objects.create(tenant=tenant, surname="Петров", given_name="Иван")
+    foreign = Person.objects.create(tenant=other_tenant, surname="Петров", given_name="Иван")
+    draft = value["draft"]
+    draft["recipient_ref"] = {"type": "person", "id": str(foreign.pk)}
+    refused = admin_client.put(
+        path + "/workspace/", {"version": value["version"], "draft": draft}, format="json"
+    )
+    assert refused.status_code == 400
+    draft["recipient_ref"]["id"] = str(own.pk)
+    saved = admin_client.put(
+        path + "/workspace/", {"version": value["version"], "draft": draft}, format="json"
+    )
+    assert saved.status_code == 200, saved.json()
+    assert saved.json()["draft"]["recipient_ref"]["id"] == str(own.pk)
+    published = admin_client.post(path + "/publish/", {"version": saved.json()["version"]}, format="json")
+    assert published.status_code == 200
+    assert "recipient_ref" not in APIClient().get(public_path + "/").json()["payload"]

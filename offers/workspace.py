@@ -15,6 +15,7 @@ from django.utils.dateparse import parse_date, parse_datetime
 from common.audit import audit
 from common.errors import ApiError
 from common.outbox import emit_event
+from crm.models import Company, Person
 from offers.models import ProposalInteraction, ProposalWorkspace
 from services.models import OrderService, ServiceOffer
 
@@ -191,6 +192,18 @@ def normalize(raw, proposal, *, previous=None):
         "groups": [],
         "packages": [],
     }
+    reference = raw.get("recipient_ref")
+    if reference:
+        if not isinstance(reference, dict) or reference.get("type") not in {"person", "company"}:
+            fail("Некорректная привязка получателя")
+        model = Person if reference["type"] == "person" else Company
+        try:
+            exists = model.objects.filter(pk=reference.get("id"), tenant_id=proposal.tenant_id).exists()
+        except (ValidationError, ValueError, TypeError):
+            exists = False
+        if not exists:
+            fail("Получатель недоступен в вашей организации")
+        payload["recipient_ref"] = {"type": reference["type"], "id": str(reference["id"])}
     groups = raw.get("groups", [])
     packages = raw.get("packages", [])
     if (
@@ -445,6 +458,7 @@ def serialize(workspace, *, public=False):
     if public:
         if not publication:
             fail("Предложение ещё не опубликовано", "NOT_FOUND", 404)
+        payload.pop("recipient_ref", None)
         # Explicit allowlist: no bindings, offsets, supplier snapshots or margins.
         for row in all_options(payload).values():
             row["auto_check"] = auto_supported(row, workspace.proposal.tenant_id)
