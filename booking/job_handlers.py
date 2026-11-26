@@ -62,6 +62,13 @@ def run_booking(job: BackgroundJob) -> dict:
 
             if message := preflight_error(workflow, service):
                 raise AdapterError("PREFLIGHT_REQUIRED", message, category="validation")
+            from common.errors import ApiError
+            from offers.booking_guard import require_proposal_approval
+
+            try:
+                require_proposal_approval(service)
+            except ApiError as error:
+                raise AdapterError(error.code, error.message, category="validation") from error
             result = adapter.book(
                 ctx,
                 {

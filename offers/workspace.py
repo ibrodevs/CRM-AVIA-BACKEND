@@ -489,7 +489,7 @@ def record(workspace, action, data=None, actor=None, *, notify=False):
     return event
 
 
-def serialize(workspace, *, public=False):
+def serialize(workspace, *, public=False, user=None):
     publication = workspace.publications.filter(revision=workspace.revision).first()
     payload = effective(workspace, publication) if publication else None
     if public:
@@ -535,11 +535,25 @@ def serialize(workspace, *, public=False):
                 "actor": e.actor.get_full_name() if e.actor else "Клиент",
                 "at": e.created_at.isoformat(),
             }
-            for e in workspace.interactions.select_related("actor").order_by("-id")[:100]
+            for e in (
+                workspace.interactions.exclude(action__startswith="internal_")
+                if public
+                else workspace.interactions
+            )
+            .select_related("actor")
+            .order_by("-id")[:100]
         ],
     }
     if not public:
+        from offers.internal_approval import summary as approval_summary
+
         result.update(
+            internal_approval=approval_summary(workspace, user),
+            internal_approval_history=[
+                {"id": str(a.pk), "title": a.payload.get("title", ""), "at": a.created_at.isoformat(),
+                 "status": a.status, "decisions": a.decisions, "fingerprint": a.fingerprint}
+                for a in workspace.internal_approvals.order_by("-created_at")[:50]
+            ],
             draft=workspace.draft,
             company_id=str(workspace.proposal.order.client_company_id)
             if workspace.proposal.order_id and workspace.proposal.order.client_company_id

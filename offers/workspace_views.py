@@ -29,7 +29,7 @@ class WorkspaceView(APIView):
     permission_classes = [require("offers.view")]
 
     def get(self, request, proposal_id):
-        return Response(serialize(workspace_for(_get_proposal(request, proposal_id))))
+        return Response(serialize(workspace_for(_get_proposal(request, proposal_id)), user=request.user))
 
     def put(self, request, proposal_id):
         if not has_permission(request.user, "offers.change"):
@@ -69,7 +69,7 @@ class WorkspaceView(APIView):
                 created_by=request.user,
             )
             record(workspace, "draft_saved", actor=request.user)
-        return Response(serialize(workspace))
+        return Response(serialize(workspace, user=request.user))
 
 
 class WorkspacePublishView(APIView):
@@ -82,6 +82,9 @@ class WorkspacePublishView(APIView):
             check_version(workspace, request.data.get("version"))
             if proposal.status == Proposal.Status.ARCHIVED:
                 fail("Архивное КП нельзя опубликовать", "PROPOSAL_CLOSED", 409)
+            from offers.internal_approval import require_internal
+
+            require_internal(workspace, request.user)
             payload = normalize(workspace.draft, proposal, previous=workspace.draft)
             if (
                 not payload["title"]
@@ -138,7 +141,7 @@ class WorkspacePublishView(APIView):
             workspace.version += 1
             workspace.save()
             record(workspace, "final_published" if final else "published", actor=request.user)
-        return Response(serialize(workspace))
+        return Response(serialize(workspace, user=request.user))
 
 
 class PublicWorkspaceBase(APIView):
@@ -243,6 +246,15 @@ class WorkspaceServicesView(APIView):
             if workspace.stage != "approved" or not proposal.order_id:
                 fail("Нужно согласованное КП, связанное с заказом", "APPROVAL_REQUIRED", 409)
             publication = ensure_active(workspace)
+            if (
+                workspace.selection.get("revision") != workspace.revision
+                or workspace.draft != publication.payload
+            ):
+                fail(
+                    "Условия КП изменились после согласования; получите подтверждение новой версии",
+                    "APPROVAL_REQUIRED",
+                    409,
+                )
             payload = effective(workspace, publication)
             selection = workspace.selection
             validate_selection(
@@ -308,11 +320,20 @@ class WorkspaceServicesView(APIView):
                         else Decimal(0),
                         created_by=request.user,
                     )
+                service.provider_snapshot = {
+                    **(service.provider_snapshot or {}),
+                    "proposal_approval": {
+                        "proposal": str(proposal.pk),
+                        "revision": workspace.revision,
+                        "option": oid,
+                    },
+                }
+                service.save(update_fields=["provider_snapshot"])
                 result[oid] = str(service.pk)
             workspace.version += 1
             workspace.save()
             record(workspace, "services_prepared", {"services": result}, actor=request.user)
-        return Response({**serialize(workspace), "prepared_services": result})
+        return Response({**serialize(workspace, user=request.user), "prepared_services": result})
 
 
 class WorkspaceRestoreDraftView(APIView):
@@ -345,4 +366,4 @@ class WorkspaceRestoreDraftView(APIView):
                 created_by=request.user,
             )
             record(workspace, "draft_restored", {"source_version": draft_version}, actor=request.user)
-        return Response(serialize(workspace))
+        return Response(serialize(workspace, user=request.user))

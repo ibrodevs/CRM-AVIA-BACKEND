@@ -12,4 +12,7 @@ class CommonConfig(AppConfig):
         autodiscover_modules("job_handlers")
         autodiscover_modules("scheduled_tasks")
         autodiscover_modules("outbox_handlers")
-        from common import maintenance  # noqa: F401  (встроенные retention-задачи)
+        from common import (
+            drafts,  # noqa: F401
+            maintenance,  # noqa: F401  (встроенные retention-задачи)
+        )

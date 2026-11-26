@@ -142,6 +142,9 @@ class WorkflowCreateView(APIView):
                 code="VALIDATION_ERROR", message="Часть услуг не найдена в заказе", status_code=400
             )
         for service in services:
+            from offers.booking_guard import require_proposal_approval
+
+            require_proposal_approval(service)
             if service.status not in (OrderService.Status.PROPOSED, OrderService.Status.APPROVAL):
                 raise ApiError(
                     code="SERVICE_NOT_BOOKABLE",
@@ -218,6 +221,9 @@ class WorkflowStartView(APIView):
             from booking.hotelbook_guard import preflight_error
 
             for item in workflow.items.select_related("service"):
+                from offers.booking_guard import require_proposal_approval
+
+                require_proposal_approval(item.service)
                 if message := preflight_error(workflow, item.service):
                     raise ApiError(code="PREFLIGHT_REQUIRED", message=message, status_code=409)
 

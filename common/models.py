@@ -2,6 +2,7 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from tenancy.context import get_current_tenant_id
 
@@ -265,7 +266,9 @@ class WorkspaceAction(TenantModel):
         db_table = "common_workspace_action"
         indexes = [
             models.Index(fields=["tenant", "action", "-created_at"], name="common_work_tenant__d501e7_idx"),
-            models.Index(fields=["tenant", "resource_type", "resource_id"], name="common_work_tenant__7c2f59_idx"),
+            models.Index(
+                fields=["tenant", "resource_type", "resource_id"], name="common_work_tenant__7c2f59_idx"
+            ),
         ]
 
 
@@ -307,7 +310,23 @@ class OutboundDelivery(TenantModel):
         db_table = "common_outbound_delivery"
         indexes = [
             models.Index(fields=["tenant", "state"], name="idx_outbound_delivery_state"),
-            models.Index(
-                fields=["tenant", "resource_type", "resource_id"], name="idx_outbound_delivery_res"
-            ),
+            models.Index(fields=["tenant", "resource_type", "resource_id"], name="idx_outbound_delivery_res"),
         ]
+
+
+class WorkspaceDraft(TenantModel):
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    responsible = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    key = models.CharField(max_length=255)
+    source = models.CharField(max_length=16, default="local")
+    meta = models.JSONField(default=dict)
+    records = models.JSONField(default=list)
+    created_at_source = models.DateTimeField(default=timezone.now)
+    last_edited_at = models.DateTimeField(default=timezone.now)
+    remind_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "owner", "key"], name="uniq_owner_workspace_draft")
+        ]
+        indexes = [models.Index(fields=["responsible", "remind_at"])]

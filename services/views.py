@@ -747,6 +747,9 @@ class ServiceManualBookView(APIView):
                     status_code=403,
                 )
             check_version(service, request.data.get("version"))
+            from offers.booking_guard import require_proposal_approval
+
+            require_proposal_approval(service)
             _require_provider_workflow(service, OrderService.Status.BOOKED)
             if service.status not in (OrderService.Status.PROPOSED, OrderService.Status.APPROVAL):
                 raise TransitionForbiddenError(
@@ -990,6 +993,10 @@ class ServiceActionView(APIView):
                     message="Выписка API-услуги выполняется через booking workflow",
                     status_code=409,
                 )
+            if self.target_status == OrderService.Status.BOOKED:
+                from offers.booking_guard import require_proposal_approval
+
+                require_proposal_approval(service)
             _require_provider_workflow(service, self.target_status)
             old_status = service.status
             service.status = self.target_status

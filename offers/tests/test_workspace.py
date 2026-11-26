@@ -454,7 +454,7 @@ def test_company_policy_is_private_and_bound_to_recipient(admin_client, prepared
     path, value, public_path = prepared
     company = Company.objects.create(tenant=tenant, legal_name="Компания получателя")
     policy = TravelPolicy.objects.create(
-        tenant=tenant, company=company, name="Командировки", policy_version=3, approver_chain=["manager"]
+        tenant=tenant, company=company, name="Командировки", policy_version=3, approver_chain=[]
     )
     draft = copy.deepcopy(value["draft"])
     draft["recipient_ref"] = {"type": "company", "id": str(company.pk)}

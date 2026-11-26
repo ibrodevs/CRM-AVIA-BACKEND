@@ -2,9 +2,14 @@ from django.urls import path
 
 from offers import views as v
 from offers import workspace_views as w
+from offers.internal_approval import InternalApprovalView
 
 urlpatterns = [
-    path("proposals/<uuid:proposal_id>/draft-revisions/<int:draft_version>/restore/", w.WorkspaceRestoreDraftView.as_view()),
+    path("proposals/<uuid:proposal_id>/internal-approval/", InternalApprovalView.as_view()),
+    path(
+        "proposals/<uuid:proposal_id>/draft-revisions/<int:draft_version>/restore/",
+        w.WorkspaceRestoreDraftView.as_view(),
+    ),
     path("proposals/<uuid:proposal_id>/prepare-services/", w.WorkspaceServicesView.as_view()),
     path("proposals/<uuid:proposal_id>/workspace/", w.WorkspaceView.as_view()),
     path("proposals/<uuid:proposal_id>/publish/", w.WorkspacePublishView.as_view()),

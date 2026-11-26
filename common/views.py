@@ -216,6 +216,37 @@ class WorkspaceSettingView(APIView):
         value = request.data.get("value")
         if not isinstance(value, dict):
             raise ApiError(code="VALIDATION_ERROR", message="value должен быть объектом", status_code=400)
+        if namespace == "proposal-approval":
+            from accounts.models import Role
+
+            if not isinstance(value.get("required", False), bool):
+                raise ApiError(
+                    code="VALIDATION_ERROR", message="required должен быть логическим", status_code=400
+                )
+            for key in ("approvers", "required_roles"):
+                codes = value.get(key, [])
+                if (
+                    not isinstance(codes, list)
+                    or len(codes) > 20
+                    or any(not isinstance(c, str) for c in codes)
+                ):
+                    raise ApiError(
+                        code="VALIDATION_ERROR", message="Некорректная матрица согласования", status_code=400
+                    )
+                allowed = set(
+                    Role.objects.filter(tenant_id=request.user.tenant_id, code__in=codes).values_list(
+                        "code", flat=True
+                    )
+                )
+                if set(codes) - allowed:
+                    raise ApiError(
+                        code="VALIDATION_ERROR", message="Выберите роли вашей организации", status_code=400
+                    )
+            value = {
+                "required": value.get("required", False),
+                "required_roles": value.get("required_roles", []),
+                "approvers": value.get("approvers", []),
+            }
         if namespace == "finance-currencies":
             from common.settings_validation import validate_currency_settings
             from finance.models import ExchangeRate

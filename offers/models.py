@@ -300,3 +300,17 @@ class ProposalDraftRevision(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["workspace", "version"], name="uniq_kp_draft_revision")
         ]
+
+
+class ProposalInternalApproval(models.Model):
+    workspace = models.ForeignKey(
+        ProposalWorkspace, on_delete=models.CASCADE, related_name="internal_approvals"
+    )
+    fingerprint = models.CharField(max_length=64)
+    payload = models.JSONField()
+    steps = models.JSONField(default=list)
+    step = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=16, default="pending")
+    decisions = models.JSONField(default=list)
+    requested_by = models.ForeignKey("accounts.User", on_delete=models.PROTECT, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
