@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 
 from accounts.permissions import has_permission, require
 from common.locking import check_version
-from offers.models import Proposal, ProposalPublication, ProposalWorkspace
+from offers.models import Proposal, ProposalDraftRevision, ProposalPublication, ProposalWorkspace
 from offers.views import PublicResponseThrottle, _get_proposal
 from offers.workspace import (
     all_options,
@@ -52,9 +52,22 @@ class WorkspaceView(APIView):
             if publication:
                 # API-check evidence is server-owned, never accepted from the browser.
                 previous = effective(workspace, publication)
-            workspace.draft = normalize(request.data.get("draft"), proposal, previous=previous)
+            ProposalDraftRevision.objects.get_or_create(
+                workspace=workspace,
+                version=workspace.version,
+                defaults={"payload": workspace.draft, "created_by": request.user},
+            )
+            workspace.draft = normalize(
+                request.data.get("draft"), proposal, previous=previous, allow_incomplete=True
+            )
             workspace.version += 1
             workspace.save()
+            ProposalDraftRevision.objects.create(
+                workspace=workspace,
+                version=workspace.version,
+                payload=workspace.draft,
+                created_by=request.user,
+            )
             record(workspace, "draft_saved", actor=request.user)
         return Response(serialize(workspace))
 
@@ -300,3 +313,36 @@ class WorkspaceServicesView(APIView):
             workspace.save()
             record(workspace, "services_prepared", {"services": result}, actor=request.user)
         return Response({**serialize(workspace), "prepared_services": result})
+
+
+class WorkspaceRestoreDraftView(APIView):
+    permission_classes = [require("offers.change")]
+
+    def post(self, request, proposal_id, draft_version):
+        proposal = _get_proposal(request, proposal_id)
+        with transaction.atomic():
+            workspace = ProposalWorkspace.objects.select_for_update().get(pk=workspace_for(proposal).pk)
+            check_version(workspace, request.data.get("version"))
+            source = workspace.draft_revisions.filter(version=draft_version).first()
+            if not source:
+                fail("Версия черновика не найдена", "NOT_FOUND", 404)
+            ProposalDraftRevision.objects.get_or_create(
+                workspace=workspace,
+                version=workspace.version,
+                defaults={"payload": workspace.draft, "created_by": request.user},
+            )
+            workspace.draft = normalize(
+                source.payload, proposal, previous=workspace.draft, allow_incomplete=True
+            )
+            for row in all_options(workspace.draft).values():
+                row["checked_at"] = None
+            workspace.version += 1
+            workspace.save()
+            ProposalDraftRevision.objects.create(
+                workspace=workspace,
+                version=workspace.version,
+                payload=workspace.draft,
+                created_by=request.user,
+            )
+            record(workspace, "draft_restored", {"source_version": draft_version}, actor=request.user)
+        return Response(serialize(workspace))

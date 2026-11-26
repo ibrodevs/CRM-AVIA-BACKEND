@@ -325,12 +325,16 @@ class TTBookingAdapter(TTBookingAsyncMixin, JsonProviderAdapter):
         carrier = raw.get("carrier") or {}
         baggage = raw.get("baggage")
         if isinstance(baggage, dict):
-            unit, quantity = baggage.get("type", ""), baggage.get("value")
-            baggage = (
-                f"{quantity}{unit}"
-                if quantity is not None and not any(c.isdigit() for c in str(unit))
-                else unit
-            )
+            unit, quantity = str(baggage.get("type") or ""), baggage.get("value")
+            if quantity is None or quantity == "":
+                baggage = unit
+            else:
+                value = str(quantity).strip()
+                baggage = (
+                    value
+                    if unit and value.upper().endswith(unit.upper())
+                    else (unit if any(c.isdigit() for c in unit) else f"{value}{unit}")
+                )
         if baggage is None:
             baggage = ""
         return {

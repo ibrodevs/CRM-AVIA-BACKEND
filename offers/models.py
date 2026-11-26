@@ -287,3 +287,16 @@ class ProposalInteraction(models.Model):
     data = models.JSONField(default=dict)
     actor = models.ForeignKey("accounts.User", null=True, on_delete=models.SET_NULL, related_name="+")
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ProposalDraftRevision(models.Model):
+    workspace = models.ForeignKey(ProposalWorkspace, on_delete=models.CASCADE, related_name="draft_revisions")
+    version = models.PositiveIntegerField()
+    payload = models.JSONField()
+    created_by = models.ForeignKey("accounts.User", null=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["workspace", "version"], name="uniq_kp_draft_revision")
+        ]

@@ -406,3 +406,79 @@ def test_recipient_binding_is_private_and_tenant_scoped(admin_client, prepared, 
     published = admin_client.post(path + "/publish/", {"version": saved.json()["version"]}, format="json")
     assert published.status_code == 200
     assert "recipient_ref" not in APIClient().get(public_path + "/").json()["payload"]
+
+
+def test_incomplete_draft_saves_and_restores_without_publishing(admin_client, prepared):
+    path, value, public_path = prepared
+    draft = copy.deepcopy(value["draft"])
+    draft["groups"][0]["options"][0]["price"] = ""
+    saved = admin_client.put(
+        path + "/workspace/", {"version": value["version"], "draft": draft}, format="json"
+    )
+    assert saved.status_code == 200, saved.json()
+    assert saved.json()["draft"]["groups"][0]["options"][0]["price"] == ""
+    assert saved.json()["draft_revisions"]
+    rejected = admin_client.post(path + "/publish/", {"version": saved.json()["version"]}, format="json")
+    assert rejected.status_code == 400
+    previous = value["version"]
+    restored = admin_client.post(
+        path + f"/draft-revisions/{previous}/restore/", {"version": saved.json()["version"]}, format="json"
+    )
+    assert restored.status_code == 200, restored.json()
+    assert (
+        restored.json()["draft"]["groups"][0]["options"][0]["price"]
+        == value["draft"]["groups"][0]["options"][0]["price"]
+    )
+    assert restored.json()["revision"] == value["revision"]
+    assert restored.json()["version"] > saved.json()["version"]
+    public = APIClient().get(public_path + "/").json()
+    assert "draft_revisions" not in public
+
+
+def test_restoring_draft_requires_current_version(admin_client, prepared):
+    path, value, _ = prepared
+    saved = admin_client.put(
+        path + "/workspace/", {"version": value["version"], "draft": value["draft"]}, format="json"
+    ).json()
+    stale = admin_client.post(
+        path + f"/draft-revisions/{value['version']}/restore/", {"version": value["version"]}, format="json"
+    )
+    assert stale.status_code == 409
+    assert admin_client.get(path + "/workspace/").json()["version"] == saved["version"]
+
+
+def test_company_policy_is_private_and_bound_to_recipient(admin_client, prepared, tenant):
+    from crm.models import Company
+    from travel_policy.models import TravelPolicy
+
+    path, value, public_path = prepared
+    company = Company.objects.create(tenant=tenant, legal_name="Компания получателя")
+    policy = TravelPolicy.objects.create(
+        tenant=tenant, company=company, name="Командировки", policy_version=3, approver_chain=["manager"]
+    )
+    draft = copy.deepcopy(value["draft"])
+    draft["recipient_ref"] = {"type": "company", "id": str(company.pk)}
+    draft["policy_id"] = str(policy.pk)
+    # An order company takes priority over an unrelated recipient.
+    from offers.models import Proposal
+
+    proposal = Proposal.objects.get(pk=path.split("/")[-1])
+    proposal.order.client_company = company
+    proposal.order.client_person = None
+    proposal.order.save(update_fields=["client_company", "client_person"])
+    saved = admin_client.put(
+        path + "/workspace/", {"version": value["version"], "draft": draft}, format="json"
+    )
+    assert saved.status_code == 200, saved.json()
+    assert saved.json()["draft"]["policy_snapshot"]["version"] == 3
+    published = admin_client.post(path + "/publish/", {"version": saved.json()["version"]}, format="json")
+    assert published.status_code == 200, published.json()
+    public = APIClient().get(public_path + "/").json()["payload"]
+    assert "policy_id" not in public and "policy_snapshot" not in public
+    foreign_company = Company.objects.create(tenant=tenant, legal_name="Другая компания")
+    foreign = TravelPolicy.objects.create(tenant=tenant, company=foreign_company, name="Не применяется")
+    draft["policy_id"] = str(foreign.pk)
+    refused = admin_client.put(
+        path + "/workspace/", {"version": published.json()["version"], "draft": draft}, format="json"
+    )
+    assert refused.status_code == 400

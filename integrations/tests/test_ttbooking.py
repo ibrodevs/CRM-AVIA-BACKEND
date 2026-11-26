@@ -162,6 +162,8 @@ def test_supplier_connection_accepts_ttbooking_config(admin_client):
         ({"type": "PC", "value": 1}, "1PC"),
         ({"type": "KG", "value": 23}, "23KG"),
         ({"type": "PC", "value": 0}, "0PC"),
+        ({"type": "PC", "value": "0PC"}, "0PC"),
+        ({"type": "KG", "value": "23KG"}, "23KG"),
         ({"type": "1PC"}, "1PC"),
         ({"type": "1PC", "value": 1}, "1PC"),
         ("2PC", "2PC"),

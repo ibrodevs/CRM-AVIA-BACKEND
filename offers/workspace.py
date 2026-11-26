@@ -18,6 +18,7 @@ from common.outbox import emit_event
 from crm.models import Company, Person
 from offers.models import ProposalInteraction, ProposalWorkspace
 from services.models import OrderService, ServiceOffer
+from travel_policy.models import TravelPolicy
 
 KINDS = {
     "avia",
@@ -147,7 +148,7 @@ def workspace_for(proposal):
     return workspace
 
 
-def normalize(raw, proposal, *, previous=None):
+def normalize(raw, proposal, *, previous=None, allow_incomplete=False):
     if not isinstance(raw, dict):
         fail("Некорректная форма КП")
     currency = text(raw.get("currency", proposal.currency), 3).upper()
@@ -204,6 +205,35 @@ def normalize(raw, proposal, *, previous=None):
         if not exists:
             fail("Получатель недоступен в вашей организации")
         payload["recipient_ref"] = {"type": reference["type"], "id": str(reference["id"])}
+    policy_id = raw.get("policy_id")
+    if policy_id:
+        company_id = proposal.order.client_company_id if proposal.order_id else None
+        company_id = company_id or (
+            reference.get("id") if reference and reference.get("type") == "company" else None
+        )
+        try:
+            policy = (
+                TravelPolicy.objects.filter(
+                    pk=policy_id,
+                    tenant_id=proposal.tenant_id,
+                    company_id=company_id,
+                    is_active=True,
+                    archived_at__isnull=True,
+                ).first()
+                if company_id
+                else None
+            )
+        except (ValidationError, ValueError, TypeError):
+            policy = None
+        if not policy:
+            fail("Выберите действующую тревел-политику компании получателя")
+        payload["policy_id"] = str(policy.pk)
+        payload["policy_snapshot"] = {
+            "name": policy.name,
+            "version": policy.policy_version,
+            "approver_chain": policy.approver_chain,
+            "scopes": policy.scopes,
+        }
     groups = raw.get("groups", [])
     packages = raw.get("packages", [])
     if (
@@ -229,6 +259,9 @@ def normalize(raw, proposal, *, previous=None):
             "id": gid,
             "title": text(group.get("title", ""), 255),
             "required": bool(group.get("required", False)),
+            "kind": group.get("kind")
+            if group.get("kind") in KINDS
+            else next((o.get("kind") for o in options if o.get("kind") in KINDS), "other"),
             "options": [],
         }
         for option in options:
@@ -243,7 +276,9 @@ def normalize(raw, proposal, *, previous=None):
             kind = option.get("kind", "other")
             if kind not in KINDS:
                 fail("Неизвестный вид услуги")
-            price = amount(option.get("price"))
+            price = (
+                "" if allow_incomplete and option.get("price") in (None, "") else amount(option.get("price"))
+            )
             availability = option.get("availability", "unknown")
             if availability not in {"available", "unavailable", "unknown"}:
                 fail("Неизвестный статус доступности")
@@ -283,6 +318,8 @@ def normalize(raw, proposal, *, previous=None):
                     if source_currency != currency:
                         fail("Валюты услуги и КП должны совпадать; автоматическая конвертация не выполняется")
                     old_binding = previous_options.get(oid, {})
+                    if price == "":
+                        continue
                     if (
                         old_binding.get(binding) == str(source.pk)
                         and old_binding.get("price_offset") is not None
@@ -295,7 +332,7 @@ def normalize(raw, proposal, *, previous=None):
                     else:
                         row["price_offset"] = str(Decimal(price) - baseline)
             old = previous_options.get(oid)
-            if old:
+            if old and old.get("price") not in (None, ""):
                 if old.get("price") != price:
                     row["previous_price"] = old["price"]
                 elif old.get("previous_price") is not None:
@@ -309,7 +346,7 @@ def normalize(raw, proposal, *, previous=None):
                 row["check_source"] = old.get("check_source", "manual")
             if option.get("clear_check"):
                 row["checked_at"] = None
-            if option.get("mark_checked"):
+            if option.get("mark_checked") and price != "":
                 row["checked_at"] = timezone.now().isoformat()
                 row["check_source"] = "manual"
             normalized_group["options"].append(row)
@@ -459,6 +496,8 @@ def serialize(workspace, *, public=False):
         if not publication:
             fail("Предложение ещё не опубликовано", "NOT_FOUND", 404)
         payload.pop("recipient_ref", None)
+        payload.pop("policy_id", None)
+        payload.pop("policy_snapshot", None)
         # Explicit allowlist: no bindings, offsets, supplier snapshots or margins.
         for row in all_options(payload).values():
             row["auto_check"] = auto_supported(row, workspace.proposal.tenant_id)
@@ -502,6 +541,18 @@ def serialize(workspace, *, public=False):
     if not public:
         result.update(
             draft=workspace.draft,
+            company_id=str(workspace.proposal.order.client_company_id)
+            if workspace.proposal.order_id and workspace.proposal.order.client_company_id
+            else None,
+            draft_revisions=[
+                {
+                    "version": row.version,
+                    "title": row.payload.get("title", ""),
+                    "at": row.created_at.isoformat(),
+                    "actor": row.created_by.get_full_name() if row.created_by else "Сотрудник",
+                }
+                for row in workspace.draft_revisions.select_related("created_by").order_by("-version")[:50]
+            ],
             public_token=workspace.public_token,
             order=str(workspace.proposal.order_id) if workspace.proposal.order_id else None,
             publications=[
