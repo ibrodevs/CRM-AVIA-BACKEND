@@ -227,6 +227,16 @@ def normalize(raw, proposal, *, previous=None, allow_incomplete=False):
             policy = None
         if not policy:
             fail("Выберите действующую тревел-политику компании получателя")
+        if (
+            travel_dates["travel_start"]
+            and policy.effective_from
+            and travel_dates["travel_start"] < policy.effective_from.isoformat()
+        ) or (
+            travel_dates["travel_end"]
+            and policy.effective_to
+            and travel_dates["travel_end"] > policy.effective_to.isoformat()
+        ):
+            fail("Тревел-политика не действует на весь период поездки")
         payload["policy_id"] = str(policy.pk)
         payload["policy_snapshot"] = {
             "name": policy.name,
@@ -550,8 +560,14 @@ def serialize(workspace, *, public=False, user=None):
         result.update(
             internal_approval=approval_summary(workspace, user),
             internal_approval_history=[
-                {"id": str(a.pk), "title": a.payload.get("title", ""), "at": a.created_at.isoformat(),
-                 "status": a.status, "decisions": a.decisions, "fingerprint": a.fingerprint}
+                {
+                    "id": str(a.pk),
+                    "title": a.payload.get("title", ""),
+                    "at": a.created_at.isoformat(),
+                    "status": a.status,
+                    "decisions": a.decisions,
+                    "fingerprint": a.fingerprint,
+                }
                 for a in workspace.internal_approvals.order_by("-created_at")[:50]
             ],
             draft=workspace.draft,

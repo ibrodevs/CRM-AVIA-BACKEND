@@ -172,3 +172,20 @@ def test_supplier_connection_accepts_ttbooking_config(admin_client):
 )
 def test_segment_keeps_baggage_quantity_and_unit(raw, expected):
     assert TTBookingAdapter()._segment({"baggage": raw})["baggage"] == expected
+
+
+def test_segment_preserves_combined_allowances_and_explicit_conditions():
+    segment = TTBookingAdapter()._segment(
+        {
+            "baggage": {"pieces": 1, "weight": 23, "unit": "KG"},
+            "handBaggage": {"type": "KG", "value": 8},
+            "refundable": False,
+            "exchangeable": True,
+        }
+    )
+    assert segment["baggage"] == {"pieces": 1, "weight": 23, "unit": "KG"}
+    assert segment["hand_baggage"] == "8KG"
+    assert segment["refundable"] is False
+    assert segment["changeable"] is True
+    missing = TTBookingAdapter()._segment({})
+    assert "refundable" not in missing and "hand_baggage" not in missing

@@ -321,9 +321,11 @@ class TTBookingAdapter(TTBookingAsyncMixin, JsonProviderAdapter):
             ],
         }
 
-    def _segment(self, raw):
-        carrier = raw.get("carrier") or {}
-        baggage = raw.get("baggage")
+    @staticmethod
+    def _allowance(baggage):
+        # Keep combined piece/weight limits; flatten only the supplier unit/value form.
+        if isinstance(baggage, dict) and any(key in baggage for key in ("pieces", "weight")):
+            return baggage.copy()
         if isinstance(baggage, dict):
             unit, quantity = str(baggage.get("type") or ""), baggage.get("value")
             if quantity is None or quantity == "":
@@ -337,6 +339,25 @@ class TTBookingAdapter(TTBookingAsyncMixin, JsonProviderAdapter):
                 )
         if baggage is None:
             baggage = ""
+        return baggage
+
+    @classmethod
+    def _fare_conditions(cls, raw):
+        result = {}
+        for target, aliases in {
+            "baggage": ("baggage",),
+            "hand_baggage": ("hand_baggage", "handBaggage", "cabin_baggage", "cabinBaggage"),
+            "refundable": ("refundable",),
+            "changeable": ("changeable", "exchangeable"),
+        }.items():
+            for key in aliases:
+                if key in raw and raw[key] is not None and raw[key] != "":
+                    result[target] = cls._allowance(raw[key]) if "baggage" in target else raw[key]
+                    break
+        return result
+
+    def _segment(self, raw):
+        carrier = raw.get("carrier") or {}
         return {
             "origin": self._item(raw.get("locationBegin"))["code"],
             "destination": self._item(raw.get("locationEnd"))["code"],
@@ -347,7 +368,8 @@ class TTBookingAdapter(TTBookingAsyncMixin, JsonProviderAdapter):
             "cabin": str(raw.get("serviceClass") or "").lower(),
             "booking_class": str(raw.get("bookingClass") or ""),
             "fare_basis": str(raw.get("fareBasis") or ""),
-            "baggage": baggage,
+            "baggage": self._allowance(raw.get("baggage")),
+            **self._fare_conditions(raw),
             "provider_token": raw.get("token", ""),
         }
 
@@ -442,6 +464,7 @@ class TTBookingAdapter(TTBookingAsyncMixin, JsonProviderAdapter):
                         "expires_at": group.get("timeLimit"),
                         "itinerary": {"segments": segments},
                         "fare": {
+                            **self._fare_conditions(group),
                             "cabin": first.get("cabin", ""),
                             "booking_class": first.get("booking_class", ""),
                             "fare_basis": first.get("fare_basis", ""),

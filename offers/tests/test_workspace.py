@@ -482,3 +482,32 @@ def test_company_policy_is_private_and_bound_to_recipient(admin_client, prepared
         path + "/workspace/", {"version": published.json()["version"], "draft": draft}, format="json"
     )
     assert refused.status_code == 400
+
+
+def test_proposal_rejects_policy_outside_trip_period(admin_client, tenant, prepared):
+    from datetime import date
+
+    from crm.models import Company
+    from offers.models import Proposal
+    from travel_policy.models import TravelPolicy
+
+    path, value, _ = prepared
+    company = Company.objects.create(tenant=tenant, legal_name="Компания проверки периода")
+    policy = TravelPolicy.objects.create(
+        tenant=tenant,
+        company=company,
+        name="Декабрь",
+        effective_from=date(2026, 12, 1),
+        effective_to=date(2026, 12, 31),
+    )
+    proposal = Proposal.objects.get(pk=path.split("/")[-1])
+    proposal.order.client_company = company
+    proposal.order.client_person = None
+    proposal.order.save(update_fields=["client_company", "client_person"])
+    draft = copy.deepcopy(value["draft"])
+    draft.update(policy_id=str(policy.pk), travel_start="2026-11-30", travel_end="2026-12-02")
+    response = admin_client.put(
+        path + "/workspace/", {"version": value["version"], "draft": draft}, format="json"
+    )
+    assert response.status_code == 400, response.content
+    assert "период поездки" in str(response.json())
